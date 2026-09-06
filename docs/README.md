@@ -26,13 +26,14 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 
 | Role      | Can                                                                                                   |
 |-----------|-------------------------------------------------------------------------------------------------------|
-| user      | Play without an account. Log in to keep a history. The first account ever created becomes the admin.  |
+| user      | Play without an account. Sign in to keep a history. The first account ever created becomes the admin. |
 | moderator | Create the daily quiz, pick songs and snippet times, set answer tiers, see per-player detail.          |
 | admin     | Everything above, plus manage users/roles, raw DB view, per-question stats (most guessed answers, most reached height). |
 
 ## Stack
 
-- **Backend** — C++20, [Drogon](https://github.com/drogonframework/drogon) (pulled in by CMake FetchContent, nothing to install globally), PostgreSQL. JWT auth.
+- **Backend** — C++20, [Drogon](https://github.com/drogonframework/drogon) (pulled in by CMake FetchContent, nothing to install globally).
+- **Database and auth** — [Supabase](https://supabase.com) from the start, running locally in Docker. Postgres holds everything, Supabase Auth handles accounts, and the schema lives in `supabase/migrations/` so it deploys to a hosted Supabase project unchanged. Row level security is on for every table.
 - **Frontend** — React + Vite + TypeScript.
 - **Music data** — Python seed script (`scripts/seed_music.py`). Deezer is the catalog backbone: artists, albums and tracks with labels, release dates, UPC/ISRC, BPM, fan counts and official 30 s preview clips, all without an API key. Last.fm supplies the global top-500 ranking and real listen counts. MusicBrainz adds country, artist type, gender and active years. YouTube Music and the YouTube Data API add video ids and view counts. Spotify contributes ids only, because in 2025 it stopped serving popularity, followers, genres, top tracks and audio features to new apps.
 - Only original studio recordings are stored. Live versions, remixes, demos and acoustic cuts are skipped, and remaster or deluxe duplicates collapse into one row per song.

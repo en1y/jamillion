@@ -1,38 +1,58 @@
--- Jamillion schema. Apply with: psql "$DATABASE_URL" -f db/schema.sql
--- Plain Postgres on purpose so it moves to Supabase later.
-
-CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid
-
--- ---------------------------------------------------------------- users / players
+-- Jamillion schema. Source of truth: this file.
+--   npx supabase db reset     re-applies it from scratch
+--   npx supabase migration new <name>   for the next change
+--
+-- Auth is Supabase Auth: auth.users holds credentials, public.profiles holds our
+-- role and username. The backend never stores a password.
 
 CREATE TYPE user_role AS ENUM ('user', 'moderator', 'admin');
 
-CREATE TABLE users (
-    id            BIGSERIAL PRIMARY KEY,
-    email         TEXT NOT NULL UNIQUE,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role          user_role NOT NULL DEFAULT 'user',
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+-- ---------------------------------------------------------------- profiles
+
+CREATE TABLE profiles (
+    id         UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    username   TEXT NOT NULL UNIQUE,
+    role       user_role NOT NULL DEFAULT 'user',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- The very first account is the admin. DB-level so the app can't forget.
-CREATE FUNCTION first_user_is_admin() RETURNS trigger AS $$
+-- Every auth.users row gets a profile. The very first one is the admin, decided
+-- in the database so the app cannot forget.
+CREATE FUNCTION public.handle_new_user() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    uname TEXT;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM users) THEN
-        NEW.role := 'admin';
+    uname := coalesce(NEW.raw_user_meta_data->>'username', split_part(NEW.email, '@', 1));
+    IF EXISTS (SELECT 1 FROM public.profiles WHERE username = uname) THEN
+        uname := uname || '-' || left(NEW.id::text, 8);
     END IF;
+    INSERT INTO public.profiles (id, username, role)
+    VALUES (NEW.id, uname,
+            CASE WHEN NOT EXISTS (SELECT 1 FROM public.profiles) THEN 'admin'::user_role
+                 ELSE 'user'::user_role END);
     RETURN NEW;
-END $$ LANGUAGE plpgsql;
+END $$;
 
-CREATE TRIGGER users_first_is_admin
-    BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION first_user_is_admin();
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
--- A player is whoever holds the jam_player cookie. Logged-out players still get
--- scored; logging in links the player row to a user.
+-- SECURITY DEFINER so a policy on profiles can call it without recursing into itself.
+CREATE FUNCTION public.is_moderator() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role IN ('moderator', 'admin'));
+$$;
+
+CREATE FUNCTION public.is_admin() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+    SELECT EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin');
+$$;
+
+-- A player is whoever holds the jam_player cookie. Logged-out players are still
+-- scored; signing in links their player row to a profile.
 CREATE TABLE players (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    user_id    UUID REFERENCES profiles(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON players(user_id);
@@ -51,7 +71,7 @@ CREATE TABLE artists (
     country            TEXT,                -- ISO 3166-1 alpha-2
     begin_year         INT,
     end_year           INT,
-    global_rank        INT,                 -- position in the seed ranking (Last.fm top artists)
+    global_rank        INT,                 -- position in the Last.fm top-artist chart
     spotify_followers  BIGINT,
     spotify_popularity SMALLINT,            -- dead: no longer served to new apps
     lastfm_listeners   BIGINT,
@@ -84,9 +104,9 @@ CREATE TABLE albums (
     title          TEXT NOT NULL,
     mbid           UUID,
     spotify_id     TEXT UNIQUE,
-    album_type     TEXT,                    -- album / single / compilation
+    album_type     TEXT,                    -- album / single / ep
     release_date   DATE,
-    release_precision TEXT,                 -- year / month / day (Spotify)
+    release_precision TEXT,
     total_tracks   INT,
     label          TEXT,
     upc            TEXT,
@@ -124,7 +144,7 @@ CREATE TABLE tracks (
     bpm                NUMERIC(6,2),
     lastfm_listeners   BIGINT,
     lastfm_playcount   BIGINT,
-    preview_url        TEXT,                -- official 30 s clip; Deezer URLs expire ~daily, re-resolve from deezer_id
+    preview_url        TEXT,                -- 30 s clip; Deezer URLs expire ~daily, re-resolve from deezer_id
     preview_source     TEXT,                -- deezer / itunes
     audio_path         TEXT,                -- set once the clip is cached locally (relative to AUDIO_DIR)
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -170,7 +190,7 @@ CREATE TABLE quizzes (
     id         BIGSERIAL PRIMARY KEY,
     quiz_date  DATE NOT NULL UNIQUE,
     published  BOOLEAN NOT NULL DEFAULT false,
-    created_by BIGINT REFERENCES users(id),
+    created_by UUID REFERENCES profiles(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -183,16 +203,13 @@ CREATE TABLE questions (
     time_limit_sec    SMALLINT NOT NULL DEFAULT 20,
     -- song questions only
     track_id          BIGINT REFERENCES tracks(id),
-    snippet_start_sec NUMERIC(5,2) CHECK (snippet_start_sec BETWEEN 0 AND 30),  -- offset inside the 30 s preview
+    snippet_start_sec NUMERIC(5,2) CHECK (snippet_start_sec BETWEEN 0 AND 30),
     snippet_len_sec   NUMERIC(5,2) DEFAULT 10 CHECK (snippet_len_sec BETWEEN 1 AND 30),
     UNIQUE (quiz_id, position),
     CHECK (qtype <> 'song' OR (track_id IS NOT NULL AND snippet_start_sec IS NOT NULL))
 );
 
--- Accepted answers. For 'rarest' questions moderators pre-seed a few and the
--- rest get added as players submit (is_correct = null until reviewed).
--- For 'song' questions moderators list e.g. "artist", "title", "artist - title"
--- each with its own tier.
+-- The answer key. Never exposed to players: see the RLS policy below.
 CREATE TABLE question_answers (
     id          BIGSERIAL PRIMARY KEY,
     question_id BIGINT NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
@@ -211,7 +228,7 @@ CREATE TABLE attempts (
     started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at  TIMESTAMPTZ,
     total_points SMALLINT NOT NULL DEFAULT 0,
-    UNIQUE (player_id, quiz_id)             -- one dive per day
+    UNIQUE (player_id, quiz_id)             -- one flight per day
 );
 
 CREATE TABLE attempt_answers (
@@ -227,7 +244,7 @@ CREATE TABLE attempt_answers (
 );
 CREATE INDEX ON attempt_answers(question_id);
 
--- ---------------------------------------------------------------- stats views (admin)
+-- ---------------------------------------------------------------- stats (admin)
 
 CREATE VIEW question_top_answers AS
 SELECT qa.question_id, qa.display, qa.is_correct, qa.guess_count,
@@ -240,3 +257,59 @@ CREATE VIEW quiz_heights AS
 SELECT quiz_id, total_points, round(total_points * 0.1714, 2) AS height_au, count(*) AS players
 FROM attempts WHERE finished_at IS NOT NULL
 GROUP BY quiz_id, total_points ORDER BY quiz_id, total_points;
+
+-- ---------------------------------------------------------------- row level security
+--
+-- The Drogon backend connects as the service role and bypasses all of this. These
+-- policies exist because the frontend holds the anon key and could otherwise read
+-- any table directly, including the answer key.
+
+ALTER TABLE profiles         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE players          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE artists          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE genres           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE artist_genres    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE albums           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tracks           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE track_artists    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rarity_tiers     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE quizzes          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE questions        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE question_answers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attempts         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attempt_answers  ENABLE ROW LEVEL SECURITY;
+
+-- Catalog and tiers: world readable, moderators write.
+CREATE POLICY read_all ON artists       FOR SELECT USING (true);
+CREATE POLICY read_all ON genres        FOR SELECT USING (true);
+CREATE POLICY read_all ON artist_genres FOR SELECT USING (true);
+CREATE POLICY read_all ON albums        FOR SELECT USING (true);
+CREATE POLICY read_all ON tracks        FOR SELECT USING (true);
+CREATE POLICY read_all ON track_artists FOR SELECT USING (true);
+CREATE POLICY read_all ON rarity_tiers  FOR SELECT USING (true);
+CREATE POLICY mod_write ON rarity_tiers FOR ALL USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- Profiles: you see yourself, moderators see everyone, only admins change roles.
+CREATE POLICY read_own  ON profiles FOR SELECT USING (id = auth.uid() OR public.is_moderator());
+CREATE POLICY admin_all ON profiles FOR ALL    USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- Players: the backend owns this table. Signed-in users may read their own row.
+CREATE POLICY read_own ON players FOR SELECT USING (user_id = auth.uid() OR public.is_moderator());
+
+-- Quizzes: only published ones are visible, and only moderators can write.
+CREATE POLICY read_published ON quizzes   FOR SELECT USING (published OR public.is_moderator());
+CREATE POLICY mod_write      ON quizzes   FOR ALL    USING (public.is_moderator()) WITH CHECK (public.is_moderator());
+CREATE POLICY read_published ON questions FOR SELECT
+    USING (EXISTS (SELECT 1 FROM quizzes q WHERE q.id = quiz_id AND (q.published OR public.is_moderator())));
+CREATE POLICY mod_write      ON questions FOR ALL    USING (public.is_moderator()) WITH CHECK (public.is_moderator());
+
+-- The answer key: moderators only. No policy for anyone else, so nobody else reads it.
+CREATE POLICY mod_only ON question_answers FOR ALL USING (public.is_moderator()) WITH CHECK (public.is_moderator());
+
+-- Attempts: your own, or a moderator reviewing them.
+CREATE POLICY read_own ON attempts FOR SELECT
+    USING (public.is_moderator() OR EXISTS (SELECT 1 FROM players p WHERE p.id = player_id AND p.user_id = auth.uid()));
+CREATE POLICY read_own ON attempt_answers FOR SELECT
+    USING (public.is_moderator() OR EXISTS (
+        SELECT 1 FROM attempts a JOIN players p ON p.id = a.player_id
+        WHERE a.id = attempt_id AND p.user_id = auth.uid()));

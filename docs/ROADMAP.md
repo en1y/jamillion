@@ -7,19 +7,22 @@ Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.8).
 ## v0.0.x — Foundation
 
 - **v0.0.1** ✅ Repo, README, docs, schema, seed scripts, Drogon + Vite skeletons, `/api/health`.
+- **v0.0.2** Supabase from the start: schema moved to `supabase/migrations/`, auth on Supabase Auth (`profiles` + first-signup-is-admin trigger), RLS on every table, Postgres in Docker.
 
 ## v0.1.0 — Music catalog
 
-- [x] Project-local Postgres (`scripts/pg.sh`), schema applied.
+- [x] Supabase stack running, schema applied as a migration.
 - [~] Seed top 500 artists: Deezer catalog (albums, tracks, labels, UPC/ISRC, BPM, fans, preview clips), Last.fm ranking + listen counts, MusicBrainz country/type/gender/years, YouTube video ids + views. Originals only. Running.
 - [ ] `GET /api/tracks?q=&artist=&year=&min_rank=` search for the quiz editor.
 - Patch ideas: raise `--detail-cap` for full ISRC coverage, album-level genres, MusicBrainz writer credits.
 
 ## v0.2.0 — Auth and players
 
-- `POST /api/auth/register`, `POST /api/auth/login` → JWT (jwt-cpp, HS256, `JWT_SECRET`). First user is admin (DB trigger).
-- `jam_player` cookie for anonymous players; login links the player row to the user.
+- Frontend signs up and logs in through `@supabase/supabase-js`; Supabase issues the access token. No password ever reaches our backend.
+- Drogon verifies that token with `SUPABASE_JWT_SECRET` (jwt-cpp, HS256, added via FetchContent) and reads the role from `profiles`.
+- `jam_player` cookie for anonymous players; signing in links the player row to the profile.
 - Role guard: user / moderator / admin. `GET /api/me`.
+- Later, free from Supabase: OAuth providers, password reset, email confirmation.
 
 ## v0.3.0 — Quiz play
 

@@ -21,3 +21,7 @@ __pycache__/
 .idea/
 .vscode/
 .cache
+
+# supabase local
+supabase/.temp/
+supabase/.branches/

@@ -1,6 +1,8 @@
 # Running Jamillion
 
-Three moving parts: Postgres, the Drogon backend, the Vite frontend. Plus a one-off Python seed.
+Three moving parts: the Supabase stack (Postgres, Auth, Studio, all in Docker), the Drogon backend, the Vite frontend. Plus a one-off Python seed.
+
+Prerequisites: Docker running, Node, CMake and a C++20 compiler, Python 3.
 
 ## 0. Environment
 
@@ -8,7 +10,9 @@ Three moving parts: Postgres, the Drogon backend, the Vite frontend. Plus a one-
 cp .env.example .env
 ```
 
-`LASTFM_API_KEY` is the only key the catalog genuinely needs: it drives the top-500 ranking and the listen counts. `YOUTUBE_API_KEY` adds view counts. `SPOTIFY_CLIENT_ID/SECRET` now only fill in cross-reference ids. Deezer, MusicBrainz and iTunes need no key at all. The backend reads standard `PG*` variables; the scripts read `DATABASE_URL`. Load it into your shell with:
+`LASTFM_API_KEY` is the only key the catalog genuinely needs: it drives the top-500 ranking and the listen counts. `YOUTUBE_API_KEY` adds view counts. `SPOTIFY_CLIENT_ID/SECRET` now only fill in cross-reference ids. Deezer, MusicBrainz and iTunes need no key at all.
+
+The `SUPABASE_*` values are printed by `npx supabase start` and by `npx supabase status`; paste them in after step 1. Load the file into your shell with:
 
 ```bash
 set -a; source .env; set +a
@@ -16,19 +20,30 @@ set -a; source .env; set +a
 
 ## 1. Database
 
-Postgres runs as a project-local cluster in `data/pg`. No sudo, no system service, nothing to clash with an existing install:
+Postgres, Auth and Studio all run as Supabase's own Docker containers. No sudo, no system service:
 
 ```bash
-scripts/pg.sh start
+npx supabase start
 ```
 
-That initialises the cluster on first run, starts it on port 5432 and creates the `jamillion` database. `scripts/pg.sh stop` shuts it down and `scripts/pg.sh psql` opens a shell. Then load the schema:
+First run pulls a few GB of images and takes several minutes; after that it is seconds. It applies everything in `supabase/migrations/` automatically and prints your keys.
+
+| What | Where |
+|------|-------|
+| Studio (table editor, SQL, auth users) | http://127.0.0.1:54323 |
+| API / Auth | http://127.0.0.1:54321 |
+| Postgres | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` |
+| Inbucket (catches signup emails) | http://127.0.0.1:54324 |
 
 ```bash
-scripts/pg.sh psql -f db/schema.sql
+npx supabase stop        # shut down, keeps data
+npx supabase status      # reprint keys and ports
+npx supabase db reset    # rebuild from migrations, then run supabase/seed.sql
 ```
 
-`db/schema.sql` is the schema's source of truth. The first row inserted into `users` becomes the admin (trigger), so register yourself first.
+`supabase/migrations/` is the schema's source of truth. Change it with `npx supabase migration new <name>`, never by editing the database by hand.
+
+**Auth.** Accounts live in Supabase Auth. A trigger on `auth.users` creates the matching `public.profiles` row, and the very first account becomes the admin. So sign yourself up first. Local signups do not send real email; confirmations land in Inbucket.
 
 ## 2. Seed the music catalog
 
@@ -37,6 +52,8 @@ python -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 scripts/seed.sh --artists Radiohead           # one artist, ~15 s, good smoke test
 scripts/seed.sh --limit 500                    # the real thing, ~6 hours
 ```
+
+The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST and RLS.
 
 `scripts/seed.sh` loads `.env` and runs the seeder inside the venv. It commits one artist per transaction, so it is resumable and safe to interrupt:
 
