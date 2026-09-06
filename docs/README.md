@@ -47,4 +47,4 @@ docs/       RUNNING.md — how to run everything
 ROADMAP.md  what gets built in which order
 ```
 
-See [docs/RUNNING.md](docs/RUNNING.md) to get going and [ROADMAP.md](ROADMAP.md) for the plan.
+See [docs/RUNNING.md](RUNNING.md) to get going and [ROADMAP.md](ROADMAP.md) for the plan.
