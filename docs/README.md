@@ -34,7 +34,9 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 
 - **Backend** — C++20, [Drogon](https://github.com/drogonframework/drogon) (pulled in by CMake FetchContent, nothing to install globally), PostgreSQL. JWT auth.
 - **Frontend** — React + Vite + TypeScript.
-- **Music data** — Python seed script pulling from Last.fm (artist ranking), Spotify (catalog, popularity, ISRC), MusicBrainz (ids, dates, countries), Deezer / iTunes (official 30 s preview clips by ISRC), YouTube Music + YouTube Data API (video ids, view counts). Only original studio songs are stored: live versions, remixes, demos and remaster duplicates are skipped. Audio is never in the DB; a track's preview clip is downloaded to `data/audio/` when it is first used in a quiz.
+- **Music data** — Python seed script (`scripts/seed_music.py`). Deezer is the catalog backbone: artists, albums and tracks with labels, release dates, UPC/ISRC, BPM, fan counts and official 30 s preview clips, all without an API key. Last.fm supplies the global top-500 ranking and real listen counts. MusicBrainz adds country, artist type, gender and active years. YouTube Music and the YouTube Data API add video ids and view counts. Spotify contributes ids only, because in 2025 it stopped serving popularity, followers, genres, top tracks and audio features to new apps.
+- Only original studio recordings are stored. Live versions, remixes, demos and acoustic cuts are skipped, and remaster or deluxe duplicates collapse into one row per song.
+- Audio is never in the database. A track's preview clip is downloaded to `data/audio/` the first time it is used in a quiz.
 
 ## Layout
 

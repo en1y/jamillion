@@ -10,9 +10,10 @@ Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.8).
 
 ## v0.1.0 — Music catalog
 
-- Seed top 500 artists from Last.fm chart, all original songs (no live/remix/demo), Spotify popularity, ISRC, 30 s preview URLs (Deezer/iTunes), YouTube video ids + view counts.
-- `GET /api/tracks?q=&artist=&year=&min_popularity=` search for the quiz editor.
-- Patch ideas: MusicBrainz release-date backfill, Last.fm per-track listeners.
+- [x] Project-local Postgres (`scripts/pg.sh`), schema applied.
+- [~] Seed top 500 artists: Deezer catalog (albums, tracks, labels, UPC/ISRC, BPM, fans, preview clips), Last.fm ranking + listen counts, MusicBrainz country/type/gender/years, YouTube video ids + views. Originals only. Running.
+- [ ] `GET /api/tracks?q=&artist=&year=&min_rank=` search for the quiz editor.
+- Patch ideas: raise `--detail-cap` for full ISRC coverage, album-level genres, MusicBrainz writer credits.
 
 ## v0.2.0 — Auth and players
 

@@ -2,49 +2,80 @@
 """Seed the music catalog.
 
     pip install -r scripts/requirements.txt
-    python scripts/seed_music.py --limit 500            # full run, resumable
-    python scripts/seed_music.py --limit 20 --no-youtube  # quick smoke run
+    python scripts/seed_music.py --limit 500              # full run, resumable
+    python scripts/seed_music.py --artists Radiohead      # one artist, for testing
 
-Pipeline per artist:
-  Last.fm chart.getTopArtists -> ranking (global_rank)
-  Spotify   -> artist, every album/single, every track (popularity, isrc, duration)
-  MusicBrainz -> artist mbid, type, country, begin/end year
-  Deezer / iTunes lookup by ISRC -> official 30 s preview clip URL
-  YouTube Music search -> video id per track; YouTube Data API -> view/like counts
+Sources, and why:
+  Last.fm  chart.getTopArtists -> the global top-500 ranking
+           artist.getInfo      -> listeners + playcount (a real listen count)
+  Deezer   -> the catalog itself: artist fans, every album (upc, label, release date,
+              fans, genres) and every track (rank, duration, explicit, 30 s preview).
+              Open API, no key. Track detail adds ISRC, BPM, track position.
+  MusicBrainz -> mbid, artist type, country, gender, active years, disambiguation
+  Spotify  -> ids only. As of 2025 Spotify no longer serves popularity, followers,
+              genres, top tracks or audio features to new apps, so it is a
+              cross-reference, not a data source.
+  YouTube  -> video id (YouTube Music search) + views, likes, publish date (Data API)
 
-Live versions, remixes, demos etc. are skipped; remasters/deluxe duplicates collapse
-into one row per song (see NOT_ORIGINAL / norm_title).
+Only original studio recordings are kept: live versions, remixes, demos and acoustic
+cuts are skipped, and remaster/deluxe duplicates collapse into one row per song.
 
-Everything upserts on the platform ids, so re-running refreshes instead of duplicating.
+Everything upserts on platform ids, so re-running refreshes instead of duplicating.
+A failed artist is rolled back and the run continues; --start N resumes at rank N.
 """
 import argparse, os, re, sys, time
 import psycopg
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 DB = os.environ["DATABASE_URL"]
+HTTP = requests.Session()
 
-# ---------------------------------------------------------------- clients
+# ---------------------------------------------------------------- http
+
+_last = [0.0]
+
+def deezer(path, **params):
+    """Deezer allows 50 requests / 5 s per IP. Throttle to ~8/s and never raise."""
+    gap = time.monotonic() - _last[0]
+    if gap < 0.125: time.sleep(0.125 - gap)
+    _last[0] = time.monotonic()
+    try:
+        r = HTTP.get(f"https://api.deezer.com/{path}", params=params, timeout=25)
+        d = r.json()
+    except Exception as e:
+        print(f"  ! deezer {path}: {e}"); return {}
+    if isinstance(d, dict) and d.get("error"):
+        code = d["error"].get("code")
+        if code in (4, 700):            # quota exceeded, back off and retry once
+            time.sleep(5)
+            return deezer(path, **params)
+        return {}
+    return d
+
+def lastfm(method, **params):
+    try:
+        r = HTTP.get("https://ws.audioscrobbler.com/2.0/", timeout=30, params=dict(
+            method=method, api_key=os.environ["LASTFM_API_KEY"], format="json", **params))
+        return r.json() if r.ok else {}
+    except Exception as e:
+        print(f"  ! lastfm {method}: {e}"); return {}
 
 def spotify():
     import spotipy
     from spotipy.oauth2 import SpotifyClientCredentials
-    return spotipy.Spotify(auth_manager=SpotifyClientCredentials(), retries=5)
+    return spotipy.Spotify(auth_manager=SpotifyClientCredentials(), retries=3)
 
 def musicbrainz():
     import musicbrainzngs as mb
     mb.set_useragent("jamillion-seed", "0.1", "https://github.com/en1y/jamillion")
-    mb.set_rate_limit(1.0, 1)  # 1 req/s, their rule
+    mb.set_rate_limit(1.0, 1)   # their rule: 1 req/s
     return mb
-
-def ytmusic():
-    from ytmusicapi import YTMusic
-    return YTMusic()
 
 # ---------------------------------------------------------------- helpers
 
 def upsert(cur, table, key, row):
-    """INSERT ... ON CONFLICT (key) DO UPDATE, returns id."""
     cols = list(row)
     sets = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != key)
     cur.execute(
@@ -53,149 +84,151 @@ def upsert(cur, table, key, row):
         [row[c] for c in cols])
     return cur.fetchone()[0]
 
-def parse_date(s, precision):
-    if not s: return None
-    return {"year": f"{s}-01-01", "month": f"{s}-01"}.get(precision, s)
-
-# ponytail: title-suffix regex, no audio fingerprinting. Spotify writes versions as
-# "Song - Live" / "Song (Acoustic)", so only the part after " - " or in brackets is checked.
-VERSION_WORDS = re.compile(r"\b(live|remix|remixes|acoustic|unplugged|demo|instrumental|karaoke|"
-                           r"edit|mix|version|sped up|slowed|reprise|rehearsal|session|commentary|"
-                           r"a cappella|acapella|dub|extended|orchestral|mono|stereo)\b", re.I)
-SUFFIX = re.compile(r"\s+-\s+(.*)$|[(\[]([^)\]]*)[)\]]")
-
-def is_original(title):
-    if re.search(r"\blive (at|in|from|on)\b", title, re.I): return False   # "Live at Wembley" albums
-    return not any(VERSION_WORDS.search(part) for m in SUFFIX.finditer(title) for part in m.groups() if part)
-
-def norm_title(t):
-    """'Creep - Remastered 2009' -> 'creep'; used to keep one row per song."""
-    t = re.sub(r"\s+-\s+.*$|\s*[(\[].*$", "", t)
-    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
-
 def year(s):
     m = re.match(r"\d{4}", s or "")
     return int(m.group()) if m else None
 
+def date_or_none(s):
+    return s if s and not s.startswith("0000") else None
+
+# ponytail: title-suffix regex, no audio fingerprinting. Version info lives after
+# " - " or inside brackets ("Creep - Live", "Creep (Acoustic)"), so only that part
+# is tested; a song genuinely called "Live Forever" survives.
+VERSION_WORDS = re.compile(r"\b(live|remix|remixes|acoustic|unplugged|demo|instrumental|karaoke|"
+                           r"edit|mix|version|sped up|slowed|reprise|rehearsal|session|commentary|"
+                           r"a cappella|acapella|dub|extended|orchestral|mono|stereo|remaster\w*)\b", re.I)
+SUFFIX = re.compile(r"\s+-\s+(.*)$|[(\[]([^)\]]*)[)\]]")
+
+def is_original(title, version=None):
+    if version and VERSION_WORDS.search(version): return False   # Deezer's title_version field
+    if re.search(r"\blive (at|in|from|on)\b", title, re.I): return False
+    return not any(VERSION_WORDS.search(p) for m in SUFFIX.finditer(title) for p in m.groups() if p)
+
+def norm_title(t):
+    """'Creep - Remastered 2009' -> 'creep'. Also what the game matches answers against."""
+    t = re.sub(r"\s+-\s+.*$|\s*[(\[].*$", "", t)
+    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+
 # ---------------------------------------------------------------- steps
 
 def top_artists(limit):
-    """Last.fm chart.getTopArtists, 100 per page."""
-    import requests
     names, page = [], 1
     while len(names) < limit:
-        r = requests.get("https://ws.audioscrobbler.com/2.0/", timeout=30, params=dict(
-            method="chart.gettopartists", api_key=os.environ["LASTFM_API_KEY"],
-            format="json", limit=100, page=page)).json()
-        batch = [a["name"] for a in r["artists"]["artist"]]
+        r = lastfm("chart.gettopartists", limit=100, page=page)
+        batch = [a["name"] for a in r.get("artists", {}).get("artist", [])]
         if not batch: break
         names += batch
         page += 1
     return names[:limit]
 
 def seed_artist(cur, sp, mb, name, rank):
-    res = sp.search(q=f'artist:"{name}"', type="artist", limit=1)["artists"]["items"]
-    if not res:
-        print(f"  ! no spotify match for {name}"); return None
-    a = res[0]
-    row = dict(name=a["name"], spotify_id=a["id"], global_rank=rank,
-               spotify_followers=a["followers"]["total"], spotify_popularity=a["popularity"],
-               image_url=(a["images"] or [{}])[0].get("url"))
+    hits = deezer("search/artist", q=name, limit=5).get("data") or []
+    d = next((h for h in hits if h["name"].lower() == name.lower()), hits[0] if hits else None)
+    if not d:
+        print(f"  ! not on deezer: {name}"); return None
+
+    row = dict(name=d["name"], deezer_id=d["id"], deezer_fans=d.get("nb_fan"),
+               global_rank=rank, image_url=d.get("picture_xl"))
+
+    st = lastfm("artist.getinfo", artist=d["name"]).get("artist", {}).get("stats", {})
+    if st:
+        row.update(lastfm_listeners=int(st.get("listeners") or 0),
+                   lastfm_playcount=int(st.get("playcount") or 0))
     try:
-        m = mb.search_artists(artist=a["name"], limit=1)["artist-list"]
+        m = mb.search_artists(artist=d["name"], limit=1)["artist-list"]
         if m and int(m[0].get("ext:score", 0)) >= 90:
             m = m[0]
             row.update(mbid=m["id"], sort_name=m.get("sort-name"), artist_type=m.get("type"),
-                       country=m.get("country"),
+                       country=m.get("country"), gender=m.get("gender"),
+                       disambiguation=m.get("disambiguation") or None,
                        begin_year=year(m.get("life-span", {}).get("begin")),
                        end_year=year(m.get("life-span", {}).get("end")))
     except Exception as e:
-        print(f"  ! musicbrainz: {e}")
-    aid = upsert(cur, "artists", "spotify_id", row)
-    for g in a["genres"]:
-        cur.execute("INSERT INTO genres(name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id", (g,))
-        cur.execute("INSERT INTO artist_genres VALUES (%s,%s) ON CONFLICT DO NOTHING", (aid, cur.fetchone()[0]))
-    return aid, a["id"]
+        print(f"  ! musicbrainz {name}: {e}")
+    if sp:
+        try:
+            r = sp.search(q=f'artist:"{d["name"]}"', type="artist", limit=1)["artists"]["items"]
+            if r: row["spotify_id"] = r[0]["id"]
+        except Exception as e:
+            print(f"  ! spotify {name}: {e}")
+    return upsert(cur, "artists", "deezer_id", row), d["id"]
 
-def seed_albums(cur, sp, aid, spotify_artist_id):
-    """Every album + single, original songs only, one row per song. Returns [(track_id, artist, title, isrc)]."""
-    out = []
-    albums = []
-    page = sp.artist_albums(spotify_artist_id, include_groups="album,single", limit=50)
-    while page:
-        albums += page["items"]
-        page = sp.next(page) if page["next"] else None
-    seen, seen_titles = set(), set()
-    # albums before singles so the album cut wins the dedupe; oldest first = original release
-    albums.sort(key=lambda a: (a["album_type"] != "album", a["release_date"]))
-    for al in albums:
-        key = (al["name"].lower(), al["album_type"])
-        if key in seen or not is_original(al["name"]): continue  # market re-releases, live albums
-        seen.add(key)
-        full = sp.album(al["id"])
-        album_id = upsert(cur, "albums", "spotify_id", dict(
-            artist_id=aid, title=full["name"], spotify_id=full["id"], album_type=full["album_type"],
-            release_date=parse_date(full["release_date"], full["release_date_precision"]),
-            release_precision=full["release_date_precision"], total_tracks=full["total_tracks"],
-            label=full.get("label"), cover_url=(full["images"] or [{}])[0].get("url")))
-        tracks, page = [], full["tracks"]
-        while page:
-            tracks += page["items"]
-            page = sp.next(page) if page["next"] else None
-        for i in range(0, len(tracks), 50):  # sp.tracks gives popularity + isrc, 50 per call
-            for t in sp.tracks([t["id"] for t in tracks[i:i+50]])["tracks"]:
-                if not t or not is_original(t["name"]): continue
-                nt = norm_title(t["name"])
-                if nt in seen_titles: continue   # remaster / deluxe duplicate of a song we have
-                seen_titles.add(nt)
-                tid = upsert(cur, "tracks", "spotify_id", dict(
-                    album_id=album_id, title=t["name"], spotify_id=t["id"],
-                    isrc=t.get("external_ids", {}).get("isrc"),
-                    disc_number=t["disc_number"], track_number=t["track_number"],
-                    duration_ms=t["duration_ms"], explicit=t["explicit"],
-                    release_date=parse_date(full["release_date"], full["release_date_precision"]),
-                    spotify_popularity=t["popularity"]))
-                for j, ta in enumerate(t["artists"]):
-                    cur.execute("SELECT id FROM artists WHERE spotify_id=%s", (ta["id"],))
-                    r = cur.fetchone()
-                    if r:
-                        cur.execute("INSERT INTO track_artists VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                                    (tid, r[0], "main" if j == 0 else "feature"))
-                out.append((tid, t["artists"][0]["name"], t["name"], t.get("external_ids", {}).get("isrc")))
+def artist_albums(deezer_artist_id):
+    out, url = [], f"artist/{deezer_artist_id}/albums"
+    params = {"limit": 100}
+    while url:
+        page = deezer(url, **params)
+        out += page.get("data", [])
+        nxt = page.get("next")
+        if not nxt: break
+        url, params = nxt.split("api.deezer.com/", 1)[1].split("?")[0], \
+                      dict(p.split("=") for p in nxt.split("?", 1)[1].split("&"))
     return out
 
-def seed_previews(cur, tracks):
-    """30 s official preview clips looked up by ISRC. Deezer first (no key, fast), iTunes fallback."""
-    import requests
-    cur.execute("SELECT id FROM tracks WHERE id = ANY(%s) AND preview_url IS NULL", ([t[0] for t in tracks],))
-    todo = {r[0] for r in cur.fetchall()}
-    for tid, _, _, isrc in tracks:
-        if tid not in todo or not isrc: continue
-        url, src = None, None
-        try:
-            d = requests.get(f"https://api.deezer.com/track/isrc:{isrc}", timeout=15).json()
-            if d.get("preview"): url, src = d["preview"], "deezer"
-            else:
-                it = requests.get("https://itunes.apple.com/lookup", params={"isrc": isrc}, timeout=15).json()
-                if it.get("results") and it["results"][0].get("previewUrl"):
-                    url, src = it["results"][0]["previewUrl"], "itunes"
-        except Exception as e:
-            print(f"  ! preview {isrc}: {e}")
-        if url:
-            cur.execute("UPDATE tracks SET preview_url=%s, preview_source=%s WHERE id=%s", (url, src, tid))
-        time.sleep(0.1)  # deezer: 50 req / 5 s
+def seed_albums(cur, aid, deezer_artist_id, detail_cap):
+    """Deezer albums + embedded tracklists. -> [(track_id, artist, title, deezer_track_id)]"""
+    out, seen, seen_titles = [], set(), set()
+    albums = artist_albums(deezer_artist_id)
+    # studio albums before singles, oldest first, so the original release wins the dedupe
+    albums.sort(key=lambda a: (a.get("record_type") != "album", a.get("release_date") or ""))
+    for al in albums:
+        key = al["title"].lower()
+        if key in seen or not is_original(al["title"]): continue
+        if al.get("record_type") in ("compilation",): continue
+        seen.add(key)
+        full = deezer(f"album/{al['id']}")
+        if not full: continue
+
+        album_id = upsert(cur, "albums", "deezer_id", dict(
+            artist_id=aid, title=full["title"], deezer_id=full["id"],
+            album_type=full.get("record_type"), release_date=date_or_none(full.get("release_date")),
+            release_precision="day", total_tracks=full.get("nb_tracks"), label=full.get("label"),
+            upc=full.get("upc"), deezer_fans=full.get("fans"), duration_sec=full.get("duration"),
+            cover_url=full.get("cover_xl")))
+
+        for g in (full.get("genres") or {}).get("data", []):
+            cur.execute("INSERT INTO genres(name) VALUES (%s) ON CONFLICT (name) "
+                        "DO UPDATE SET name=EXCLUDED.name RETURNING id", (g["name"],))
+            cur.execute("INSERT INTO artist_genres VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                        (aid, cur.fetchone()[0]))
+
+        for pos, t in enumerate((full.get("tracks") or {}).get("data", []), 1):
+            if not is_original(t["title"], t.get("title_version")): continue
+            nt = norm_title(t["title"])
+            if nt in seen_titles: continue      # remaster / deluxe duplicate
+            seen_titles.add(nt)
+            tid = upsert(cur, "tracks", "deezer_id", dict(
+                album_id=album_id, title=t["title"], norm_title=nt, deezer_id=t["id"],
+                deezer_rank=t.get("rank"), duration_ms=(t.get("duration") or 0) * 1000,
+                explicit=t.get("explicit_lyrics"), track_number=pos,
+                release_date=date_or_none(full.get("release_date")),
+                preview_url=t.get("preview"), preview_source="deezer" if t.get("preview") else None))
+            cur.execute("INSERT INTO track_artists VALUES (%s,%s,'main') ON CONFLICT DO NOTHING", (tid, aid))
+            out.append((tid, full["artist"]["name"], t["title"], t["id"]))
+
+    # ISRC / BPM / disc number need a per-track call, so only the most popular get it
+    if detail_cap:
+        cur.execute("SELECT id, deezer_id FROM tracks WHERE id = ANY(%s) AND isrc IS NULL "
+                    "ORDER BY deezer_rank DESC NULLS LAST LIMIT %s", ([t[0] for t in out], detail_cap))
+        for tid, dzid in cur.fetchall():
+            d = deezer(f"track/{dzid}")
+            if not d: continue
+            cur.execute("UPDATE tracks SET isrc=%s, bpm=%s, gain=%s, disc_number=%s, "
+                        "release_date=coalesce(%s, release_date) WHERE id=%s",
+                        (d.get("isrc"), d.get("bpm") or None, d.get("gain"), d.get("disk_number"),
+                         date_or_none(d.get("release_date")), tid))
+    return out
+
+def pick(cur, tracks, column, cap):
+    if not tracks or not cap: return []
+    cur.execute(f"SELECT id FROM tracks WHERE id = ANY(%s) AND {column} IS NULL "
+                f"ORDER BY deezer_rank DESC NULLS LAST LIMIT %s", ([t[0] for t in tracks], cap))
+    keep = {r[0] for r in cur.fetchall()}
+    return [t for t in tracks if t[0] in keep]
 
 def seed_youtube(cur, yt, tracks, cap):
-    """Video id via YouTube Music search, views via Data API (50 ids / request)."""
-    import requests
-    key = os.environ.get("YOUTUBE_API_KEY")
-    # highest-popularity tracks first, cap per artist to keep the run sane
-    cur.execute("SELECT id FROM tracks WHERE id = ANY(%s) AND youtube_video_id IS NULL ORDER BY spotify_popularity DESC NULLS LAST LIMIT %s",
-                ([t[0] for t in tracks], cap))
-    todo = {r[0] for r in cur.fetchall()}
     ids = {}
-    for tid, artist, title, _ in tracks:
-        if tid not in todo: continue
+    for tid, artist, title, _ in pick(cur, tracks, "youtube_video_id", cap):
         try:
             hit = yt.search(f"{artist} {title}", filter="songs", limit=1)
             if hit: ids[tid] = hit[0]["videoId"]
@@ -203,18 +236,32 @@ def seed_youtube(cur, yt, tracks, cap):
             print(f"  ! ytmusic {title}: {e}")
     for tid, vid in ids.items():
         cur.execute("UPDATE tracks SET youtube_video_id=%s WHERE id=%s", (vid, tid))
+
+    key = os.environ.get("YOUTUBE_API_KEY")
     if not key: return
     vids = list(ids.items())
     for i in range(0, len(vids), 50):
         chunk = vids[i:i+50]
-        r = requests.get("https://www.googleapis.com/youtube/v3/videos",
-                         params=dict(part="statistics", id=",".join(v for _, v in chunk), key=key), timeout=30).json()
-        stats = {it["id"]: it["statistics"] for it in r.get("items", [])}
+        try:
+            r = HTTP.get("https://www.googleapis.com/youtube/v3/videos", timeout=30, params=dict(
+                part="statistics,snippet", id=",".join(v for _, v in chunk), key=key)).json()
+        except Exception as e:
+            print(f"  ! youtube api: {e}"); continue
+        info = {it["id"]: it for it in r.get("items", [])}
         for tid, vid in chunk:
-            s = stats.get(vid)
-            if s:
-                cur.execute("UPDATE tracks SET youtube_views=%s, youtube_likes=%s WHERE id=%s",
-                            (s.get("viewCount"), s.get("likeCount"), tid))
+            it = info.get(vid)
+            if not it: continue
+            s = it.get("statistics", {})
+            cur.execute("UPDATE tracks SET youtube_views=%s, youtube_likes=%s, youtube_published_at=%s WHERE id=%s",
+                        (s.get("viewCount"), s.get("likeCount"),
+                         (it.get("snippet", {}).get("publishedAt") or "")[:10] or None, tid))
+
+def seed_lastfm_tracks(cur, tracks, cap):
+    for tid, artist, title, _ in pick(cur, tracks, "lastfm_playcount", cap):
+        t = lastfm("track.getinfo", artist=artist, track=title).get("track", {})
+        if t:
+            cur.execute("UPDATE tracks SET lastfm_listeners=%s, lastfm_playcount=%s WHERE id=%s",
+                        (t.get("listeners"), t.get("playcount"), tid))
 
 # ---------------------------------------------------------------- main
 
@@ -222,28 +269,41 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--start", type=int, default=1, help="resume from this rank")
+    ap.add_argument("--artists", nargs="*", help="seed these names instead of the Last.fm chart")
     ap.add_argument("--no-youtube", action="store_true")
-    ap.add_argument("--youtube-cap", type=int, default=60, help="tracks per artist to look up on YouTube")
-    ap.add_argument("--artists", nargs="*", help="seed just these names instead of the Last.fm chart")
+    ap.add_argument("--no-spotify", action="store_true")
+    ap.add_argument("--detail-cap", type=int, default=120, help="tracks per artist to fetch ISRC/BPM for")
+    ap.add_argument("--youtube-cap", type=int, default=30, help="tracks per artist to look up on YouTube")
+    ap.add_argument("--lastfm-cap", type=int, default=30, help="tracks per artist to fetch Last.fm listens for")
     args = ap.parse_args()
 
-    sp, mb = spotify(), musicbrainz()
-    yt = None if args.no_youtube else ytmusic()
+    mb = musicbrainz()
+    sp = None if args.no_spotify else spotify()
+    yt = None
+    if not args.no_youtube:
+        from ytmusicapi import YTMusic
+        yt = YTMusic()
+
     names = args.artists or top_artists(args.limit)
+    print(f"seeding {len(names)} artists from rank {args.start}", flush=True)
 
     with psycopg.connect(DB) as conn, conn.cursor() as cur:
         for rank, name in enumerate(names, 1):
             if rank < args.start: continue
-            print(f"[{rank}/{len(names)}] {name}")
             t0 = time.time()
-            got = seed_artist(cur, sp, mb, name, rank)
-            if not got: continue
-            aid, sid = got
-            tracks = seed_albums(cur, sp, aid, sid)
-            seed_previews(cur, tracks)
-            if yt: seed_youtube(cur, yt, tracks, args.youtube_cap)
-            conn.commit()  # per artist -> resumable with --start
-            print(f"    {len(tracks)} tracks in {time.time()-t0:.0f}s")
+            try:
+                got = seed_artist(cur, sp, mb, name, rank)
+                if not got:
+                    conn.commit(); continue
+                aid, dzid = got
+                tracks = seed_albums(cur, aid, dzid, args.detail_cap)
+                if yt: seed_youtube(cur, yt, tracks, args.youtube_cap)
+                seed_lastfm_tracks(cur, tracks, args.lastfm_cap)
+                conn.commit()          # per artist, so --start resumes cleanly
+                print(f"[{rank}/{len(names)}] {name}: {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
+            except Exception as e:
+                conn.rollback()        # an aborted tx would poison every later artist
+                print(f"[{rank}/{len(names)}] {name}: FAILED {type(e).__name__}: {e}", flush=True)
 
 if __name__ == "__main__":
     main()

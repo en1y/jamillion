@@ -43,7 +43,7 @@ CREATE TABLE artists (
     id                 BIGSERIAL PRIMARY KEY,
     name               TEXT NOT NULL,
     sort_name          TEXT,
-    mbid               UUID UNIQUE,
+    mbid               UUID,                -- not unique: fuzzy MB matching can collide
     spotify_id         TEXT UNIQUE,
     ytmusic_id         TEXT,
     lastfm_url         TEXT,
@@ -53,13 +53,19 @@ CREATE TABLE artists (
     end_year           INT,
     global_rank        INT,                 -- position in the seed ranking (Last.fm top artists)
     spotify_followers  BIGINT,
-    spotify_popularity SMALLINT,            -- 0..100
+    spotify_popularity SMALLINT,            -- dead: no longer served to new apps
     lastfm_listeners   BIGINT,
     lastfm_playcount   BIGINT,
+    deezer_id          BIGINT UNIQUE,
+    deezer_fans        BIGINT,
+    disambiguation     TEXT,                -- MusicBrainz: "Nirvana (US grunge band)"
+    gender             TEXT,                -- MusicBrainz, solo artists only
     image_url          TEXT,
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON artists (lower(name));
+CREATE INDEX ON artists (mbid);
+CREATE INDEX ON artists (global_rank);
 
 CREATE TABLE genres (
     id   SERIAL PRIMARY KEY,
@@ -83,6 +89,10 @@ CREATE TABLE albums (
     release_precision TEXT,                 -- year / month / day (Spotify)
     total_tracks   INT,
     label          TEXT,
+    upc            TEXT,
+    deezer_id      BIGINT UNIQUE,
+    deezer_fans    BIGINT,
+    duration_sec   INT,
     cover_url      TEXT,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -93,6 +103,7 @@ CREATE TABLE tracks (
     id                 BIGSERIAL PRIMARY KEY,
     album_id           BIGINT REFERENCES albums(id) ON DELETE CASCADE,
     title              TEXT NOT NULL,
+    norm_title         TEXT NOT NULL,       -- 'Creep - Remastered' -> 'creep'; answer matching + dedupe
     mbid               UUID,
     isrc               TEXT,
     spotify_id         TEXT UNIQUE,
@@ -102,20 +113,26 @@ CREATE TABLE tracks (
     duration_ms        INT,
     explicit           BOOLEAN,
     release_date       DATE,
-    spotify_popularity SMALLINT,            -- 0..100. Spotify has no public play count.
+    spotify_popularity SMALLINT,            -- dead: Spotify stopped serving this to new apps (2025)
     spotify_playcount  BIGINT,              -- reserved: needs unofficial scraping
     youtube_views      BIGINT,
     youtube_likes      BIGINT,
+    youtube_published_at DATE,
+    deezer_id          BIGINT UNIQUE,
+    deezer_rank        INT,                 -- Deezer popularity, 0..1000000
+    gain               NUMERIC(6,2),
+    bpm                NUMERIC(6,2),
     lastfm_listeners   BIGINT,
     lastfm_playcount   BIGINT,
-    preview_url        TEXT,                -- official 30 s clip (Deezer / iTunes), looked up by ISRC
+    preview_url        TEXT,                -- official 30 s clip; Deezer URLs expire ~daily, re-resolve from deezer_id
     preview_source     TEXT,                -- deezer / itunes
     audio_path         TEXT,                -- set once the clip is cached locally (relative to AUDIO_DIR)
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON tracks(album_id);
 CREATE INDEX ON tracks (lower(title));
-CREATE INDEX ON tracks(spotify_popularity DESC);
+CREATE INDEX ON tracks (norm_title);
+CREATE INDEX ON tracks(deezer_rank DESC);
 CREATE INDEX ON tracks(youtube_views DESC);
 
 -- Main artist + features. Lets "guess the band" accept any credited artist.
