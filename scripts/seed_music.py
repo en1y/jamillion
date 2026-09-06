@@ -9,7 +9,11 @@ Pipeline per artist:
   Last.fm chart.getTopArtists -> ranking (global_rank)
   Spotify   -> artist, every album/single, every track (popularity, isrc, duration)
   MusicBrainz -> artist mbid, type, country, begin/end year
+  Deezer / iTunes lookup by ISRC -> official 30 s preview clip URL
   YouTube Music search -> video id per track; YouTube Data API -> view/like counts
+
+Live versions, remixes, demos etc. are skipped; remasters/deluxe duplicates collapse
+into one row per song (see NOT_ORIGINAL / norm_title).
 
 Everything upserts on the platform ids, so re-running refreshes instead of duplicating.
 """
@@ -52,6 +56,22 @@ def upsert(cur, table, key, row):
 def parse_date(s, precision):
     if not s: return None
     return {"year": f"{s}-01-01", "month": f"{s}-01"}.get(precision, s)
+
+# ponytail: title-suffix regex, no audio fingerprinting. Spotify writes versions as
+# "Song - Live" / "Song (Acoustic)", so only the part after " - " or in brackets is checked.
+VERSION_WORDS = re.compile(r"\b(live|remix|remixes|acoustic|unplugged|demo|instrumental|karaoke|"
+                           r"edit|mix|version|sped up|slowed|reprise|rehearsal|session|commentary|"
+                           r"a cappella|acapella|dub|extended|orchestral|mono|stereo)\b", re.I)
+SUFFIX = re.compile(r"\s+-\s+(.*)$|[(\[]([^)\]]*)[)\]]")
+
+def is_original(title):
+    if re.search(r"\blive (at|in|from|on)\b", title, re.I): return False   # "Live at Wembley" albums
+    return not any(VERSION_WORDS.search(part) for m in SUFFIX.finditer(title) for part in m.groups() if part)
+
+def norm_title(t):
+    """'Creep - Remastered 2009' -> 'creep'; used to keep one row per song."""
+    t = re.sub(r"\s+-\s+.*$|\s*[(\[].*$", "", t)
+    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
 
 def year(s):
     m = re.match(r"\d{4}", s or "")
@@ -98,17 +118,19 @@ def seed_artist(cur, sp, mb, name, rank):
     return aid, a["id"]
 
 def seed_albums(cur, sp, aid, spotify_artist_id):
-    """Every album + single, every track. Returns [(track_id, artist, title, spotify_track_id)]."""
+    """Every album + single, original songs only, one row per song. Returns [(track_id, artist, title, isrc)]."""
     out = []
     albums = []
     page = sp.artist_albums(spotify_artist_id, include_groups="album,single", limit=50)
     while page:
         albums += page["items"]
         page = sp.next(page) if page["next"] else None
-    seen = set()
+    seen, seen_titles = set(), set()
+    # albums before singles so the album cut wins the dedupe; oldest first = original release
+    albums.sort(key=lambda a: (a["album_type"] != "album", a["release_date"]))
     for al in albums:
         key = (al["name"].lower(), al["album_type"])
-        if key in seen: continue  # same album re-released per market
+        if key in seen or not is_original(al["name"]): continue  # market re-releases, live albums
         seen.add(key)
         full = sp.album(al["id"])
         album_id = upsert(cur, "albums", "spotify_id", dict(
@@ -122,7 +144,10 @@ def seed_albums(cur, sp, aid, spotify_artist_id):
             page = sp.next(page) if page["next"] else None
         for i in range(0, len(tracks), 50):  # sp.tracks gives popularity + isrc, 50 per call
             for t in sp.tracks([t["id"] for t in tracks[i:i+50]])["tracks"]:
-                if not t: continue
+                if not t or not is_original(t["name"]): continue
+                nt = norm_title(t["name"])
+                if nt in seen_titles: continue   # remaster / deluxe duplicate of a song we have
+                seen_titles.add(nt)
                 tid = upsert(cur, "tracks", "spotify_id", dict(
                     album_id=album_id, title=t["name"], spotify_id=t["id"],
                     isrc=t.get("external_ids", {}).get("isrc"),
@@ -136,8 +161,29 @@ def seed_albums(cur, sp, aid, spotify_artist_id):
                     if r:
                         cur.execute("INSERT INTO track_artists VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                                     (tid, r[0], "main" if j == 0 else "feature"))
-                out.append((tid, t["artists"][0]["name"], t["name"]))
+                out.append((tid, t["artists"][0]["name"], t["name"], t.get("external_ids", {}).get("isrc")))
     return out
+
+def seed_previews(cur, tracks):
+    """30 s official preview clips looked up by ISRC. Deezer first (no key, fast), iTunes fallback."""
+    import requests
+    cur.execute("SELECT id FROM tracks WHERE id = ANY(%s) AND preview_url IS NULL", ([t[0] for t in tracks],))
+    todo = {r[0] for r in cur.fetchall()}
+    for tid, _, _, isrc in tracks:
+        if tid not in todo or not isrc: continue
+        url, src = None, None
+        try:
+            d = requests.get(f"https://api.deezer.com/track/isrc:{isrc}", timeout=15).json()
+            if d.get("preview"): url, src = d["preview"], "deezer"
+            else:
+                it = requests.get("https://itunes.apple.com/lookup", params={"isrc": isrc}, timeout=15).json()
+                if it.get("results") and it["results"][0].get("previewUrl"):
+                    url, src = it["results"][0]["previewUrl"], "itunes"
+        except Exception as e:
+            print(f"  ! preview {isrc}: {e}")
+        if url:
+            cur.execute("UPDATE tracks SET preview_url=%s, preview_source=%s WHERE id=%s", (url, src, tid))
+        time.sleep(0.1)  # deezer: 50 req / 5 s
 
 def seed_youtube(cur, yt, tracks, cap):
     """Video id via YouTube Music search, views via Data API (50 ids / request)."""
@@ -148,7 +194,7 @@ def seed_youtube(cur, yt, tracks, cap):
                 ([t[0] for t in tracks], cap))
     todo = {r[0] for r in cur.fetchall()}
     ids = {}
-    for tid, artist, title in tracks:
+    for tid, artist, title, _ in tracks:
         if tid not in todo: continue
         try:
             hit = yt.search(f"{artist} {title}", filter="songs", limit=1)
@@ -194,6 +240,7 @@ def main():
             if not got: continue
             aid, sid = got
             tracks = seed_albums(cur, sp, aid, sid)
+            seed_previews(cur, tracks)
             if yt: seed_youtube(cur, yt, tracks, args.youtube_cap)
             conn.commit()  # per artist -> resumable with --start
             print(f"    {len(tracks)} tracks in {time.time()-t0:.0f}s")

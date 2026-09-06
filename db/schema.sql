@@ -108,7 +108,9 @@ CREATE TABLE tracks (
     youtube_likes      BIGINT,
     lastfm_listeners   BIGINT,
     lastfm_playcount   BIGINT,
-    audio_path         TEXT,                -- set once yt-dlp has fetched it (relative to AUDIO_DIR)
+    preview_url        TEXT,                -- official 30 s clip (Deezer / iTunes), looked up by ISRC
+    preview_source     TEXT,                -- deezer / itunes
+    audio_path         TEXT,                -- set once the clip is cached locally (relative to AUDIO_DIR)
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX ON tracks(album_id);
@@ -164,8 +166,8 @@ CREATE TABLE questions (
     time_limit_sec    SMALLINT NOT NULL DEFAULT 20,
     -- song questions only
     track_id          BIGINT REFERENCES tracks(id),
-    snippet_start_sec NUMERIC(7,2),
-    snippet_len_sec   NUMERIC(5,2) DEFAULT 10,
+    snippet_start_sec NUMERIC(5,2) CHECK (snippet_start_sec BETWEEN 0 AND 30),  -- offset inside the 30 s preview
+    snippet_len_sec   NUMERIC(5,2) DEFAULT 10 CHECK (snippet_len_sec BETWEEN 1 AND 30),
     UNIQUE (quiz_id, position),
     CHECK (qtype <> 'song' OR (track_id IS NOT NULL AND snippet_start_sec IS NOT NULL))
 );

@@ -32,9 +32,9 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 
 ## Stack
 
-- **Backend** — C++20, [Drogon](https://github.com/drogonframework/drogon), PostgreSQL. JWT auth.
+- **Backend** — C++20, [Drogon](https://github.com/drogonframework/drogon) (pulled in by CMake FetchContent, nothing to install globally), PostgreSQL. JWT auth.
 - **Frontend** — React + Vite + TypeScript.
-- **Music data** — Python seed script pulling from Last.fm (artist ranking), Spotify (catalog, popularity), MusicBrainz (ids, dates, countries), YouTube Music + YouTube Data API (video ids, view counts). Audio files are not stored in the DB; they are fetched with `yt-dlp` when a track is used in a quiz and cached under `data/audio/`.
+- **Music data** — Python seed script pulling from Last.fm (artist ranking), Spotify (catalog, popularity, ISRC), MusicBrainz (ids, dates, countries), Deezer / iTunes (official 30 s preview clips by ISRC), YouTube Music + YouTube Data API (video ids, view counts). Only original studio songs are stored: live versions, remixes, demos and remaster duplicates are skipped. Audio is never in the DB; a track's preview clip is downloaded to `data/audio/` when it is first used in a quiz.
 
 ## Layout
 

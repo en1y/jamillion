@@ -34,19 +34,23 @@ python scripts/seed_music.py --limit 500                  # the real thing, hour
 
 Resumable: `--start 213` continues from rank 213. `--artists "Radiohead" "Björk"` seeds specific names. YouTube lookups are capped at `--youtube-cap` tracks per artist (default 60, most popular first) because the search is one request per track.
 
-Audio is fetched lazily per quiz track:
+Audio: the seed stores an official 30 s preview URL per track (Deezer or iTunes, matched by ISRC). The clip is cached locally the first time a track is used in a quiz:
 
 ```bash
-python scripts/fetch_audio.py 12345      # -> data/audio/12345.m4a
+python scripts/fetch_audio.py 12345      # -> data/audio/12345.mp3
 ```
 
 ## 3. Backend
 
-Needs Drogon. On Arch: `yay -S drogon` (or build from source, see the Drogon README).
+Drogon is declared in `backend/CMakeLists.txt` and fetched into `backend/build/_deps` on first configure, so nothing framework-specific is installed system-wide. System packages needed: `cmake`, `gcc`, `postgresql-libs`, `openssl`, `zlib`, `jsoncpp`, `util-linux-libs` (uuid). On Arch:
+
+```bash
+sudo pacman -S --needed cmake gcc postgresql-libs openssl zlib jsoncpp util-linux-libs
+```
 
 ```bash
 cd backend
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release   # first run clones + builds Drogon, a few minutes
 cmake --build build -j
 ./build/jamillion
 ```

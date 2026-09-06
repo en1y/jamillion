@@ -1,48 +1,70 @@
 # Roadmap
 
-Backend first, frontend second. Each phase ends with something runnable.
+Semantic versioning. Minor bumps = a new capability that works end to end. Patch bumps = fixes and small additions inside a minor. `v1.0.0` = playable by strangers. Each version is a git tag.
 
-## Phase 0 — Foundation (done)
+Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.8).
 
-- [x] Repo, README, docs, `.env.example`
-- [x] Postgres schema (`db/schema.sql`) with first-user-is-admin trigger and star tiers seeded
-- [x] Music seed script (`scripts/seed_music.py`)
-- [x] Drogon skeleton with `/api/health`
-- [x] Vite React skeleton
+## v0.0.x — Foundation
 
-## Phase 1 — Backend: data + auth
+- **v0.0.1** ✅ Repo, README, docs, schema, seed scripts, Drogon + Vite skeletons, `/api/health`.
 
-- [ ] Seed the music DB (top 500 artists, all albums/tracks, Spotify popularity, YouTube views)
-- [ ] `POST /api/auth/register`, `/login` — JWT, first user becomes admin (trigger)
-- [ ] Anonymous players: `jam_player` cookie (uuid) so logged-out users still get scored and can later link to an account
-- [ ] Role middleware (user / moderator / admin)
+## v0.1.0 — Music catalog
 
-## Phase 2 — Backend: quizzes + play
+- Seed top 500 artists from Last.fm chart, all original songs (no live/remix/demo), Spotify popularity, ISRC, 30 s preview URLs (Deezer/iTunes), YouTube video ids + view counts.
+- `GET /api/tracks?q=&artist=&year=&min_popularity=` search for the quiz editor.
+- Patch ideas: MusicBrainz release-date backfill, Last.fm per-track listeners.
 
-- [ ] Moderator: create quiz for a date, add 7 questions (rarest / song), pick track + snippet start/len, seed accepted answers with tiers
-- [ ] `GET /api/quiz/today` — questions without answers; song questions stream the cached snippet
-- [ ] `POST /api/attempt` + `/api/attempt/:id/answer` — 20 s server-side timer, answer normalisation, tier lookup
-- [ ] Rarest-type tiering: tier from answer frequency across all attempts (thresholds in `rarity_tiers`), moderator override wins
-- [ ] Audio fetch job: `yt-dlp` the track on first use, cache under `data/audio/`
-- [ ] Daily rollover at 04:00 UTC, one attempt per player per day
+## v0.2.0 — Auth and players
 
-## Phase 3 — Backend: moderation + admin
+- `POST /api/auth/register`, `POST /api/auth/login` → JWT (jwt-cpp, HS256, `JWT_SECRET`). First user is admin (DB trigger).
+- `jam_player` cookie for anonymous players; login links the player row to the user.
+- Role guard: user / moderator / admin. `GET /api/me`.
 
-- [ ] Moderator: per-question answer list, merge duplicates, change tiers, player detail
-- [ ] Admin: user list, role changes, per-question stats (most guessed answers, height histogram), raw table view
-- [ ] Track search endpoint for the quiz editor (by artist / title / year / popularity)
+## v0.3.0 — Quiz play
 
-## Phase 4 — Frontend
+- Moderator: `POST /api/quizzes` for a date, 7 questions (`rarest` or `song`), track + snippet start/len, accepted answers with tiers.
+- `GET /api/quiz/today` (no answers), `GET /api/audio/:track` streams the cached preview clip.
+- `POST /api/attempts`, `POST /api/attempts/:id/answers` — 20 s server-side timer, answer normalisation, one attempt per player per day.
+- Rarest tiering by answer share (`rarity_tiers.max_share`), moderator override wins.
+- 04:00 UTC rollover.
 
-- [ ] Launch screen, 7-question flow with timer
-- [ ] Solar-system flight: altitude grows with points, landmarks scroll past (Mercury … Neptune … Kuiper belt … heliopause)
-- [ ] Results: tiers per answer, share text
-- [ ] Login / history
-- [ ] Moderator quiz editor with waveform + snippet picker
-- [ ] Admin dashboard
+## v0.4.0 — Moderation
 
-## Later / maybe
+- Per-question answer list: mark correct/incorrect, merge duplicates, set tier.
+- Player detail: attempts, answers, heights.
+- Quiz preview / unpublish.
 
-- Supabase migration (schema is plain Postgres, so mostly connection string + auth swap)
-- Answer alias table / fuzzy matching
-- Unlimited / archive mode
+## v0.5.0 — Admin
+
+- Users: list, change role, delete.
+- Per-question stats: most guessed answers, height histogram (`quiz_heights` view).
+- Raw table view (read-only SQL over an allowlist of tables).
+- Edit `rarity_tiers` (names, points, shares).
+
+## v0.6.0 — Frontend: play
+
+- Launch screen, 7-question flow, timer, audio player for song questions.
+- Solar-system flight: altitude = points × 0.1714 AU, landmarks scroll past (Mercury … Neptune, Kuiper belt, Voyager 1, heliopause).
+- Results screen with tiers and share text.
+
+## v0.7.0 — Frontend: accounts and moderator
+
+- Login / register / history.
+- Quiz editor: track search, waveform + snippet picker, answer/tier table.
+
+## v0.8.0 — Frontend: admin
+
+- Users, stats, tier editor, table view.
+
+## v0.9.0 — Hardening
+
+- Rate limits, input limits, CORS, HTTPS config, backups.
+- Docker compose for db + backend + frontend.
+
+## v1.0.0 — Public
+
+## Later
+
+- Supabase migration (schema is plain Postgres; swap connection string + auth).
+- Answer aliases / fuzzy matching.
+- Archive and unlimited modes.

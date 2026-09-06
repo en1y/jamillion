@@ -16,3 +16,7 @@ frontend/dist/
 # python
 __pycache__/
 .venv/
+
+# ide
+.idea/
+.vscode/
