@@ -122,13 +122,20 @@ def top_artists(limit):
     return names[:limit]
 
 def seed_artist(cur, sp, mb, name, rank):
-    hits = deezer("search/artist", q=name, limit=5).get("data") or []
-    d = next((h for h in hits if h["name"].lower() == name.lower()), hits[0] if hits else None)
+    hits = deezer("search/artist", q=name, limit=10).get("data") or []
+    # tribute and cover acts share the exact name, so among exact matches take the
+    # one with the most fans; that is the real artist by a wide margin
+    exact = [h for h in hits if h["name"].lower() == name.lower()]
+    d = max(exact or hits, key=lambda h: h.get("nb_fan") or 0, default=None)
     if not d:
         print(f"  ! not on deezer: {name}"); return None
 
     row = dict(name=d["name"], deezer_id=d["id"], deezer_fans=d.get("nb_fan"),
-               global_rank=rank, image_url=d.get("picture_xl"))
+               image_url=d.get("picture_xl"))
+    # rank comes from the chart position; --artists runs have no chart, so leave
+    # whatever rank the artist already had rather than overwriting it with 1, 2, 3...
+    if rank is not None:
+        row["global_rank"] = rank
 
     st = lastfm("artist.getinfo", artist=d["name"]).get("artist", {}).get("stats", {})
     if st:
@@ -285,14 +292,15 @@ def main():
         yt = YTMusic()
 
     names = args.artists or top_artists(args.limit)
-    print(f"seeding {len(names)} artists from rank {args.start}", flush=True)
+    ranked = not args.artists      # only a chart run knows the global ranking
+    print(f"seeding {len(names)} artists" + (f" from rank {args.start}" if ranked else " (rank left unchanged)"), flush=True)
 
     with psycopg.connect(DB) as conn, conn.cursor() as cur:
         for rank, name in enumerate(names, 1):
             if rank < args.start: continue
             t0 = time.time()
             try:
-                got = seed_artist(cur, sp, mb, name, rank)
+                got = seed_artist(cur, sp, mb, name, rank if ranked else None)
                 if not got:
                     conn.commit(); continue
                 aid, dzid = got
