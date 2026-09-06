@@ -1,0 +1,7 @@
+spotipy>=2.24
+ytmusicapi>=1.8
+musicbrainzngs>=0.7
+psycopg[binary]>=3.2
+python-dotenv>=1.0
+requests>=2.32
+yt-dlp
