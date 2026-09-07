@@ -26,3 +26,6 @@ __pycache__/
 supabase/.temp/
 supabase/.branches/
 /AGENTS.md
+
+# Local auth signing material
+supabase/signing_keys.json
