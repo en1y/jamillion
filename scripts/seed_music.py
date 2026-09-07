@@ -184,8 +184,10 @@ def seed_albums(cur, aid, deezer_artist_id, detail_cap):
     """Deezer albums + embedded tracklists. -> [(track_id, artist, title, deezer_track_id)]"""
     out, seen, seen_titles = [], set(), set()
     albums = artist_albums(deezer_artist_id)
-    # studio albums before singles, oldest first, so the original release wins the dedupe
-    albums.sort(key=lambda a: (a.get("record_type") != "album", a.get("release_date") or ""))
+    # studio albums before singles, oldest first, plain title before "(Bonus Edition)" /
+    # "Meteora: ..." variants of the same day, so the original release wins the dedupe
+    albums.sort(key=lambda a: (a.get("record_type") != "album", a.get("release_date") or "",
+                               bool(SUFFIX.search(a["title"])) or ":" in a["title"]))
     for al in albums:
         key = al["title"].lower()
         if key in seen or not is_original(al["title"]): continue
@@ -232,6 +234,10 @@ def seed_albums(cur, aid, deezer_artist_id, detail_cap):
                         "release_date=coalesce(%s, release_date) WHERE id=%s",
                         (d.get("isrc"), d.get("bpm") or None, d.get("gain"), d.get("disk_number"),
                          date_or_none(d.get("release_date")), tid))
+    # live sets, a cappella and anniversary editions survive the title filter but
+    # contribute no tracks once dedupe has run; drop the empty shells
+    cur.execute("DELETE FROM albums WHERE artist_id=%s AND NOT EXISTS "
+                "(SELECT 1 FROM tracks WHERE album_id=albums.id)", (aid,))
     return out
 
 def pick(cur, tracks, column, cap):
