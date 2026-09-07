@@ -80,7 +80,7 @@ It commits one artist per transaction, so it is resumable and safe to interrupt:
 
 Caps apply to the most popular tracks first. Every other track still gets title, album, release date, duration, rank and a preview clip.
 
-Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. Occasional `! ytmusic ...` lines are YouTube Music throttling; the seeder backs off and skips YouTube for that artist after 20 refusals. Everything else still gets stored.
+Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. If YouTube Music starts refusing requests, the seeder says so once and skips YouTube for the rest of the run; everything else still gets stored. Re-running the same command later fills in the missing video ids: every write is an upsert or a fill-where-null, so a re-run only fetches what is missing.
 
 Audio: the seed stores a preview URL per track. Deezer's links expire after about a day, so the downloader re-resolves a fresh one from the stored Deezer id. The clip is cached locally the first time a track is used in a quiz:
 

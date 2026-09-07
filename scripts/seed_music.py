@@ -247,18 +247,22 @@ def pick(cur, tracks, column, cap):
     keep = {r[0] for r in cur.fetchall()}
     return [t for t in tracks if t[0] in keep]
 
+YT_THROTTLED = False   # once YouTube Music starts refusing, skip it for the rest of the run
+
 def seed_youtube(cur, yt, tracks, cap):
+    global YT_THROTTLED
     ids, misses = {}, 0
     for tid, artist, title, _ in pick(cur, tracks, "youtube_video_id", cap):
+        if YT_THROTTLED: break
         try:
             hit = yt.search(f"{artist} {title}", filter="songs", limit=1)
             if hit: ids[tid] = hit[0]["videoId"]
-        except Exception as e:
+        except Exception:      # ytmusicapi raises a JSON decode error on the throttle HTML page
             misses += 1
-            if misses in (1, 10):      # say it once, then once more if it keeps up
-                print(f"  ! ytmusic {title}: {e}")
-            if misses > 20:            # clearly throttled; give up on this artist
-                print("\n  ! ytmusic throttling, skipping youtube for this artist")
+            if misses > 20:
+                YT_THROTTLED = True
+                print("  ! YouTube Music is throttling; skipping YouTube for the rest of this run. "
+                      "Re-run later to fill in the missing video ids.", flush=True)
                 break
             time.sleep(min(2 * misses, 10))
     for tid, vid in ids.items():
