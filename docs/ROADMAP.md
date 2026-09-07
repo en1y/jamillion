@@ -45,9 +45,18 @@ Decisions worth carrying forward:
 
 ## v0.4.0 — Moderation
 
-- Per-question answer list: mark correct/incorrect, merge duplicates, set tier.
-- Player detail: attempts, answers, heights.
-- Quiz preview / unpublish.
+Implemented and locally verified; release tag pending.
+
+- [x] Per-question answer list: mark correct/incorrect, merge duplicates, set tier. `GET /api/quizzes/{date}`, `PATCH /api/answers/{id}`, `POST /api/answers/{id}/merge`.
+- [x] Player detail: attempts, answers, heights. `GET /api/players/{id}`.
+- [x] Quiz preview / unpublish. `PATCH /api/quizzes/{date}`.
+
+Decisions worth carrying forward:
+
+- **Re-scoring is scoped to the reviewed answer.** Approving a guess, overriding its tier or merging a duplicate moves only the players who gave that answer. Everyone else keeps the tier they were shown, which is what v0.3.0 promised by freezing points at answer time. Re-scoring a whole question would rewrite scores players had already seen.
+- **The re-score lives in the database**, next to `submit_answer`: `review_answer()` and `merge_answer()` both call `rescore_answer()`, so the verdict, the stored answers and the attempt totals move as one unit. Like the scorer, all three are revoked from `anon` and `authenticated` so PostgREST cannot publish them as RPC.
+- **Moderators hear any quiz.** `/api/audio/{question}` drops its published-and-not-in-the-future conditions for a moderator token, because previewing tomorrow's song question needs the clip before anyone may play it.
+- **Drogon's PostgreSQL driver reports every failure as a plain `orm::Failure`**, with no SQLSTATE and none of the typed subclasses in `orm/Exception.h` (only the SQLite driver raises those). Bad input is therefore checked before it reaches a query: the date shape, the uuid shape, and `tier_id` in the same round trip that reads the answer. `isUniqueViolation()` in `quiz.cc` never matches for the same reason, which is why re-POSTing a quiz that already has attempts answered 400 with a raw Postgres message instead of the documented 409 until v0.4.0 asked the database directly instead. Its one remaining use, in the double-answer path, is a fallback behind a position check that already returns 409.
 
 ## v0.5.0 — Admin
 

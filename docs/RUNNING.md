@@ -171,12 +171,15 @@ cmake --build backend/build -j 4
 ctest --test-dir backend/build --output-on-failure
 .venv/bin/python backend/tests/auth_integration.py
 .venv/bin/python backend/tests/quiz_play.py
+.venv/bin/python backend/tests/moderation.py
 cd frontend
 npm run build
 npm run lint
 ```
 
-Both scripts share their fixtures through `backend/tests/common.py`. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer.
+All three scripts share their fixtures through `backend/tests/common.py`. Run them from the repository root, so a relative `AUDIO_DIR` resolves the same way it does for the backend. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer.
+
+`moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST.
 
 The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `TEST_API_URL` for another backend port, refuses non-local services, and creates/deletes only its own test accounts and player rows. It checks real signup/login, concurrent first-admin creation, guest persistence/linking, concurrent account isolation, role changes, malformed/expired/forged tokens, deleted profiles, and answer-key RLS. On an empty auth database it also verifies the first-signup admin rule. Local email confirmation must be disabled for these tests.
 
@@ -226,3 +229,73 @@ curl -b /tmp/jam.cookies -X POST localhost:8080/api/attempts/1/answers \
 Rarity is read as the answer lands: an accepted answer given by a share of players at or below a tier's `max_share` takes the rarest tier that fits, and the points are then frozen. The first player to give a correct answer therefore scores Nebula, exactly as in Krillion. A guess nobody has approved is still stored, with `is_correct` null, waiting for the v0.4 moderator review.
 
 **Audio.** `GET /api/audio/{question_id}` streams the cached clip for a song question, and takes a question id rather than a track id on purpose: `tracks` is readable with the anon key, so publishing a track id would give the answer away. It serves the whole 30 s preview and the client plays the `snippet_start_sec` window. It answers 404 for anything that is not a published song question from today or earlier.
+
+## 9. Moderation
+
+Everything here needs a moderator or admin access token. Anonymous requests get 401, plain users 403.
+
+**Preview a day.** `GET /api/quizzes/{date}` is the whole quiz as a moderator sees it: prompts, the track behind each song question, and every answer with its verdict, its guess count and any tier override. This is the one place a track id appears in a response; the player routes still never carry one.
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/quizzes/2026-09-08
+```
+
+```json
+{"id": 36, "quiz_date": "2026-09-08", "published": true, "created_by": "69a3374b-…",
+ "attempts_started": 3, "attempts_finished": 0,
+ "questions": [{"id": 220, "position": 1, "qtype": "rarest", "prompt": "Name a Radiohead album",
+   "time_limit_sec": 20, "track": null, "audio": null,
+   "snippet_start_sec": null, "snippet_len_sec": null,
+   "answers": [{"id": 408, "display": "The Bends", "normalized": "the bends",
+                "is_correct": null, "tier_id": null, "guess_count": 2}]}]}
+```
+
+`is_correct` is `null` for a guess nobody has ruled on yet, which is exactly the review queue. A malformed date is 400, an unused one 404.
+
+**Publish or unpublish.** Question edits still go through re-POSTing an unplayed quiz; this route only flips the switch.
+
+```bash
+curl -X PATCH localhost:8080/api/quizzes/2026-09-08 -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"published": false}'
+```
+
+**Rule on an answer.** `is_correct` takes `true`, `false` or `null` (back to awaiting review), and `tier_id` sets or clears the override that beats the computed share. A key left out of the body keeps its current value, so `{"tier_id": 4}` alone does not disturb the verdict.
+
+```bash
+curl -X PATCH localhost:8080/api/answers/408 -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"is_correct": true}'
+```
+
+```json
+{"id": 408, "question_id": 220, "display": "The Bends", "normalized": "the bends",
+ "is_correct": true, "tier_id": null, "guess_count": 2, "rescored": 2}
+```
+
+`rescored` counts the stored answers whose points moved. **Only the players who gave this very answer are re-scored.** Everyone else keeps the tier they were shown when they played, which is what v0.3.0 promised by freezing points at answer time. The share used for the recount is this answer's guess count over every answer stored for that question, so approving a guess late in the day scores it against the whole field rather than against the handful of players who were quickest.
+
+**Merge duplicates.** The target keeps its display, verdict and tier; the source's guesses and the players who gave it move across, and those players are re-scored against the merged count.
+
+```bash
+curl -X POST localhost:8080/api/answers/420/merge -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"into": 408}'
+```
+
+Answers that differ only in case, punctuation or accents never become separate rows in the first place: `normalize_answer()` collapses them as they land, so `The Bends!` is already counted as `the bends`. Merging is for the spellings normalisation cannot see, like `The Bends album`. Both ids must belong to the same question, or the answer is 400.
+
+**Player detail.** `GET /api/players/{id}` reports every flight of that player with its height, and each answer with the accepted answer it matched. A signed-in player has one row per browser, so a linked row reports the whole account rather than the one browser.
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/players/98561bb1-7fcf-450b-a03a-f45cc7eb0550
+```
+
+```json
+{"id": "98561bb1-…", "user_id": null, "username": null, "role": null, "created_at": "…",
+ "attempts": [{"id": 136, "player_id": "98561bb1-…", "quiz_date": "2026-09-08",
+   "total_points": 10, "height_au": 1.71, "started_at": "…", "finished_at": null,
+   "answers": [{"position": 1, "raw_text": "The Bends album", "matched": "The Bends",
+                "is_correct": true, "tier": "Nebula", "points": 10, "answered_at": "…"}]}]}
+```
+
+An empty `raw_text` is a skip or a timeout; the schema does not tell the two apart. `height_au` is `total_points × 0.1714`.
+
+**Audio while previewing.** `GET /api/audio/{question_id}` normally serves only published quizzes dated today or earlier. A moderator's token lifts both conditions, so tomorrow's song question can be checked before anyone can play it. Without a token the route behaves exactly as it does for players.
