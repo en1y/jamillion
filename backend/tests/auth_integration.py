@@ -4,83 +4,14 @@ Load .env, run the backend, then:
   .venv/bin/python backend/tests/auth_integration.py
 Requires the existing scripts/requirements.txt environment (psycopg).
 """
-import base64
 import concurrent.futures
-import hashlib
-import hmac
-import json
 import os
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 import uuid
-from http.cookies import SimpleCookie
 
 import psycopg
 
-BASE = os.environ.get('TEST_API_URL', 'http://127.0.0.1:8080')
-AUTH = os.environ['SUPABASE_URL'].rstrip('/')
-for url in (BASE, AUTH, os.environ['DATABASE_URL']):
-    if urllib.parse.urlparse(url).hostname not in ('localhost', '127.0.0.1', '::1'):
-        raise RuntimeError('This test only runs against local services')
-ANON = os.environ['SUPABASE_ANON_KEY']
-SERVICE = os.environ['SUPABASE_SERVICE_ROLE_KEY']
-SECRET = os.environ['SUPABASE_JWT_SECRET']
-players, users = set(), []
-
-
-def request(url, data=None, headers=None, method=None):
-    req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
-                                 headers={'Content-Type': 'application/json', **(headers or {})}, method=method)
-    try:
-        response = urllib.request.urlopen(req, timeout=10)
-    except urllib.error.HTTPError as failure:
-        response = failure
-    raw = response.read()
-    return response.status, json.loads(raw) if raw else None, response.headers
-
-
-def me(token=None, cookie=None, expected=200):
-    headers = {}
-    if token is not None:
-        headers['Authorization'] = 'Bearer ' + token
-    if cookie:
-        headers['Cookie'] = 'jam_player=' + cookie
-    status, body, response_headers = request(BASE + '/api/me', headers=headers)
-    assert status == expected, (status, body)
-    assert response_headers['Cache-Control'] == 'no-store'
-    if expected != 200:
-        assert not response_headers.get('Set-Cookie')
-        return
-    players.add(body['player_id'])
-    jar = SimpleCookie(response_headers['Set-Cookie'])
-    assert jar['jam_player']['httponly'] and jar['jam_player']['samesite'] == 'Lax'
-    assert jar['jam_player']['path'] == '/' and int(jar['jam_player']['max-age']) > 0
-    return body, jar['jam_player'].value
-
-
-def signed(claims, secret=SECRET, algorithm='HS256'):
-    def encode(value):
-        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b'=')
-    data = encode({'alg': algorithm, 'typ': 'JWT'}) + b'.' + encode(claims)
-    signature = hmac.new(secret.encode(), data, hashlib.sha256).digest()
-    return (data + b'.' + base64.urlsafe_b64encode(signature).rstrip(b'=')).decode()
-
-
-def signup(name):
-    email = f'jam-test-{uuid.uuid4()}@example.com'
-    password = 'Local-test-' + str(uuid.uuid4())
-    status, body, _ = request(AUTH + '/auth/v1/signup',
-                              {'email': email, 'password': password, 'data': {'username': name, 'role': 'admin'}},
-                              {'apikey': ANON})
-    assert status == 200, (status, body)
-    users.append(body['user']['id'])
-    assert body.get('access_token'), 'Local email confirmations must be disabled for this test'
-    status, login, _ = request(AUTH + '/auth/v1/token?grant_type=password',
-                               {'email': email, 'password': password}, {'apikey': ANON})
-    assert status == 200 and login.get('access_token')
-    return body['user']['id'], login['access_token']
+from common import ANON, AUTH, BASE, SECRET, SERVICE, cleanup, me, request, signed, signup, users
 
 
 with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
@@ -144,10 +75,4 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         users.remove(uid)
         print('PASS: signup/login, concurrent bootstrap, guest persistence/linking, account isolation, roles, JWT rejection, RLS')
     finally:
-        if players:
-            db.execute('DELETE FROM players WHERE id = ANY(%s::uuid[])', (list(players),))
-        for uid in users:
-            status, _, _ = request(AUTH + '/auth/v1/admin/users/' + uid,
-                                   headers={'apikey': SERVICE, 'Authorization': 'Bearer ' + SERVICE}, method='DELETE')
-            if status != 200:
-                raise RuntimeError('Could not clean up a test account')
+        cleanup(db)
