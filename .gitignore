@@ -25,3 +25,4 @@ __pycache__/
 # supabase local
 supabase/.temp/
 supabase/.branches/
+/AGENTS.md
