@@ -155,7 +155,7 @@ curl -b /tmp/jam.cookies -c /tmp/jam.cookies \
 
 `GET /api/me` returns `player_id`, `authenticated`, `role`, and `profile` (null for guests; otherwise `{id, username, role}`). Responses are `Cache-Control: no-store`. A supplied invalid token returns 401, never a guest fallback. Verification requires HS256, the configured issuer, `authenticated` audience and token role, an unexpired `exp`, and a UUID subject with an existing profile. App permissions come from `profiles`, so promotion/demotion takes effect on the next request. The default issuer is `SUPABASE_URL/auth/v1`; `SUPABASE_JWT_ISSUER` overrides it when the public address differs from the token issuer.
 
-The signed `jam_player` cookie lasts a year, is HttpOnly, SameSite=Lax, and scoped to `/`. Set `COOKIE_SECURE=true` when serving over HTTPS. A valid guest row is linked atomically on sign-in, preserving its existing attempts. Linked cookies grant no account access without a token: sign-out or switching accounts creates a fresh player row. Multiple browser player rows can belong to one profile; history can be collected through `players.user_id`. Daily attempt deduplication across these rows belongs to v0.3.0.
+The signed `jam_player` cookie lasts a year, is HttpOnly, SameSite=Lax, and scoped to `/`. Set `COOKIE_SECURE=true` when serving over HTTPS. A valid guest row is linked atomically on sign-in, preserving its existing attempts. Linked cookies grant no account access without a token: sign-out or switching accounts creates a fresh player row. Multiple browser player rows can belong to one profile; history can be collected through `players.user_id`. Since v0.3.0 the daily attempt is deduplicated across those rows, so a signed-in player gets one flight a day whichever browser they use.
 
 Backend routes attach `auth::Optional` first, followed by `auth::User`, `auth::Moderator`, or `auth::Admin` as needed. User requires sign-in, Moderator admits moderators/admins, and Admin admits only admins. Anonymous access to guarded routes returns 401; insufficient roles return 403. `/api/me` admits guests; `/api/tracks` requires Moderator. `/api/health` stays public.
 
@@ -170,9 +170,59 @@ cmake -S backend -B backend/build -DJAMILLION_BUILD_TESTS=ON
 cmake --build backend/build -j 4
 ctest --test-dir backend/build --output-on-failure
 .venv/bin/python backend/tests/auth_integration.py
+.venv/bin/python backend/tests/quiz_play.py
 cd frontend
 npm run build
 npm run lint
 ```
 
+Both scripts share their fixtures through `backend/tests/common.py`. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer.
+
 The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `TEST_API_URL` for another backend port, refuses non-local services, and creates/deletes only its own test accounts and player rows. It checks real signup/login, concurrent first-admin creation, guest persistence/linking, concurrent account isolation, role changes, malformed/expired/forged tokens, deleted profiles, and answer-key RLS. On an empty auth database it also verifies the first-signup admin rule. Local email confirmation must be disabled for these tests.
+
+## 8. Quiz play
+
+The game day rolls over at **04:00 UTC**, not midnight: `game_today()` in the database is the one definition of "today", used by every route here.
+
+**Publish a day's quiz.** Moderator or admin only. Exactly seven questions, positions 1 to 7, each with at least one accepted answer. `tier_id` on an answer is a moderator override that beats the computed rarity; leave it out to let the share decide. `published` defaults to true.
+
+```bash
+curl -X POST localhost:8080/api/quizzes -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+  "quiz_date": "2026-09-08",
+  "questions": [
+    {"position": 1, "qtype": "rarest", "prompt": "Name a Radiohead album",
+     "answers": [{"display": "OK Computer"}, {"display": "Kid A"}]},
+    {"position": 2, "qtype": "song", "prompt": "Artist and title?", "track_id": 123,
+     "snippet_start_sec": 12, "snippet_len_sec": 10,
+     "answers": [{"display": "Radiohead Creep", "tier_id": 6}, {"display": "Radiohead", "tier_id": 2}]}
+  ]}'
+```
+
+Find `track_id` with `/api/tracks` (section 3). Saving a song question downloads its clip first, by running `scripts/fetch_audio.py` through `.venv/bin/python` if that exists and `python3` otherwise; a track with no reachable preview fails the whole save with 422 rather than storing an unplayable quiz. Re-posting the same date replaces a quiz nobody has played yet, and returns 409 once it has attempts.
+
+**Play.** Every route below needs the `jam_player` cookie from `GET /api/me`, so fetch that first (section 6).
+
+```bash
+curl -c /tmp/jam.cookies localhost:8080/api/me
+curl -b /tmp/jam.cookies localhost:8080/api/quiz/today
+curl -b /tmp/jam.cookies -X POST localhost:8080/api/attempts
+curl -b /tmp/jam.cookies -X POST localhost:8080/api/attempts/1/answers \
+  -H 'Content-Type: application/json' -d '{"question_id": 40, "text": "kid a"}'
+```
+
+`GET /api/quiz/today` is metadata only: the date, how many questions, how many players have finished, the tier legend, and your own attempt if you have one. It never carries a prompt or an answer.
+
+`POST /api/attempts` starts or resumes the day's flight and hands back the current question. Questions arrive one at a time, and the timer starts when the question is served, so `started_at` and `deadline` come with it. Repeating the call returns the same question with the same `started_at`: a refresh buys no extra time. One attempt per player per day, and for a signed-in player one attempt per account, however many browsers they use.
+
+`POST /api/attempts/{id}/answers` accepts only the current question. An answer arriving more than three seconds past the limit is stored as a timeout: no points, and it does not count towards anyone's rarity. Empty text is a deliberate skip and works the same way. Answering twice returns 409. The response carries the result and the next question, or `null` once the seventh is done.
+
+```json
+{"result": {"timed_out": false, "correct": true, "tier": "Main Sequence", "points": 30},
+ "id": 9, "quiz_id": 5, "total_points": 30, "answered": 1, "finished": false,
+ "question": {"id": 41, "position": 2, "...": "..."}}
+```
+
+Rarity is read as the answer lands: an accepted answer given by a share of players at or below a tier's `max_share` takes the rarest tier that fits, and the points are then frozen. The first player to give a correct answer therefore scores Nebula, exactly as in Krillion. A guess nobody has approved is still stored, with `is_correct` null, waiting for the v0.4 moderator review.
+
+**Audio.** `GET /api/audio/{question_id}` streams the cached clip for a song question, and takes a question id rather than a track id on purpose: `tracks` is readable with the anon key, so publishing a track id would give the answer away. It serves the whole 30 s preview and the client plays the `snippet_start_sec` window. It answers 404 for anything that is not a published song question from today or earlier.

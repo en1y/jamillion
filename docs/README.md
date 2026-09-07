@@ -2,7 +2,7 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
 
-**Current: v0.2.0 — Auth and players.** Guest passports, Supabase signup/sign-in, profile linking, and backend role guards are implemented. Daily quiz play is next.
+**Current: v0.3.0 — Quiz play.** A moderator can publish the day's seven questions, and players fly them one question at a time against a server-side timer, scored by how rare their answer is. Moderation tools are next.
 
 ## The game
 

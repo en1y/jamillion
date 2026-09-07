@@ -28,11 +28,20 @@ Implemented and locally verified; release tag pending.
 
 ## v0.3.0 — Quiz play
 
-- Moderator: `POST /api/quizzes` for a date, 7 questions (`rarest` or `song`), track + snippet start/len, accepted answers with tiers.
-- `GET /api/quiz/today` (no answers), `GET /api/audio/:track` streams the cached preview clip.
-- `POST /api/attempts`, `POST /api/attempts/:id/answers` — 20 s server-side timer, answer normalisation, one attempt per player per day.
-- Rarest tiering by answer share (`rarity_tiers.max_share`), moderator override wins.
-- 04:00 UTC rollover.
+Implemented and locally verified; release tag pending.
+
+- [x] Moderator: `POST /api/quizzes` for a date, 7 questions (`rarest` or `song`), track + snippet start/len, accepted answers with tiers. Saving caches every clip first, so an unplayable quiz is never stored.
+- [x] `GET /api/quiz/today` (no answers), `GET /api/audio/:question` streams the cached preview clip.
+- [x] `POST /api/attempts`, `POST /api/attempts/:id/answers` — 20 s server-side timer, answer normalisation, one attempt per player per day.
+- [x] Rarest tiering by answer share (`rarity_tiers.max_share`), moderator override wins.
+- [x] 04:00 UTC rollover, as `game_today()` in the database.
+
+Decisions worth carrying forward:
+
+- **Audio is keyed by question, not track.** `tracks` is world readable through the anon key, so a track id in a question payload would give the song away. `/api/audio/:question` is the only handle a player gets.
+- **Questions are served one at a time.** `/api/quiz/today` carries no prompts; each question's timer starts when the attempt hands it over, so nobody reads all seven before playing.
+- **Both hold at the database too.** `questions` has no player read policy: the first migration's `read_published` let the anon key pull every prompt and `track_id` for a published quiz straight from PostgREST, bypassing the two rules above. Players only ever see questions through the backend; moderators keep `mod_write`.
+- **Points are frozen at answer time.** The rarity share is read as the answer lands. v0.4 reviews answers and may re-score.
 
 ## v0.4.0 — Moderation
 
