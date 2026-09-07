@@ -213,6 +213,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert attempt_a['id'] == attempt_b['id'], (attempt_a['id'], attempt_b['id'])
         assert (status_a, status_b) == (201, 200)
 
+        # -------------------------------------------------- a played quiz stands
+        assert api('/api/quizzes', build_quiz(track_id), token=TOKEN)[0] == 409
+
         # -------------------------------------------------- the answer key stays shut
         # Moderators are allowed to read it, so check as a player: anon, and signed in.
         db.execute("UPDATE profiles SET role = 'user' WHERE id = %s", (uid,))

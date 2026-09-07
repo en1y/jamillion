@@ -200,6 +200,11 @@ Task<HttpResponsePtr> createQuiz(HttpRequestPtr req) {
         co_await db->execSqlCoro(
             "DELETE FROM quizzes WHERE quiz_date = $1::date "
             "AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.quiz_id = quizzes.id)", date);
+        // A row still standing is one the DELETE spared because it has been played.
+        // The UNIQUE on quiz_date would catch it next, but a plain orm::Failure cannot
+        // be told apart from the database being down, so it is asked for directly.
+        if (!(co_await db->execSqlCoro("SELECT 1 FROM quizzes WHERE quiz_date = $1::date", date)).empty())
+            co_return auth::error(k409Conflict, "That day's quiz already has attempts");
         const auto rows = co_await db->execSqlCoro(
             "WITH qz AS ("
             "  INSERT INTO quizzes (quiz_date, published, created_by) "
@@ -225,7 +230,6 @@ Task<HttpResponsePtr> createQuiz(HttpRequestPtr req) {
         out["quiz_date"] = date;
         co_return json(out, k201Created);
     } catch (const orm::DrogonDbException &e) {
-        if (isUniqueViolation(e)) co_return auth::error(k409Conflict, "That day's quiz already has attempts");
         Json::Value error;  // moderator-only route, so the database's own words help
         error["error"] = e.base().what();
         co_return json(error, k400BadRequest);
