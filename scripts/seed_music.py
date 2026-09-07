@@ -112,14 +112,22 @@ def norm_title(t):
 # ---------------------------------------------------------------- steps
 
 def top_artists(limit):
-    names, page = [], 1
-    while len(names) < limit:
+    """The 500 biggest artists, largest first.
+
+    chart.getTopArtists is Last.fm's *trending* chart, ordered by recent listening,
+    not by size: it puts Ariana Grande (4.7 M listeners) above Radiohead (8.4 M).
+    So take the chart as the candidate set and re-sort it by listener count, which
+    is what "top 500" should mean and what global_rank now stores.
+    """
+    rows, page = [], 1
+    while len(rows) < limit:
         r = lastfm("chart.gettopartists", limit=100, page=page)
-        batch = [a["name"] for a in r.get("artists", {}).get("artist", [])]
+        batch = r.get("artists", {}).get("artist", [])
         if not batch: break
-        names += batch
+        rows += [(a["name"], int(a.get("listeners") or 0)) for a in batch]
         page += 1
-    return names[:limit]
+    rows.sort(key=lambda nl: -nl[1])
+    return [name for name, _ in rows[:limit]]
 
 def seed_artist(cur, sp, mb, name, rank):
     hits = deezer("search/artist", q=name, limit=10).get("data") or []
