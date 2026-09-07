@@ -1,6 +1,8 @@
 #include <drogon/drogon.h>
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include "auth.h"
 
 using namespace drogon;
@@ -11,8 +13,26 @@ static std::string env(const char *k, const char *def = "")
     return v ? v : def;
 }
 
+// ponytail: same as python-dotenv's load_dotenv(): nearest .env up from cwd, exported vars win.
+// KEY=value lines only, no quotes or expansion; IDE run configs don't refresh env, this does.
+static void loadDotenv()
+{
+    for (auto dir = std::filesystem::current_path(); ; dir = dir.parent_path()) {
+        if (std::ifstream in(dir / ".env"); in) {
+            for (std::string line; std::getline(in, line);) {
+                const auto eq = line.find('=');
+                if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+                setenv(line.substr(0, eq).c_str(), line.substr(eq + 1).c_str(), 0);
+            }
+            return;
+        }
+        if (dir == dir.parent_path()) return;
+    }
+}
+
 int main()
 {
+    loadDotenv();
     try { auth::configure(); }
     catch (const std::exception &e) { LOG_ERROR << e.what(); return 1; }
     auth::registerRoutes();
