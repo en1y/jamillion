@@ -172,6 +172,7 @@ ctest --test-dir backend/build --output-on-failure
 .venv/bin/python backend/tests/auth_integration.py
 .venv/bin/python backend/tests/quiz_play.py
 .venv/bin/python backend/tests/moderation.py
+.venv/bin/python backend/tests/admin.py
 cd frontend
 npm run build
 npm run lint
@@ -180,6 +181,8 @@ npm run lint
 All three scripts share their fixtures through `backend/tests/common.py`. Run them from the repository root, so a relative `AUDIO_DIR` resolves the same way it does for the backend. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer.
 
 `moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST.
+
+`admin.py` does not own the game day, so it runs in any order. It builds its own quiz 400 days out and writes finished attempts straight to the tables instead of playing them through the timer, because the timer is already `quiz_play.py`'s job. It covers the user listing and its filters, a role change taking effect on the next request, the last admin surviving both demotion and deletion, per-question stats with the height histogram, the allowlisted table dump refusing everything else, tier edits leaving already-awarded points alone, and an account deletion that keeps the flights and releases the quiz it created. It briefly demotes any other admin so it can test the last-admin rule, and restores them in its `finally` block.
 
 The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `TEST_API_URL` for another backend port, refuses non-local services, and creates/deletes only its own test accounts and player rows. It checks real signup/login, concurrent first-admin creation, guest persistence/linking, concurrent account isolation, role changes, malformed/expired/forged tokens, deleted profiles, and answer-key RLS. On an empty auth database it also verifies the first-signup admin rule. Local email confirmation must be disabled for these tests.
 
@@ -299,3 +302,84 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/players/98561bb
 An empty `raw_text` is a skip or a timeout; the schema does not tell the two apart. `height_au` is `total_points × 0.1714`.
 
 **Audio while previewing.** `GET /api/audio/{question_id}` normally serves only published quizzes dated today or earlier. A moderator's token lifts both conditions, so tomorrow's song question can be checked before anyone can play it. Without a token the route behaves exactly as it does for players.
+
+## 10. Admin
+
+Everything here needs an **admin** access token. Anonymous requests get 401, plain users and moderators get 403. The first account ever created is the admin (section 5).
+
+**Users.** All filters are optional: `q` is a case-insensitive substring of the username or the email, `role` is one of `user`, `moderator`, `admin`, `limit` defaults to 50 and caps at 200, `offset` pages.
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/users?q=ana&role=moderator&limit=20'
+```
+
+```json
+[{"id": "69a3374b-…", "username": "ana", "email": "ana@example.com", "role": "moderator",
+  "created_at": "2026-09-07 20:11:03.4+00", "browsers": 2, "attempts": 5}]
+```
+
+`browsers` is how many player rows the account has, `attempts` how many flights across all of them.
+
+**Change a role.** Takes effect on the account's next request, because permissions are read from `profiles` every time.
+
+```bash
+curl -X PATCH localhost:8080/api/users/69a3374b-… -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"role": "moderator"}'
+```
+
+**Delete a user.** The account goes, the flights stay.
+
+```bash
+curl -X DELETE localhost:8080/api/users/69a3374b-… -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+The row is removed from `auth.users`, which cascades to `profiles` and to Supabase's own sessions and identities, so the account cannot sign in again and any access token it still holds is rejected on the next request. What survives: the player rows lose their `user_id` and keep their attempts and answers, so nobody else's rarity share moves, and any quiz the account created keeps its questions and loses only its `created_by`. Deleting a user is not a way to erase a day's scores.
+
+**The last admin cannot be demoted or deleted**, either way a 409. Nothing else is protected: an admin may demote themselves while another admin exists.
+
+**Per-question stats.** `top` defaults to 10 and caps at 100.
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/quizzes/2026-09-08/stats?top=5'
+```
+
+```json
+{"id": 36, "quiz_date": "2026-09-08", "published": true,
+ "heights": [{"total_points": 0, "height_au": "0.00", "players": 1},
+             {"total_points": 30, "height_au": "5.14", "players": 2}],
+ "questions": [{"id": 220, "position": 1, "qtype": "rarest", "prompt": "Name a Radiohead album",
+   "answered": 3, "skipped": 1, "correct": 2,
+   "top_answers": [{"id": 408, "display": "OK Computer", "is_correct": true, "tier_id": null,
+                    "guess_count": 2, "share": "0.6667"}]}]}
+```
+
+`heights` is the `quiz_heights` view: one row per distinct score among the finished flights, with `height_au` = points × 0.1714. `answered` counts every answer stored for the question, `skipped` the empty ones (a deliberate skip or a timeout), `correct` those that matched an approved answer. `share` divides an answer's `guess_count` by every answer stored for that question, skips included, which is the same denominator the scorer uses, so it is the share the tiers were computed against. A malformed date is 400, an unused one 404.
+
+**Raw table view.** Read-only, over a fixed allowlist.
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/tables
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/tables/rarity_tiers?limit=100&offset=0'
+```
+
+```json
+{"table": "rarity_tiers",
+ "rows": [{"id": 1, "name": "Nebula", "points": 10, "sort_order": 1, "max_share": 1.0000}]}
+```
+
+`GET /api/tables` returns the allowlist: `profiles`, `players`, `quizzes`, `questions`, `question_answers`, `attempts`, `attempt_answers`, `rarity_tiers`, `artists`, `albums`, `tracks`, `genres`, `artist_genres`, `track_artists`, and the two views `quiz_heights` and `question_top_answers`. Anything else is 404. **`auth.users` is deliberately absent**, because it holds the password hashes. Rows come back typed by Postgres rather than stringified, ordered by the first column, `limit` defaults to 100 and caps at 500. There is no `where` parameter and no free SQL: the allowlist is the whole security boundary, and it is a fixed list in the code rather than a query against the catalog.
+
+**Edit the rarity tiers.** Any of `name`, `points` (0–32767) and `max_share` (greater than 0, at most 1). A key left out keeps its current value.
+
+```bash
+curl -X PATCH localhost:8080/api/tiers/6 -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"points": 120, "max_share": 0.002}'
+```
+
+```json
+{"id": 6, "name": "Supernova", "points": 120, "sort_order": 6, "max_share": "0.0020"}
+```
+
+`id` and `sort_order` are not editable, and tiers cannot be added or deleted: six tiers are the game, and both the answer key and every stored answer point at them. A duplicate name is 409, an unknown id 404.
+
+**A tier edit does not re-score anything.** Points are frozen at answer time (v0.3.0), so an edit applies to answers landing after it and to any answer a moderator re-scores later. Changing `max_share` changes which tier a future answer falls into; the database now refuses a share outside `(0, 1]`, because the scorer takes the first tier whose `max_share` is at least the answer's share and a gap there would silently score a correct answer zero.

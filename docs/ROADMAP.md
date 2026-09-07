@@ -60,10 +60,20 @@ Decisions worth carrying forward:
 
 ## v0.5.0 — Admin
 
-- Users: list, change role, delete.
-- Per-question stats: most guessed answers, height histogram (`quiz_heights` view).
-- Raw table view (read-only SQL over an allowlist of tables).
-- Edit `rarity_tiers` (names, points, shares).
+Implemented and locally verified; release tag pending.
+
+- [x] Users: list, change role, delete. `GET /api/users`, `PATCH /api/users/{id}`, `DELETE /api/users/{id}`.
+- [x] Per-question stats: most guessed answers with their share, height histogram (`quiz_heights` view). `GET /api/quizzes/{date}/stats`.
+- [x] Raw table view (read-only, over an allowlist of tables). `GET /api/tables`, `GET /api/tables/{name}`.
+- [x] Edit `rarity_tiers` (names, points, shares). `PATCH /api/tiers/{id}`.
+
+Decisions worth carrying forward:
+
+- **Deleting a user deletes the account, not the history.** The route deletes the `auth.users` row over the backend's own connection, which cascades to `profiles` and to Supabase's sessions and identities. `players.user_id` becomes null, so the flights, the stored answers and everyone's rarity shares stay exactly as they were. `quizzes.created_by` needed an `ON DELETE SET NULL` for this: without it the foreign key blocked deleting any moderator who had ever created a quiz.
+- **The last admin is protected in the route, not in the database.** A check-then-write refuses to demote or delete the only remaining admin. A constraint cannot express it, since "one admin left" is a property of the table rather than of a row, and a trigger would also fire on the `handle_new_user` path. Two admins demoting each other in the same instant could still leave none; that wants an advisory lock if it ever matters.
+- **Editing a tier does not re-score.** Points are frozen at answer time (v0.3.0), and a tier edit is not a verdict on any particular answer, so nothing moves. Only `review_answer` and `merge_answer` re-score, and only the players who gave the reviewed answer. The migration adds the CHECKs the scorer always assumed: `points >= 0` and `max_share` inside `(0, 1]`, because the scorer takes the first tier whose `max_share` covers the share and a gap would silently award zero.
+- **The raw table view is an allowlisted dump, never free SQL.** A fixed array in `admin.cc` is the security boundary, so the table name reaches the statement only after it matched. `auth.users` is not on it. Rows are typed by Postgres through `json_agg` rather than serialised column by column, which is also why the route is a handful of lines.
+- **Binding an integer to a `::smallint` cast fails.** Drogon sends an `int` as four bytes of binary, Postgres infers `int2` from the cast and rejects the width, reporting the usual untyped failure. Cast to `::int` instead and let Postgres narrow it on assignment. This is the same class of trap as the missing SQLSTATE in v0.4.0: the driver's typing has to be worked out in advance, not diagnosed from the error.
 
 ## v0.6.0 — Frontend: play
 
