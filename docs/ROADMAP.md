@@ -13,7 +13,7 @@ Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.8).
 
 - [x] Supabase stack running, schema applied as a migration.
 - [~] Seed top 500 artists: Deezer catalog (albums, tracks, labels, UPC/ISRC, BPM, fans, preview clips), Last.fm ranking + listen counts, MusicBrainz country/type/gender/years, YouTube video ids + views. Originals only. Running.
-- [ ] `GET /api/tracks?q=&artist=&year=&min_rank=` search for the quiz editor.
+- [x] `GET /api/tracks?q=&artist=&year=&min_rank=` search for the quiz editor.
 - Patch ideas: raise `--detail-cap` for full ISRC coverage, album-level genres, MusicBrainz writer credits.
 
 ## v0.2.0 — Auth and players

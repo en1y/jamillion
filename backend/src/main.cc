@@ -1,4 +1,5 @@
 #include <drogon/drogon.h>
+#include <algorithm>
 #include <cstdlib>
 
 using namespace drogon;
@@ -37,6 +38,58 @@ int main()
                 resp->setStatusCode(k500InternalServerError);
                 cb(resp);
             });
+    });
+
+    // GET /api/tracks?q=&artist=&year=&min_rank=&limit=   quiz-editor search.
+    // min_rank: only artists ranked at or above this (global_rank <= min_rank).
+    app().registerHandler("/api/tracks", [](const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&cb) {
+        auto num = [&](const char *k, int def, int lo, int hi) {
+            const auto s = req->getParameter(k);
+            const int v = s.empty() ? def : std::atoi(s.c_str());
+            return std::clamp(v, lo, hi);
+        };
+        const auto q = req->getParameter("q"), artist = req->getParameter("artist");
+        const int year = num("year", 0, 0, 9999), minRank = num("min_rank", 0, 0, 1000000),
+                  limit = num("limit", 50, 1, 200);
+        // ponytail: year/release_date come from the album, tracks.release_date is whichever Deezer edition the row was deduped from
+        // ponytail: ILIKE substring scan, fine for a ~50k-track catalog; trigram index if it drags
+        app().getDbClient()->execSqlAsync(
+            "SELECT t.id, t.title, ar.name AS artist, ar.global_rank, al.title AS album, "
+            "       al.release_date::text AS release_date, t.duration_ms, t.deezer_rank, "
+            "       t.youtube_views, t.preview_url IS NOT NULL AS has_preview "
+            "FROM tracks t JOIN albums al ON al.id = t.album_id JOIN artists ar ON ar.id = al.artist_id "
+            "WHERE ($1 = '' OR t.title ILIKE '%' || $1 || '%') "
+            "  AND ($2 = '' OR ar.name ILIKE '%' || $2 || '%') "
+            "  AND ($3::int = 0 OR extract(year FROM al.release_date) = $3::int) "
+            "  AND ($4::int = 0 OR ar.global_rank <= $4::int) "
+            "ORDER BY t.deezer_rank DESC NULLS LAST, t.id LIMIT $5::int",
+            [cb](const orm::Result &r) {
+                Json::Value out(Json::arrayValue);
+                auto num = [](const orm::Field &f) { return f.isNull() ? Json::Value() : Json::Value(f.as<Json::Int64>()); };
+                for (const auto &row : r) {
+                    Json::Value j;
+                    j["id"] = num(row["id"]);
+                    j["title"] = row["title"].as<std::string>();
+                    j["artist"] = row["artist"].as<std::string>();
+                    j["global_rank"] = num(row["global_rank"]);
+                    j["album"] = row["album"].as<std::string>();
+                    j["release_date"] = row["release_date"].isNull() ? Json::Value() : Json::Value(row["release_date"].as<std::string>());
+                    j["duration_ms"] = num(row["duration_ms"]);
+                    j["deezer_rank"] = num(row["deezer_rank"]);
+                    j["youtube_views"] = num(row["youtube_views"]);
+                    j["has_preview"] = row["has_preview"].as<bool>();
+                    out.append(j);
+                }
+                cb(HttpResponse::newHttpJsonResponse(out));
+            },
+            [cb](const orm::DrogonDbException &e) {
+                Json::Value j;
+                j["error"] = e.base().what();
+                auto resp = HttpResponse::newHttpJsonResponse(j);
+                resp->setStatusCode(k500InternalServerError);
+                cb(resp);
+            },
+            q, artist, year, minRank, limit);
     });
 
     LOG_INFO << "jamillion listening on :" << port;

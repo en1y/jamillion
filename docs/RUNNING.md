@@ -109,6 +109,14 @@ curl localhost:8080/api/health
 
 Should return `{"ok":true,"tiers":6}`.
 
+Track search for the quiz editor, all filters optional:
+
+```bash
+curl 'localhost:8080/api/tracks?q=love&artist=rihanna&year=2008&min_rank=50&limit=20'
+```
+
+`q` and `artist` are case-insensitive substrings, `year` is the release year, `min_rank` keeps only artists ranked at or above that position (`global_rank <= min_rank`), `limit` defaults to 50 and caps at 200. Results are ordered by Deezer popularity.
+
 ## 4. Frontend
 
 ```bash
