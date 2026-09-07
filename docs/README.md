@@ -2,6 +2,8 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
 
+**Current: v0.2.0 — Auth and players.** Guest passports, Supabase signup/sign-in, profile linking, and backend role guards are implemented. Daily quiz play is next.
+
 ## The game
 
 - **7 prompts per day**, the same for everyone, published at 04:00 UTC.
@@ -44,10 +46,10 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 ```
 backend/    Drogon server
 frontend/   Vite React app
-db/         schema.sql (source of truth for the schema)
+supabase/   migrations, seed, local database/auth configuration
 scripts/    seed_music.py and friends
 docs/       RUNNING.md — how to run everything
-ROADMAP.md  what gets built in which order
+docs/ROADMAP.md  what gets built in which order
 ```
 
 See [docs/RUNNING.md](RUNNING.md) to get going and [ROADMAP.md](ROADMAP.md) for the plan.

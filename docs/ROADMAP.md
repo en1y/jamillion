@@ -18,10 +18,12 @@ Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.8).
 
 ## v0.2.0 — Auth and players
 
-- Frontend signs up and logs in through `@supabase/supabase-js`; Supabase issues the access token. No password ever reaches our backend.
-- Drogon verifies that token with `SUPABASE_JWT_SECRET` (jwt-cpp, HS256, added via FetchContent) and reads the role from `profiles`.
-- `jam_player` cookie for anonymous players; signing in links the player row to the profile.
-- Role guard: user / moderator / admin. `GET /api/me`.
+Implemented and locally verified; release tag pending.
+
+- [x] Frontend signs up and logs in through `@supabase/supabase-js`; Supabase issues the access token. No password ever reaches our backend.
+- [x] Drogon verifies that token with `SUPABASE_JWT_SECRET` (jwt-cpp, HS256, added via FetchContent) and reads the role from `profiles`.
+- [x] `jam_player` cookie for anonymous players; signing in links the player row to the profile.
+- [x] Role guard: user / moderator / admin. `GET /api/me`.
 - Later, free from Supabase: OAuth providers, password reset, email confirmation.
 
 ## v0.3.0 — Quiz play

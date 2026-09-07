@@ -43,6 +43,14 @@ npx supabase db reset    # rebuild from migrations, then run supabase/seed.sql
 
 `supabase/migrations/` is the schema's source of truth. Change it with `npx supabase migration new <name>`, never by editing the database by hand.
 
+**Auth signing (v0.2.0).** The backend requires HS256 tokens signed with `SUPABASE_JWT_SECRET`. `auth.signing_keys_path` points to `legacy_signing_keys.json`, an intentionally empty list selecting legacy shared-secret signing instead of the CLI's default asymmetric key. This file contains no secret. For an existing local stack, restart Supabase after pulling this configuration (wait for any active catalog seeder to finish first). Do not reset the database. Sign in again after changing signing modes. A hosted Supabase project must also use the matching HS256 secret; ES256/RS256 verification is outside this milestone.
+
+Apply additive migrations to an existing database without losing catalog data:
+
+```bash
+npx supabase migration up --local
+```
+
 **Auth.** Accounts live in Supabase Auth. A trigger on `auth.users` creates the matching `public.profiles` row, and the very first account becomes the admin. So sign yourself up first. Local signups do not send real email; confirmations land in Inbucket.
 
 ## 2. Seed the music catalog
@@ -103,21 +111,26 @@ cmake --build build -j
 ./build/jamillion
 ```
 
+The backend reads the nearest `.env` above its working directory at startup, like the Python scripts do, so a CLion run configuration needs no environment setup. Variables already exported in the shell win over the file.
+
 ```bash
 curl localhost:8080/api/health
 ```
 
 Should return `{"ok":true,"tiers":6}`.
 
-Track search for the quiz editor, all filters optional:
+Track search requires a moderator/admin access token; all filters are optional:
 
 ```bash
-curl 'localhost:8080/api/tracks?q=love&artist=rihanna&year=2008&min_rank=50&limit=20'
+curl -H "Authorization: Bearer $ACCESS_TOKEN" \
+  'localhost:8080/api/tracks?q=love&artist=rihanna&year=2008&min_rank=50&limit=20'
 ```
 
 `q` and `artist` are case-insensitive substrings, `year` is the release year, `min_rank` keeps only artists ranked at or above that position (`global_rank <= min_rank`), `limit` defaults to 50 and caps at 200. Results are ordered by Deezer popularity.
 
 ## 4. Frontend
+
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in the root `.env` to the same public URL and anon key as `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Vite reads this file via `envDir`; only `VITE_*` values reach the browser. Never prefix the JWT secret or service-role key with `VITE_`. Restart Vite after changing these values. Without public config, the page supports guests and explains that sign-in is unavailable.
 
 ```bash
 cd frontend
@@ -129,4 +142,37 @@ Vite serves on http://localhost:5173 and proxies `/api` to the backend on 8080 (
 
 ## 5. First admin
 
-Register through the UI (or `POST /api/auth/register` once Phase 1 lands). That first account is the admin. Everyone after is a plain user until an admin promotes them.
+Open the frontend, follow **Sign in** in the top right (the launchpad is the home page; auth lives at `/#/account`) and choose **Create account**. Email and password go directly to Supabase Auth through `@supabase/supabase-js`; there is no backend password endpoint. The first account is admin, including when two people sign up concurrently. Later accounts are users; signup metadata cannot choose a role. Duplicate usernames receive a numeric suffix. Local email confirmations are disabled; if enabled, the UI asks the user to confirm their email before signing in.
+
+## 6. Player identity and role checks
+
+```bash
+curl -c /tmp/jam.cookies localhost:8080/api/me
+curl -b /tmp/jam.cookies -c /tmp/jam.cookies localhost:8080/api/me
+curl -b /tmp/jam.cookies -c /tmp/jam.cookies \
+  -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/me
+```
+
+`GET /api/me` returns `player_id`, `authenticated`, `role`, and `profile` (null for guests; otherwise `{id, username, role}`). Responses are `Cache-Control: no-store`. A supplied invalid token returns 401, never a guest fallback. Verification requires HS256, the configured issuer, `authenticated` audience and token role, an unexpired `exp`, and a UUID subject with an existing profile. App permissions come from `profiles`, so promotion/demotion takes effect on the next request. The default issuer is `SUPABASE_URL/auth/v1`; `SUPABASE_JWT_ISSUER` overrides it when the public address differs from the token issuer.
+
+The signed `jam_player` cookie lasts a year, is HttpOnly, SameSite=Lax, and scoped to `/`. Set `COOKIE_SECURE=true` when serving over HTTPS. A valid guest row is linked atomically on sign-in, preserving its existing attempts. Linked cookies grant no account access without a token: sign-out or switching accounts creates a fresh player row. Multiple browser player rows can belong to one profile; history can be collected through `players.user_id`. Daily attempt deduplication across these rows belongs to v0.3.0.
+
+Backend routes attach `auth::Optional` first, followed by `auth::User`, `auth::Moderator`, or `auth::Admin` as needed. User requires sign-in, Moderator admits moderators/admins, and Admin admits only admins. Anonymous access to guarded routes returns 401; insufficient roles return 403. `/api/me` admits guests; `/api/tracks` requires Moderator. `/api/health` stays public.
+
+Sign-out ends the Supabase session on this browser. Like other locally verified JWTs, an already issued access token remains valid until expiry; deleting its profile makes the backend reject it immediately.
+
+## 7. Auth regression checks
+
+With the local Supabase stack and backend running, load `.env` as above and run:
+
+```bash
+cmake -S backend -B backend/build -DJAMILLION_BUILD_TESTS=ON
+cmake --build backend/build -j 4
+ctest --test-dir backend/build --output-on-failure
+.venv/bin/python backend/tests/auth_integration.py
+cd frontend
+npm run build
+npm run lint
+```
+
+The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `TEST_API_URL` for another backend port, refuses non-local services, and creates/deletes only its own test accounts and player rows. It checks real signup/login, concurrent first-admin creation, guest persistence/linking, concurrent account isolation, role changes, malformed/expired/forged tokens, deleted profiles, and answer-key RLS. On an empty auth database it also verifies the first-signup admin rule. Local email confirmation must be disabled for these tests.
