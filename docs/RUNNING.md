@@ -55,7 +55,19 @@ scripts/seed.sh --limit 500                    # the real thing, ~6 hours
 
 The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST and RLS.
 
-`scripts/seed.sh` loads `.env` and runs the seeder inside the venv. It commits one artist per transaction, so it is resumable and safe to interrupt:
+`scripts/seed.sh` loads `.env` and starts the seeder in the background inside the venv, then returns straight away. Progress goes to `data/seed.log`, so watch it with:
+
+```bash
+tail -f data/seed.log
+```
+
+Each run starts a fresh log and keeps the previous one as `data/seed.log.prev`. If the seeder dies in its first seconds (bad flag, missing key, database down) the script prints the log and exits 1 instead of leaving it to be discovered later. It also refuses to start a second seeder while one is running:
+
+```bash
+pkill -f seed_music.py                                 # stop it
+```
+
+It commits one artist per transaction, so it is resumable and safe to interrupt:
 
 | Flag | Meaning |
 |------|---------|
@@ -67,14 +79,6 @@ The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST
 | `--no-youtube`, `--no-spotify` | skip those sources |
 
 Caps apply to the most popular tracks first. Every other track still gets title, album, release date, duration, rank and a preview clip.
-
-`seed.sh` always writes `data/seed.log` as well as printing to the terminal. Each run starts a fresh log and keeps the previous one as `data/seed.log.prev`, so no redirection is needed:
-
-```bash
-nohup scripts/seed.sh --limit 500 >/dev/null 2>&1 &   # background
-tail -f data/seed.log                                  # watch it
-pkill -f seed_music.py                                 # stop it
-```
 
 Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. Occasional `! ytmusic ...` lines are YouTube Music throttling; the seeder backs off and skips YouTube for that artist after 20 refusals. Everything else still gets stored.
 
