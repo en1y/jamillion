@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include "admin.h"
 #include "auth.h"
 #include "quiz.h"
 
@@ -39,6 +40,7 @@ int main()
     auth::registerRoutes();
     quiz::configure(root);
     quiz::registerRoutes();
+    admin::registerRoutes();
     // ponytail: no config.json, everything comes from .env / environment
     const auto port = static_cast<uint16_t>(std::stoi(env("PORT", "8080")));
 
