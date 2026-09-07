@@ -11,7 +11,7 @@ static std::string secret, issuer;
 static bool secureCookie = false;
 constexpr int cookieLifetime = 365 * 24 * 60 * 60;
 
-static bool uuid(const std::string &s) {
+bool isUuid(const std::string &s) {
     if (s.size() != 36) return false;
     for (size_t i = 0; i < s.size(); ++i) {
         if (i == 8 || i == 13 || i == 18 || i == 23) {
@@ -50,7 +50,7 @@ std::string cookiePlayer(const HttpRequestPtr &req) {
         // Separate signing domain: player cookies cannot be used as access tokens.
         jwt::verify().allow_algorithm(jwt::algorithm::hs256("jamillion-player:" + secret))
             .with_issuer("jamillion").with_audience("player").verify(token);
-        if (!token.has_expires_at() || !uuid(token.get_subject())) return {};
+        if (!token.has_expires_at() || !isUuid(token.get_subject())) return {};
         return token.get_subject();
     } catch (const std::exception &) { return {}; }
 }
@@ -141,7 +141,7 @@ void Optional::doFilter(const HttpRequestPtr &req, FilterCallback &&cb, FilterCh
             .with_issuer(issuer).with_audience("authenticated")
             .with_claim("role", jwt::claim(std::string("authenticated"))).verify(token);
         subject = token.get_subject();
-        if (!token.has_expires_at() || !uuid(subject)) throw std::runtime_error("Invalid claims");
+        if (!token.has_expires_at() || !isUuid(subject)) throw std::runtime_error("Invalid claims");
     } catch (const std::exception &) {
         return cb(error(k401Unauthorized, "Invalid or expired access token"));
     }

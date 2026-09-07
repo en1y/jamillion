@@ -34,6 +34,8 @@ void registerRoutes();
 
 // Shared with the quiz routes.
 drogon::HttpResponsePtr error(drogon::HttpStatusCode status, const char *message);
+// Shape check for a path or claim that must be a uuid.
+bool isUuid(const std::string &s);
 // The player id carried by a valid jam_player cookie, or empty.
 std::string cookiePlayer(const drogon::HttpRequestPtr &req);
 }
