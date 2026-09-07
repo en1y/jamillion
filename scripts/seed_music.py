@@ -231,7 +231,7 @@ def seed_albums(cur, aid, deezer_artist_id, detail_cap):
             d = deezer(f"track/{dzid}")
             if not d: continue
             cur.execute("UPDATE tracks SET isrc=%s, bpm=%s, gain=%s, disc_number=%s, "
-                        "release_date=coalesce(%s, release_date) WHERE id=%s",
+                        "release_date=least(%s, release_date) WHERE id=%s",  # per-track date is often a re-release; least() skips NULL
                         (d.get("isrc"), d.get("bpm") or None, d.get("gain"), d.get("disk_number"),
                          date_or_none(d.get("release_date")), tid))
     # live sets, a cappella and anniversary editions survive the title filter but
