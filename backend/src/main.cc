@@ -1,6 +1,7 @@
 #include <drogon/drogon.h>
 #include <algorithm>
 #include <cstdlib>
+#include "auth.h"
 
 using namespace drogon;
 
@@ -12,6 +13,9 @@ static std::string env(const char *k, const char *def = "")
 
 int main()
 {
+    try { auth::configure(); }
+    catch (const std::exception &e) { LOG_ERROR << e.what(); return 1; }
+    auth::registerRoutes();
     // ponytail: no config.json, everything comes from .env / environment
     const auto port = static_cast<uint16_t>(std::stoi(env("PORT", "8080")));
 
@@ -89,7 +93,7 @@ int main()
                 cb(resp);
             },
             q, artist, year, minRank, limit);
-    });
+    }, {Get, "auth::Optional", "auth::Moderator"});
 
     LOG_INFO << "jamillion listening on :" << port;
     app().addListener("0.0.0.0", port).setThreadNum(4).run();
