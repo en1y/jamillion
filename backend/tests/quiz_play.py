@@ -224,13 +224,17 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
             status, rows, _ = request(rest + '/rest/v1/question_top_answers?select=*',
                                       headers={'apikey': ANON, key: value})
             assert status == 200 and rows == [], (status, rows)
+            # Prompts and track ids too: the backend hands them out one question at a time.
+            status, rows, _ = request(rest + '/rest/v1/questions?select=prompt,track_id',
+                                      headers={'apikey': ANON, key: value})
+            assert status == 200 and rows == [], (status, rows)
         status, _, _ = request(rest + '/rest/v1/rpc/submit_answer',
                                {'p_attempt': attempt_id, 'p_question': questions[1], 'p_raw': 'hack'},
                                {'apikey': ANON})
         assert status != 200, 'anon must not be able to call the scorer'
 
         print('PASS: quiz create/validation, one-at-a-time delivery, rarity tiers, overrides,'
-              ' timeout/skip, finish, audio by question, per-account dedupe, answer-key RLS')
+              ' timeout/skip, finish, audio by question, per-account dedupe, answer-key and questions RLS')
     finally:
         if quiz_id:
             db.execute('DELETE FROM quizzes WHERE id = %s', (quiz_id,))
