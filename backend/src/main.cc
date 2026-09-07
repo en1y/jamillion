@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include "auth.h"
+#include "quiz.h"
 
 using namespace drogon;
 
@@ -15,7 +16,7 @@ static std::string env(const char *k, const char *def = "")
 
 // ponytail: same as python-dotenv's load_dotenv(): nearest .env up from cwd, exported vars win.
 // KEY=value lines only, no quotes or expansion; IDE run configs don't refresh env, this does.
-static void loadDotenv()
+static std::filesystem::path loadDotenv()
 {
     for (auto dir = std::filesystem::current_path(); ; dir = dir.parent_path()) {
         if (std::ifstream in(dir / ".env"); in) {
@@ -24,18 +25,20 @@ static void loadDotenv()
                 if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
                 setenv(line.substr(0, eq).c_str(), line.substr(eq + 1).c_str(), 0);
             }
-            return;
+            return dir;
         }
-        if (dir == dir.parent_path()) return;
+        if (dir == dir.parent_path()) return std::filesystem::current_path();
     }
 }
 
 int main()
 {
-    loadDotenv();
+    const auto root = loadDotenv();
     try { auth::configure(); }
     catch (const std::exception &e) { LOG_ERROR << e.what(); return 1; }
     auth::registerRoutes();
+    quiz::configure(root);
+    quiz::registerRoutes();
     // ponytail: no config.json, everything comes from .env / environment
     const auto port = static_cast<uint16_t>(std::stoi(env("PORT", "8080")));
 

@@ -31,4 +31,9 @@ public:
 };
 void configure();
 void registerRoutes();
+
+// Shared with the quiz routes.
+drogon::HttpResponsePtr error(drogon::HttpStatusCode status, const char *message);
+// The player id carried by a valid jam_player cookie, or empty.
+std::string cookiePlayer(const drogon::HttpRequestPtr &req);
 }

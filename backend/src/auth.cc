@@ -7,12 +7,11 @@
 
 using namespace drogon;
 namespace auth {
-namespace {
-std::string secret, issuer;
-bool secureCookie = false;
+static std::string secret, issuer;
+static bool secureCookie = false;
 constexpr int cookieLifetime = 365 * 24 * 60 * 60;
 
-bool uuid(const std::string &s) {
+static bool uuid(const std::string &s) {
     if (s.size() != 36) return false;
     for (size_t i = 0; i < s.size(); ++i) {
         if (i == 8 || i == 13 || i == 18 || i == 23) {
@@ -32,7 +31,7 @@ HttpResponsePtr error(HttpStatusCode status, const char *message) {
     return response;
 }
 
-void guard(const HttpRequestPtr &req, FilterCallback cb, FilterChainCallback next,
+static void guard(const HttpRequestPtr &req, FilterCallback cb, FilterChainCallback next,
            const std::string &minimum) {
     const auto &who = req->attributes()->get<Identity>("identity");
     if (who.id.empty()) return cb(error(k401Unauthorized, "Sign in required"));
@@ -56,7 +55,7 @@ std::string cookiePlayer(const HttpRequestPtr &req) {
     } catch (const std::exception &) { return {}; }
 }
 
-void me(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&cb) {
+static void me(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&cb) {
     const auto who = req->attributes()->get<Identity>("identity");
     const auto player = cookiePlayer(req);
     auto done = [who, cb](const orm::Result &rows) {
@@ -108,7 +107,6 @@ void me(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> 
             [done, create](const orm::Result &rows) { if (rows.empty()) create(); else done(rows); },
             failed, player, who.id);
     }
-}
 }
 
 void configure() {
