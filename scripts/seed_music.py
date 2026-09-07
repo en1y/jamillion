@@ -234,13 +234,19 @@ def pick(cur, tracks, column, cap):
     return [t for t in tracks if t[0] in keep]
 
 def seed_youtube(cur, yt, tracks, cap):
-    ids = {}
+    ids, misses = {}, 0
     for tid, artist, title, _ in pick(cur, tracks, "youtube_video_id", cap):
         try:
             hit = yt.search(f"{artist} {title}", filter="songs", limit=1)
             if hit: ids[tid] = hit[0]["videoId"]
         except Exception as e:
-            print(f"  ! ytmusic {title}: {e}")
+            misses += 1
+            if misses in (1, 10):      # say it once, then once more if it keeps up
+                print(f"  ! ytmusic {title}: {e}")
+            if misses > 20:            # clearly throttled; give up on this artist
+                print("\n  ! ytmusic throttling, skipping youtube for this artist")
+                break
+            time.sleep(min(2 * misses, 10))
     for tid, vid in ids.items():
         cur.execute("UPDATE tracks SET youtube_video_id=%s WHERE id=%s", (vid, tid))
 
@@ -299,6 +305,7 @@ def main():
         for rank, name in enumerate(names, 1):
             if rank < args.start: continue
             t0 = time.time()
+            print(f"[{rank}/{len(names)}] {name}", flush=True)
             try:
                 got = seed_artist(cur, sp, mb, name, rank if ranked else None)
                 if not got:
@@ -308,10 +315,10 @@ def main():
                 if yt: seed_youtube(cur, yt, tracks, args.youtube_cap)
                 seed_lastfm_tracks(cur, tracks, args.lastfm_cap)
                 conn.commit()          # per artist, so --start resumes cleanly
-                print(f"[{rank}/{len(names)}] {name}: {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
+                print(f"      {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
             except Exception as e:
                 conn.rollback()        # an aborted tx would poison every later artist
-                print(f"[{rank}/{len(names)}] {name}: FAILED {type(e).__name__}: {e}", flush=True)
+                print(f"      FAILED {type(e).__name__}: {e}", flush=True)
 
 if __name__ == "__main__":
     main()

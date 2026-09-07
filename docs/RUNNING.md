@@ -68,11 +68,15 @@ The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST
 
 Caps apply to the most popular tracks first. Every other track still gets title, album, release date, duration, rank and a preview clip.
 
-A full run is best backgrounded:
+`seed.sh` always writes `data/seed.log` as well as printing to the terminal. Each run starts a fresh log and keeps the previous one as `data/seed.log.prev`, so no redirection is needed:
 
 ```bash
-nohup scripts/seed.sh --limit 500 > data/seed.log 2>&1 &
+nohup scripts/seed.sh --limit 500 >/dev/null 2>&1 &   # background
+tail -f data/seed.log                                  # watch it
+pkill -f seed_music.py                                 # stop it
 ```
+
+Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. Occasional `! ytmusic ...` lines are YouTube Music throttling; the seeder backs off and skips YouTube for that artist after 20 refusals. Everything else still gets stored.
 
 Audio: the seed stores a preview URL per track. Deezer's links expire after about a day, so the downloader re-resolves a fresh one from the stored Deezer id. The clip is cached locally the first time a track is used in a quiz:
 
