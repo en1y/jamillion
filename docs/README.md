@@ -2,7 +2,7 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
 
-**Current: v0.8.2 — the editor's backend.** The six things a quiz editor needs and could not reach: album search, the tiers with their ids, which days already have a quiz, a track's clip before any question uses it, the album cover in a day's preview, and `PATCH /api/questions/{id}` — the prompt always, the rest only while nobody has flown the day.
+**Current: v0.8.3 — the quiz editor.** Moderators get a flight deck: pick a day, search the catalog, drag a snippet window over a decoded waveform, write the accepted answers with their tiers, publish. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
 
 ## The game
 

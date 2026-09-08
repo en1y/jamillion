@@ -150,11 +150,21 @@ psql "$DATABASE_URL" -f scripts/demo_quiz.sql
 
 A guest needs no account: the `jam_player` cookie is the passport. Reloading mid-flight returns to the current question with the time that is left, so the button reads **RESUME ASCENT**. Once the seventh is answered the day's results stand until the 04:00 UTC rollover: altitude in AU, one row per question, and a share text with one glyph per tier. Without a quiz for today the button is disabled and says so. **flight log** in the dock opens `/#/flights`: how many flights, the current streak, best and average altitude, and one expandable row per flight with its date, altitude and tier grid. It reads `/api/me/flights`, so it follows the account across browsers once signed in and sits on the guest passport otherwise; the logbook line on the results screen comes from the same place, and nothing is kept in localStorage.
 
-The pure part of the flight (points to AU, the linear track, the landmark order and passed-landmark label, and the share text) has a test with no browser and no framework:
+The pure parts of the flight (points to AU, the linear track, the landmark order and passed-landmark label, and the share text) and of the editor (the draft to its payload, everything that still needs fixing, the snippet clamp and the seeded answers) have tests with no browser and no framework:
 
 ```bash
 npm test
 ```
+
+**The flight deck.** A moderator or admin sees a **flight deck** chip in the launchpad dock; it opens `/#/editor`, the quiz editor. The day list shows every day `GET /api/quizzes` reports — its questions, its flights, and whether it is published — and a native date field opens any date at all, written or not.
+
+A day is seven cards. Each one takes a type (rarest, song or album), a prompt, and the accepted answers with an optional tier that beats the computed rarity. A song or album question searches the catalog by title and artist; picking a track shows its 30 s clip as a **waveform**, with the snippet window highlighted over it and two sliders for the start and the length. The window is clamped to fit the clip, so it can never be saved out of range. Play auditions the window, which also caches the clip — which is why the save afterwards is quick rather than spending a second or three on every uncached track.
+
+Picking a track or album seeds the accepted answers: *Radiohead — Creep* starts as `Radiohead Creep` plus `Radiohead` at a lower tier, which is how partial credit is written. Both rows stay editable; delete them if the seed is wrong.
+
+Anything still stopping the save is listed above the button, question by question, in the same words the backend would use. Work in progress is kept in `localStorage` under `jamillion-draft-<date>`, because `POST /api/quizzes` takes seven questions or nothing and a half-written day has nowhere on the server to live; a successful save clears it.
+
+**Once a day has been flown it freezes.** Points were fixed at answer time, so the questions go read-only and only the prompt can still be corrected, through `PATCH /api/questions/{id}`. What does stay live is the review queue under each question: every guess with its count, its verdict (accepted, rejected or awaiting) and its tier, plus merging one spelling into another. Each action reports how many flights it moved. This is the v0.4.0 moderation API with a face on it.
 
 ## 5. First admin
 

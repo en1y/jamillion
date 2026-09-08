@@ -173,6 +173,25 @@ Decisions worth carrying forward:
 - **A played day freezes at the prompt.** v0.3.0 froze points at answer time; moving a track, a snippet or the answer key under people mid-flight would invalidate scores already shown. So `PATCH /api/questions/{id}` takes the prompt on any day and everything else only while `attempts` is empty — 409 otherwise. `qtype`, `position`, `track_id` and `album_id` are never editable: a different track is a different question, and on an unplayed day re-POSTing the day already does it.
 - **The DB CHECKs are pre-empted, not surfaced.** The snippet window and the ask-flag rule are checked in the handler so a moderator never reads Postgres's own words out of the editor — the same reason v0.4.0 stopped relying on `isUniqueViolation`.
 
+## v0.8.3 — Frontend: quiz editor
+
+Every quiz until now was written with curl or `scripts/demo_quiz.sql`. The moderator role has existed since v0.0.2 and its backend since v0.4.0; this is the face.
+
+- [x] `#/editor` day list and `#/editor/{date}`, behind a **flight deck** chip only moderators and admins see.
+- [x] Seven question cards: type, prompt, catalog search for song and album questions, accepted answers with tier overrides.
+- [x] The snippet picker is a real decoded waveform with the window highlighted and clamped to the clip.
+- [x] Picking a track seeds the accepted answers, including the artist-only row that gives partial credit.
+- [x] A flown day freezes: read-only questions, a correctable prompt, and the review queue live under each one.
+- [x] Work in progress survives a reload in `localStorage`; a save clears it.
+
+Decisions worth carrying forward:
+
+- **The pure half is a separate module.** `quizdraft.ts` holds the draft shape, the payload builder, the problem list, the snippet clamp and the seeding, with no JSX and no fetch, so `node --test` covers them the way it covers the flight maths. `Editor.tsx` is only what needs a DOM.
+- **The problems list mirrors `validate()` rather than waiting for it.** The moderator reads what is wrong beside the field instead of after a round trip, in the same words. The backend still decides; the client is a courtesy, which is why `normalizeAnswer` only has to be close enough to spot a duplicate — `UNIQUE (question_id, normalized)` is the real boundary.
+- **The clip is fetched once and used twice.** `/api/tracks/{id}/audio` is moderator-guarded, so an `<audio src>` cannot reach it; the bytes come in through `fetch` with the token, become a blob URL for playback **before** `decodeAudioData` gets them, because decoding detaches the buffer.
+- **Auditioning is what makes the save fast.** The picker's preview caches the clip through `ensureAudio`, so `createQuiz`'s pre-cache loop finds the file on disk. Measured: 0.2 s to save a day whose track had been auditioned.
+- **A frozen day shows one list of answers, not two.** The accepted-answer editor is hidden once the day has attempts, because the review queue below it lists the same answers with controls that actually do something. Two lists of the same thing, one inert, is how a moderator learns to distrust the screen.
+- **Four routes, still no router.** The hash is split once into a screen and an argument. A dependency earns its place when a screen needs two segments.
 
 ## v0.9.0 — Frontend: admin
 
