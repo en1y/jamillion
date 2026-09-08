@@ -68,7 +68,9 @@ export class ApiError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status }
 }
 
-async function call<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
+/** The one fetch wrapper. Exported so moderator.ts reuses it rather than growing
+ *  a second copy of the token header and the error shape. */
+export async function call<T>(path: string, token?: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: 'same-origin',

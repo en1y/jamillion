@@ -235,3 +235,85 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
   .results-head { flex-direction: column; gap: 2px; }
   .idea div { flex-direction: column; align-items: stretch; }
 }
+
+/* --- flight deck: the quiz editor ---------------------------------------- */
+.editor { width: 100%; max-width: 900px; margin: 0 auto; padding: 8px 0 48px; text-align: left; min-width: 0; }
+.editor h2 { margin-top: 4px; }
+.editor .eyebrow { margin: 0 0 6px; }
+.deck-open { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 12px 0 20px; }
+.deck-open label { flex: 1; min-width: 200px; margin: 0; }
+.deck-open .cta { white-space: nowrap; }
+.days { list-style: none; padding: 0; margin: 0; }
+.days li { border-bottom: 1px solid var(--line); }
+.days a { display: flex; align-items: flex-start; gap: 10px; padding: 10px 4px 8px; }
+.days a:hover { background: #16294a66; }
+.days .said { flex: 1; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.days .said small { display: block; font-size: 13px; letter-spacing: .06em; color: var(--mute); }
+.days b { flex: none; font-weight: 400; font-size: 14px; letter-spacing: .14em; color: var(--mute); }
+.days b.live { color: var(--flare); }
+
+/* one question, opened by <details> like the flight log */
+.qcard { border: 1px solid var(--line); background: var(--panel); margin: 10px 0; }
+.qcard summary { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 8px; cursor: pointer; }
+.qcard summary::-webkit-details-marker { display: none; }
+.qcard summary::marker { content: ""; }
+.qcard summary:hover { background: #16294a66; }
+.qcard .n { flex: none; width: 1.4em; color: var(--flare); }
+.qcard .said { flex: 1; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.qcard .said small { display: block; font-size: 13px; letter-spacing: .06em; color: var(--mute); }
+.qcard .said i { color: var(--mute); font-style: normal; }
+.qcard .more { flex: none; width: 1em; color: var(--mute); text-align: center; }
+.qcard .more::before { content: "+"; }
+.qcard[open] .more::before { content: "−"; }
+.qbody { padding: 4px 12px 16px; border-top: 1px solid var(--line); }
+.qbody .switch { margin: 12px 0 4px; }
+.asks { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+
+/* catalog search */
+.picker-fields { display: flex; gap: 10px; flex-wrap: wrap; }
+.picker-fields label { flex: 1; min-width: 160px; }
+.hits { list-style: none; padding: 0; margin: 8px 0 0; max-height: 15rem; overflow-y: auto; }
+.hits button { display: flex; width: 100%; padding: 7px 6px; background: none; border: 0; text-align: left; }
+.hits button:hover:not(:disabled) { background: #16294a99; }
+.hits button:disabled { opacity: .45; }
+.chosen { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.chosen img { flex: none; width: 56px; height: 56px; object-fit: cover; border: 1px solid var(--line); }
+
+/* the snippet window over a decoded waveform */
+.snip { margin: 12px 0; }
+.wave { position: relative; height: 84px; background: #0b1526; border: 1px solid var(--line); }
+.wave canvas { display: block; width: 100%; height: 100%; }
+.wave .meta { position: absolute; inset: 0; display: grid; place-items: center; }
+.snip-row { display: flex; align-items: center; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
+.snip-row label { flex: 1; min-width: 150px; margin: 0; display: flex; align-items: center; gap: 8px; }
+.snip-row label b { color: var(--ion); font-weight: 400; font-variant-numeric: tabular-nums; }
+.snip-row .play { width: 40px; height: 40px; font-size: 15px; }
+
+/* accepted answers and the review queue */
+.answers { margin-top: 16px; }
+.answer-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.answer-row input { flex: 1; min-width: 0; margin: 0; }
+select { padding: 9px 8px 7px; background: #0b1526; color: var(--ink); border: 1px solid var(--line);
+  font: inherit; font-size: 16px; }
+select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
+.review { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.review ul { list-style: none; padding: 0; margin: 0; }
+.review li { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; padding: 7px 2px;
+  border-bottom: 1px solid var(--line); }
+.review li.awaiting { background: #16294a80; }
+.review .said { flex: 1; min-width: 140px; overflow-wrap: anywhere; }
+.review .said small { display: block; font-size: 13px; color: var(--mute); }
+.verdicts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.verdicts .chip { padding: 6px 10px 4px; }
+
+.problems { list-style: none; padding: 10px 12px; margin: 16px 0 0; border-left: 3px solid var(--pink);
+  background: #0b1526; font-size: 16px; color: var(--mute); }
+.deck-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 18px; }
+.deck-actions .cta { flex: 1; min-width: 220px; }
+
+@media (max-width: 640px) {
+  .qbody { padding: 4px 8px 14px; }
+  .snip-row label { flex-basis: 100%; }
+  .answer-row { flex-wrap: wrap; }
+  .answer-row input { flex-basis: 100%; }
+}

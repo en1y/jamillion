@@ -7,10 +7,12 @@ import { getToday } from './api'
 import type { Today } from './api'
 import { Play, Results, Scene } from './Play'
 import { Flights } from './Flights'
+import { Editor } from './Editor'
 import { altitudeAu, passed } from './flight'
 import './App.css'
 
-// ponytail: hash routing, no router dependency. Add one when there are real routes.
+// ponytail: hash routing, no router dependency. Four screens and one path segment
+// is still cheaper than a router; revisit when a screen needs two.
 function useHash() {
   const [hash, setHash] = useState(() => location.hash)
   useEffect(() => {
@@ -35,10 +37,11 @@ function App() {
   // else the day's attempt. Keyed to the identity so a sign-out does not keep it.
   const [flown, setFlown] = useState<{ who: string; points: number } | null>(null)
   const hash = useHash()
-  const [, screen = ''] = hash.split('/')                // '#/flights'
+  const [, screen = '', arg = ''] = hash.split('/')      // '#/editor/2026-09-10'
   const onAccount = screen === 'account'
   const onFlights = screen === 'flights'
-  const away = onAccount || onFlights
+  const onEditor = screen === 'editor'
+  const away = onAccount || onFlights || onEditor
 
   useEffect(() => {
     if (!supabase) return
@@ -134,7 +137,9 @@ function App() {
           : <a className="chip" href="#/account">{passport}</a>}
       </header>
 
-      {onFlights ? (
+      {onEditor ? (
+        <Editor date={arg} token={token} />
+      ) : onFlights ? (
         <Flights token={token} signedIn={Boolean(session)} tiers={today?.tiers} />
       ) : onAccount ? (
         <section className="panel" aria-labelledby="account-heading">
@@ -208,6 +213,8 @@ function App() {
               <span>
                 <a className="chip" href="#/account">passport</a>
                 <a className="chip" href="#/flights">flight log</a>
+                {(player?.role === 'moderator' || player?.role === 'admin') &&
+                  <a className="chip" href="#/editor">flight deck</a>}
                 <button className="chip" type="button" disabled>archive</button>
               </span>
             </nav>
