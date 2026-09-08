@@ -2,14 +2,15 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
 
-**Current: v0.5.0 — Admin.** On top of moderation, an admin manages the people and the rules: listing users with their flight counts, changing roles, deleting an account without erasing the flights behind it, reading per-question stats and the height histogram for any day, dumping any allowlisted table read-only, and editing the rarity tiers. The last admin cannot be demoted or deleted. This finishes the backend; the frontend is next.
+**Current: v0.7.0 — Play, polished.** The solar system is the page: an animated starfield with the Sun, the planets and the outer landmarks on a linear track that the camera follows as the rocket climbs, Krillion's layout with the prompt up top and a timer ring, the answer fields and the button along the bottom. Song questions get a play/pause button and a scrubber over the snippet window; song and album questions ask for the artist, the title or both, as the moderator chose, with catalog completions in each field. Album questions are new: the cover is shown and the same fields apply. `scripts/demo_quiz.sql` writes a music quiz for today so the game can be tried on a fresh database.
 
 ## The game
 
 - **7 prompts per day**, the same for everyone, published at 04:00 UTC.
-- **Two question types**
+- **Three question types**
   - **Rarest** — open answer. Any correct answer counts, but rarity among all players decides the tier.
-  - **Song** — a short audio snippet plays (moderator picks the start time). Guess the artist and the title. Moderators assign a tier to each accepted answer (artist only, title only, both, …).
+  - **Song** — a short audio snippet plays (moderator picks the start time). Guess the artist, the title or both, whichever the moderator asks for. Moderators assign a tier to each accepted answer (artist only, title only, both, …).
+  - **Album** — the cover is shown. Same fields and scoring as a song question.
 - **Rarity tiers** follow the life of a star, newborn to supernova:
 
   | Tier          | Points | Krillion equivalent |
@@ -22,7 +23,7 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
   | Supernova     |    100 | One in a Krillion   |
 
   Moderators and admins can override the tier of any accepted answer.
-- **Height** — 1 point = 0.1714 AU. A perfect 700-point run reaches ~120 AU, the heliopause. Landmarks on the way: Mercury, Venus, Earth, Mars, the asteroid belt, Jupiter, Saturn, Uranus, Neptune, the Kuiper belt, Voyager 1.
+- **Height** — 1 point = 0.1714 AU. A perfect 700-point run reaches ~120 AU, the heliopause. Landmarks on the way: Mercury, Venus, Earth, Mars, the asteroid belt, Jupiter, Saturn, Uranus, Neptune, Pluto and the Kuiper belt, Eris, Sedna, the termination shock, Voyager 2's crossing and the heliopause Voyager 1 crossed in 2012.
 
 ## Roles
 

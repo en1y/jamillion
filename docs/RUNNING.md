@@ -140,6 +140,22 @@ npm run dev
 
 Vite serves on http://localhost:5173 and proxies `/api` to the backend on 8080 (see `frontend/vite.config.ts`).
 
+**Playing.** The launchpad is the game, and the solar system behind it is always there: the rocket sits at your altitude and the planets scroll past as you climb. With a published quiz for the current game day it offers **BEGIN ASCENT**, and the seven questions arrive one at a time: the prompt in a card up top, and along the bottom a timer ring, the answer fields, ANSWER and skip. Song questions carry a play/pause button and a scrubber over the snippet window, which starts at the moderator's offset and stops at the end of the window; browsers that refuse autoplay leave the button to do it. Album questions show the cover. Song and album questions have one field per thing the moderator asked for, artist and/or title, and each field completes from the catalog as you type. When the timer reaches zero the client submits whatever is in the fields, and the backend's three-second grace covers the round trip. Each answer shows its tier and moves the rocket, and NEXT asks for the next question, which is when its timer starts.
+
+On a fresh database there is no quiz to play. This writes a music quiz for the current game day, replacing whatever is there, so it is for local use only:
+
+```bash
+psql "$DATABASE_URL" -f scripts/demo_quiz.sql
+```
+
+A guest needs no account: the `jam_player` cookie is the passport. Reloading mid-flight returns to the current question with the time that is left, so the button reads **RESUME ASCENT**. Once the seventh is answered the day's results stand until the 04:00 UTC rollover: altitude in AU, one row per question, and a share text with one glyph per tier. Without a quiz for today the button is disabled and says so.
+
+The pure part of the flight (points to AU, the log-scaled track, the share text) has a test with no browser and no framework:
+
+```bash
+npm test
+```
+
 ## 5. First admin
 
 Open the frontend, follow **Sign in** in the top right (the launchpad is the home page; auth lives at `/#/account`) and choose **Create account**. Email and password go directly to Supabase Auth through `@supabase/supabase-js`; there is no backend password endpoint. The first account is admin, including when two people sign up concurrently. Later accounts are users; signup metadata cannot choose a role. Duplicate usernames receive a numeric suffix. Local email confirmations are disabled; if enabled, the UI asks the user to confirm their email before signing in.
@@ -174,11 +190,14 @@ ctest --test-dir backend/build --output-on-failure
 .venv/bin/python backend/tests/moderation.py
 .venv/bin/python backend/tests/admin.py
 cd frontend
+npm test
 npm run build
 npm run lint
 ```
 
-All three scripts share their fixtures through `backend/tests/common.py`. Run them from the repository root, so a relative `AUDIO_DIR` resolves the same way it does for the backend. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer.
+All three scripts share their fixtures through `backend/tests/common.py`. Run them from the repository root, so a relative `AUDIO_DIR` resolves the same way it does for the backend. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer. Since v0.6.0 it also checks that answering never serves the next question (the attempt's `question_started_at` is null until the next `POST /api/attempts`) and that `/api/quiz/today` reports the flight's own answers with their tiers. Since v0.7.0 its quiz has an album question asking for the title only, and it checks the served fields, that no album or track id leaks, and `/api/suggest`.
+
+`npm test` in `frontend/` runs `flight.test.ts` on `node --test`: the altitude conversion, the linear track, the landmark order, the landmark you have passed and the share text. It needs neither a browser nor the backend.
 
 `moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST.
 
@@ -190,7 +209,7 @@ The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `
 
 The game day rolls over at **04:00 UTC**, not midnight: `game_today()` in the database is the one definition of "today", used by every route here.
 
-**Publish a day's quiz.** Moderator or admin only. Exactly seven questions, positions 1 to 7, each with at least one accepted answer. `tier_id` on an answer is a moderator override that beats the computed rarity; leave it out to let the share decide. `published` defaults to true.
+**Publish a day's quiz.** Moderator or admin only. Exactly seven questions, positions 1 to 7, each with at least one accepted answer. `tier_id` on an answer is a moderator override that beats the computed rarity; leave it out to let the share decide. `published` defaults to true. `qtype` is `rarest`, `song` (needs `track_id`, `snippet_start_sec`, `snippet_len_sec`) or `album` (needs `album_id`). Song and album questions take `ask_artist` and `ask_title` (both default true, at least one must stay true): the player gets one field per flag, and what they type is joined as `Artist — Title` before scoring, which normalises to the same key as an accepted answer written `Artist Title`. A player who fills only one field sends only that name, so an accepted answer of just the artist, with a lower fixed tier, is how partial credit works.
 
 ```bash
 curl -X POST localhost:8080/api/quizzes -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -201,11 +220,14 @@ curl -X POST localhost:8080/api/quizzes -H "Authorization: Bearer $ACCESS_TOKEN"
      "answers": [{"display": "OK Computer"}, {"display": "Kid A"}]},
     {"position": 2, "qtype": "song", "prompt": "Artist and title?", "track_id": 123,
      "snippet_start_sec": 12, "snippet_len_sec": 10,
-     "answers": [{"display": "Radiohead Creep", "tier_id": 6}, {"display": "Radiohead", "tier_id": 2}]}
+     "answers": [{"display": "Radiohead Creep", "tier_id": 6}, {"display": "Radiohead", "tier_id": 2}]},
+    {"position": 3, "qtype": "album", "prompt": "Whose album is this?", "album_id": 45,
+     "ask_artist": true, "ask_title": false,
+     "answers": [{"display": "Radiohead"}]}
   ]}'
 ```
 
-Find `track_id` with `/api/tracks` (section 3). Saving a song question downloads its clip first, by running `scripts/fetch_audio.py` through `.venv/bin/python` if that exists and `python3` otherwise; a track with no reachable preview fails the whole save with 422 rather than storing an unplayable quiz. Re-posting the same date replaces a quiz nobody has played yet, and returns 409 once it has attempts.
+Find `track_id` with `/api/tracks` (section 3) and `album_id` in the `albums` table (Studio, or `GET /api/tables/albums` as an admin). Saving a song question downloads its clip first, by running `scripts/fetch_audio.py` through `.venv/bin/python` if that exists and `python3` otherwise; a track with no reachable preview fails the whole save with 422 rather than storing an unplayable quiz. Re-posting the same date replaces a quiz nobody has played yet, and returns 409 once it has attempts.
 
 **Play.** Every route below needs the `jam_player` cookie from `GET /api/me`, so fetch that first (section 6).
 
@@ -219,25 +241,30 @@ curl -b /tmp/jam.cookies -X POST localhost:8080/api/attempts/1/answers \
 
 `GET /api/quiz/today` is metadata only: the date, how many questions, how many players have finished, the tier legend, and your own attempt if you have one. It never carries a prompt or an answer.
 
-`POST /api/attempts` starts or resumes the day's flight and hands back the current question. Questions arrive one at a time, and the timer starts when the question is served, so `started_at` and `deadline` come with it. Repeating the call returns the same question with the same `started_at`: a refresh buys no extra time. One attempt per player per day, and for a signed-in player one attempt per account, however many browsers they use.
+Since v0.6.0 that attempt also carries `answers`, your own results so far, one row per question you have answered: `position`, your `raw_text`, whether it was `correct`, the `tier` you were given and the `points`. That is what lets a reload mid-flight, or the results screen the next morning, show the tiers again without a second route. It is only ever your own flight, and it names the tier rather than the accepted answer you matched, so the answer key stays shut.
 
-`POST /api/attempts/{id}/answers` accepts only the current question. An answer arriving more than three seconds past the limit is stored as a timeout: no points, and it does not count towards anyone's rarity. Empty text is a deliberate skip and works the same way. Answering twice returns 409. The response carries the result and the next question, or `null` once the seventh is done.
+`POST /api/attempts` starts or resumes the day's flight and hands back the current question. Questions arrive one at a time, and the timer starts when the question is served, so `started_at` and `deadline` come with it. Repeating the call returns the same question with the same `started_at`: a refresh buys no extra time. Call it again after each answer to get the next question. One attempt per player per day, and for a signed-in player one attempt per account, however many browsers they use. Two of these arriving together hand back the same flight rather than colliding, which is what lets a client fire the call without debouncing it.
+
+`POST /api/attempts/{id}/answers` accepts only the current question. An answer arriving more than three seconds past the limit is stored as a timeout: no points, and it does not count towards anyone's rarity. Empty text is a deliberate skip and works the same way. Answering twice returns 409.
+
+**The response is the result and the running totals, never the next question** (`"question"` is always `null` here). Since v0.6.0 the next question is served only by the next `POST /api/attempts`, because that is what starts its timer: a player reading their result must not be spending the next question's twenty seconds.
 
 ```json
 {"result": {"timed_out": false, "correct": true, "tier": "Main Sequence", "points": 30},
- "id": 9, "quiz_id": 5, "total_points": 30, "answered": 1, "finished": false,
- "question": {"id": 41, "position": 2, "...": "..."}}
+ "id": 9, "quiz_id": 5, "total_points": 30, "answered": 1, "finished": false, "question": null}
 ```
 
 Rarity is read as the answer lands: an accepted answer given by a share of players at or below a tier's `max_share` takes the rarest tier that fits, and the points are then frozen. The first player to give a correct answer therefore scores Nebula, exactly as in Krillion. A guess nobody has approved is still stored, with `is_correct` null, waiting for the v0.4 moderator review.
 
-**Audio.** `GET /api/audio/{question_id}` streams the cached clip for a song question, and takes a question id rather than a track id on purpose: `tracks` is readable with the anon key, so publishing a track id would give the answer away. It serves the whole 30 s preview and the client plays the `snippet_start_sec` window. It answers 404 for anything that is not a published song question from today or earlier.
+**Completions.** `GET /api/suggest?kind=artist|title|album&q=` returns up to eight catalog names for the answer fields: prefix matches first, then by popularity, nothing under two letters. It is public and reads only the catalog, never the answer key.
+
+**Audio.** `GET /api/audio/{question_id}` streams the cached clip for a song question, and takes a question id rather than a track id on purpose: `tracks` is readable with the anon key, so publishing a track id would give the answer away. It serves the whole 30 s preview and the client plays the `snippet_start_sec` window. Seeking to that offset needs the clip's metadata first, so the frontend waits for `loadedmetadata` before it seeks and plays; setting `currentTime` earlier is silently dropped and the clip would start at zero and give the intro away. It answers 404 for anything that is not a published song question from today or earlier.
 
 ## 9. Moderation
 
 Everything here needs a moderator or admin access token. Anonymous requests get 401, plain users 403.
 
-**Preview a day.** `GET /api/quizzes/{date}` is the whole quiz as a moderator sees it: prompts, the track behind each song question, and every answer with its verdict, its guess count and any tier override. This is the one place a track id appears in a response; the player routes still never carry one.
+**Preview a day.** `GET /api/quizzes/{date}` is the whole quiz as a moderator sees it: prompts, the track behind each song question, the album behind each album question with `ask_artist` and `ask_title`, and every answer with its verdict, its guess count and any tier override. This is the one place a track or album id appears in a response; the player routes still never carry one.
 
 ```bash
 curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/quizzes/2026-09-08

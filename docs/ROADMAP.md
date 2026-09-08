@@ -2,7 +2,7 @@
 
 Semantic versioning. Minor bumps = a new capability that works end to end. Patch bumps = fixes and small additions inside a minor. `v1.0.0` = playable by strangers. Each version is a git tag.
 
-Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.8).
+Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.9).
 
 ## v0.0.x — Foundation
 
@@ -77,20 +77,50 @@ Decisions worth carrying forward:
 
 ## v0.6.0 — Frontend: play
 
-- Launch screen, 7-question flow, timer, audio player for song questions.
-- Solar-system flight: altitude = points × 0.1714 AU, landmarks scroll past (Mercury … Neptune, Kuiper belt, Voyager 1, heliopause).
-- Results screen with tiers and share text.
+Implemented and locally verified; release tag pending.
 
-## v0.7.0 — Frontend: accounts and moderator
+- [x] Launch screen, 7-question flow, timer, audio player for song questions.
+- [x] Solar-system flight: altitude = points × 0.1714 AU, landmarks scroll past (Mercury … Neptune, Kuiper belt, heliopause).
+- [x] Results screen with tiers and share text.
+
+Decisions worth carrying forward:
+
+- **Answering no longer serves the next question.** `progress()` took a `serve` flag: the answer route passes false, so its response is the result and the totals with `question: null`. v0.3.0 said the timer starts when the question is served, and the old response served the next one in the same round trip, which spent that question's seconds on the result screen. The client now asks for the next question with `POST /api/attempts`, the same call that starts the flight. That also made the start route idempotent under a race: `ON CONFLICT (player_id, quiz_id)` with `xmax = 0` as the created flag, because a client firing the call twice (React's StrictMode does exactly this) otherwise hit the unique constraint and got a 503.
+- **`/api/quiz/today` carries the player's own answers.** One extra query on the route already fetching the attempt, rather than a history route the frontend does not have yet. It reports the tier the player was shown, never the accepted answer their guess matched, so the answer key stays shut. This is what makes a reload mid-flight and the day's results screen work without client storage.
+- **The flight track was log scaled** in v0.6.0, `log1p(au) / log1p(120)`, so that the inner planets were visible at all. v0.7.0 made it linear again: see there.
+- **The share grid is keyed by tier order, not tier name.** `TIER_EMOJI[index of the tier in today.tiers]`, so an admin renaming a tier (v0.5.0 allows it) does not silently turn every glyph into the miss square.
+- **The countdown reads the server's deadline, it does not own a clock.** It ticks four times a second off `deadline - now`, and submits whatever is typed when it reaches zero; the backend's three-second grace absorbs the round trip and any clock skew. Nothing about the timer is persisted, so a reload just re-reads the deadline from `POST /api/attempts`.
+- **Seeking an `<audio>` element before its metadata arrives is dropped silently.** Setting `currentTime = snippet_start_sec` on mount left the clip playing from zero and giving the intro away. The seek waits for `loadedmetadata` (`readyState >= 1`).
+
+## v0.7.0 — Play, polished
+
+Implemented and locally verified; release tag pending.
+
+- [x] The scene is the page: a persistent, animated solar system behind everything (drifting star layers, a breathing Sun, a comet, a bobbing rocket with a flame), the camera following the rocket as it climbs. Krillion's layout: title up top, the prompt in a card, a fixed HUD along the bottom with a timer ring, the fields, ANSWER and skip; springy buttons, cards that slide in, a score slam on a hit and a shake on a miss, ALT and SCORE chips in the header.
+- [x] Song questions: play/pause and a scrubber over the snippet window instead of one button.
+- [x] Song and album questions ask for the artist, the title or both (`ask_artist`, `ask_title`, moderator's choice), one field each, with catalog completions from `GET /api/suggest`.
+- [x] Album questions (`qtype: album`, `album_id`): the cover is shown, the same fields and scoring apply.
+- [x] `scripts/demo_quiz.sql` writes a music quiz for the current game day; the test fixtures ask music questions too.
+
+Decisions worth carrying forward:
+
+- **The track is linear, 60 px per AU.** The log scale moved the rocket 20 % of the track for the first Nebula and 3 % for a closing Supernova, which read as broken. Now the same points always move the same distance; the inner planets sit close together at the bottom, as they do in the sky, and alternating the labels left and right keeps them readable. The track is a 7200 px column translated by the altitude, so nothing is recomputed per frame.
+- **Two fields, one answer.** The client joins what was typed as `Artist — Title`, which `normalize_answer` reduces to the same key as a moderator's `Artist Title`. A lone field sends just that name, so an "artist only" row with a fixed tier still matches. No schema change to the answer key, no second scorer.
+- **Completions come from the catalog, not the answer key.** `/api/suggest` reads artists, distinct track titles and album titles with an ILIKE scan, prefix matches first, eight rows, nothing under two letters. It is public: the catalog already is through the anon key.
+- **The album cover URL goes to the player as is.** Deezer cover URLs are content hashes and name nothing. The album id still never leaves the moderator routes.
+- **`ALTER TYPE … ADD VALUE` and the same transaction.** The migration adds `album` to `question_type` and then writes CHECK constraints in the same file. The new value cannot appear as an enum literal until the transaction commits, so the constraints compare `qtype::text`.
+- **Derive, do not sync.** oxlint's `set-state-in-effect` flagged two effects that only copied props into state. The rocket's altitude is now derived: the flight's running total while flying, keyed to the identity, else the day's attempt.
+
+## v0.8.0 — Frontend: accounts and moderator
 
 - Login / register / history.
 - Quiz editor: track search, waveform + snippet picker, answer/tier table.
 
-## v0.8.0 — Frontend: admin
+## v0.9.0 — Frontend: admin
 
 - Users, stats, tier editor, table view.
 
-## v0.9.0 — Hardening
+## v0.10.0 — Hardening
 
 - Rate limits, input limits, CORS, HTTPS config, backups.
 - Docker compose for db + backend + frontend.
