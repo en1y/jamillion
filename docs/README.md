@@ -2,7 +2,7 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
 
-**Current: v0.7.0 — Play, polished.** The solar system is the page: an animated starfield with the Sun, the planets and the outer landmarks on a linear track that the camera follows as the rocket climbs, Krillion's layout with the prompt up top and a timer ring, the answer fields and the button along the bottom. Song questions get a play/pause button and a scrubber over the snippet window; song and album questions ask for the artist, the title or both, as the moderator chose, with catalog completions in each field. Album questions are new: the cover is shown and the same fields apply. `scripts/demo_quiz.sql` writes a music quiz for today so the game can be tried on a fresh database.
+**Current: v0.7.1 — Results, Krillion-shaped.** After a flight the page is Krillion's landing screen in space: a score curve of today's pilots, a 7-question flight log, the bearing for what the total means, copy-by-flight-number, every accepted answer under the haul, a logbook, a countdown to 04:00 UTC, a GitHub bug link and a box for question ideas. The solar system is still the page behind it.
 
 ## The game
 

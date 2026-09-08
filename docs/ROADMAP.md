@@ -111,6 +111,20 @@ Decisions worth carrying forward:
 - **`ALTER TYPE … ADD VALUE` and the same transaction.** The migration adds `album` to `question_type` and then writes CHECK constraints in the same file. The new value cannot appear as an enum literal until the transaction commits, so the constraints compare `qtype::text`.
 - **Derive, do not sync.** oxlint's `set-state-in-effect` flagged two effects that only copied props into state. The rocket's altitude is now derived: the flight's running total while flying, keyed to the identity, else the day's attempt.
 
+## v0.7.1 — Results, Krillion-shaped
+
+- [x] Post-flight screen matches Krillion's landing: score curve of today's pilots, a 7-question flight log, the bearing (what the total points mean), copy result by flight number not date, the haul with every accepted answer and its rarity blurb, a local logbook, a countdown to the 04:00 UTC next flight, a GitHub bug link, and a prompt-idea field.
+- [x] Long answers wrap; the page never scrolls sideways.
+- [x] `GET /api/quiz/today` carries `flight_no` (count of published quizzes up to today). Share text is `JAMILLION #N`.
+- [x] Reveal adds the day's score histogram (`dist`, 36 bins of 20 points) and `better_than`.
+- [x] `POST /api/ideas` stores a prompt idea (3–160 characters, three per game day). `question_ideas` is service-role only.
+
+Decisions worth carrying forward:
+
+- **The bearing is total-score bands, not per-answer tiers.** A 150-point flight is still a Nebula even if one answer was a Supernova, the same way Krillion's 0–150 is still Plankton. Protostar is skipped as a band, as Too Clever is on Krillion.
+- **The logbook lives in localStorage** until account history exists. A reload of the same day does not double-count; a gap in `quiz_date` breaks the streak.
+- **Bugs go to GitHub**, `en1y/jamillion` issues, not a mailbox. Ideas go through the backend so they sit next to the quiz they might become.
+
 ## v0.8.0 — Frontend: accounts and moderator
 
 - Login / register / history.
