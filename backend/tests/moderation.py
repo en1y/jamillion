@@ -7,6 +7,7 @@ It owns today's quiz, so it refuses to run when one already exists. Run it after
 quiz_play.py, which owns the same day and deletes its quiz on the way out.
 """
 import os
+import urllib.parse
 import urllib.error
 import urllib.request
 import uuid
@@ -51,6 +52,18 @@ def build_quiz(track_id):
     return {'quiz_date': QUIZ_DATE, 'published': False, 'questions': questions}
 
 
+def fetch_clip(path, token=None):
+    """Audio is binary, so it does not go through the JSON helper."""
+    req = urllib.request.Request(BASE + path)
+    if token:
+        req.add_header('Authorization', 'Bearer ' + token)
+    try:
+        response = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as failure:
+        return failure.status, b'', failure.headers
+    return response.status, response.read(), response.headers
+
+
 def audio_status(path, token=None):
     """Audio is binary, so it does not go through the JSON helper."""
     req = urllib.request.Request(BASE + path)
@@ -77,7 +90,7 @@ def answers_of(preview, position):
 
 
 with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
-    quiz_id = None
+    quiz_id = spare_id = None
     try:
         QUIZ_DATE = db.execute('SELECT game_today()::text').fetchone()[0]
         if db.execute('SELECT 1 FROM quizzes WHERE quiz_date = %s', (QUIZ_DATE,)).fetchone():
@@ -128,6 +141,35 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
 
         questions = dict(db.execute('SELECT position, id FROM questions WHERE quiz_id = %s',
                                     (quiz_id,)).fetchall())
+
+        # -------------------------------------------------- editing an unplayed day
+        # Everything here is refused once the day has attempts; see the played-day
+        # block further down. The song question is position 7.
+        song_id = questions[7]
+        status, edited, _ = api(f'/api/questions/{song_id}',
+                                {'snippet_start_sec': 4, 'snippet_len_sec': 12}, token=TOKEN, method='PATCH')
+        assert status == 200, (status, edited)
+        assert edited['snippet_start_sec'] == 4 and edited['snippet_len_sec'] == 12, edited
+        assert edited['quiz_date'] == QUIZ_DATE and edited['position'] == 7
+        assert api(f'/api/questions/{song_id}', {'prompt': 'Name this one.'},
+                   token=TOKEN, method='PATCH')[1]['prompt'] == 'Name this one.'
+        assert api(f'/api/questions/{song_id}', {'time_limit_sec': 45},
+                   token=TOKEN, method='PATCH')[1]['time_limit_sec'] == 45
+        # the DB CHECKs are pre-empted, so a moderator never reads Postgres's words
+        assert api(f'/api/questions/{song_id}', {'snippet_start_sec': 25, 'snippet_len_sec': 6},
+                   token=TOKEN, method='PATCH')[0] == 400          # 31 s does not fit
+        assert api(f'/api/questions/{song_id}', {'ask_artist': False, 'ask_title': False},
+                   token=TOKEN, method='PATCH')[0] == 400
+        assert api(f'/api/questions/{song_id}', {'time_limit_sec': 99}, token=TOKEN, method='PATCH')[0] == 400
+        assert api(f'/api/questions/{song_id}', {'prompt': ''}, token=TOKEN, method='PATCH')[0] == 400
+        assert api(f'/api/questions/{song_id}', {}, token=TOKEN, method='PATCH')[0] == 400
+        # qtype decides which keys even apply
+        assert api(f'/api/questions/{questions[1]}', {'snippet_start_sec': 1},
+                   token=TOKEN, method='PATCH')[0] == 400          # rarest has no snippet
+        assert api(f'/api/questions/{questions[1]}', {'ask_artist': True},
+                   token=TOKEN, method='PATCH')[0] == 400
+        assert api('/api/questions/99999999', {'prompt': 'x'}, token=TOKEN, method='PATCH')[0] == 404
+        assert api(f'/api/questions/{song_id}', {'prompt': 'x'}, method='PATCH')[0] == 401
 
         # -------------------------------------------------- guesses to review
         # Three guests give an answer the moderator never approved, one gives a known one.
@@ -218,6 +260,76 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
             assert status == 200 and detail['username'], (status, detail)
             assert [a['id'] for a in detail['attempts']] == [mine['id']], detail['attempts']
 
+        # -------------------------------------------------- the editor's routes
+        # v0.8.2. Together these are what makes a quiz authorable by a moderator
+        # rather than only by an admin with a table dump.
+        status, tiers, _ = api('/api/tiers', token=TOKEN)
+        assert status == 200 and len(tiers) == 6, (status, tiers)
+        assert [t['sort_order'] for t in tiers] == sorted(t['sort_order'] for t in tiers)
+        assert all(isinstance(t['id'], int) for t in tiers), tiers
+        # the ids are the point: an override has to be expressible
+        assert api(f"/api/answers/{okc['id']}", {'tier_id': tiers[-1]['id']},
+                   token=TOKEN, method='PATCH')[0] == 200
+        assert api(f"/api/answers/{okc['id']}", {'tier_id': None}, token=TOKEN, method='PATCH')[0] == 200
+
+        status, days, _ = api('/api/quizzes', token=TOKEN)
+        assert status == 200, (status, days)
+        today_row = next(d for d in days if d['quiz_date'] == QUIZ_DATE)
+        assert today_row['questions'] == 7 and today_row['published'] is True
+        assert today_row['attempts_started'] >= 4, today_row      # the guesses above
+        assert api('/api/quizzes?from=1999-01-01&to=1999-01-02', token=TOKEN)[1] == []
+        assert api('/api/quizzes?from=nope', token=TOKEN)[0] == 400
+
+        # A clip can be heard before any question uses it, which is what the
+        # snippet picker needs and why the later save finds the file cached.
+        db.execute('UPDATE tracks SET audio_path = NULL WHERE id = %s', (track[0],))
+        status, clip, headers = fetch_clip(f'/api/tracks/{track[0]}/audio', TOKEN)
+        assert status == 200 and headers['Content-Type'].startswith('audio/'), headers
+        assert len(clip) > 10_000, len(clip)
+        assert db.execute('SELECT audio_path FROM tracks WHERE id = %s', (track[0],)).fetchone()[0]
+        assert fetch_clip(f'/api/tracks/{track[0]}/audio', TOKEN)[0] == 200      # idempotent
+        assert fetch_clip('/api/tracks/99999999/audio', TOKEN)[0] == 404
+        assert fetch_clip(f'/api/tracks/{track[0]}/audio')[0] == 401
+
+        # An album question, authored end to end without an admin route. This is
+        # the v0.7.0 gap: POST /api/quizzes needs an album_id and nothing a
+        # moderator could reach handed one out.
+        status, albums, _ = api('/api/albums?limit=1', token=TOKEN)
+        assert status == 200 and albums, (status, albums)
+        album = albums[0]
+        assert isinstance(album['id'], int) and album['title'] and album['artist']
+        assert api('/api/albums?q=' + urllib.parse.quote(album['title']), token=TOKEN)[1], album
+        assert len(api('/api/albums?limit=1', token=TOKEN)[1]) == 1
+
+        spare_date = db.execute("SELECT (game_today() + 90)::text").fetchone()[0]
+        payload = build_quiz(track[0])
+        payload['quiz_date'] = spare_date
+        payload['questions'][0] = {
+            'position': 1, 'qtype': 'album', 'prompt': 'Whose album is this?',
+            'album_id': album['id'], 'ask_artist': True, 'ask_title': False,
+            'answers': [{'display': album['artist'], 'tier_id': tiers[0]['id']}],
+        }
+        status, spare, _ = api('/api/quizzes', payload, token=TOKEN)
+        assert status == 201, (status, spare)
+        spare_id = spare['id']
+        spare_quiz = api(f'/api/quizzes/{spare_date}', token=TOKEN)[1]
+        shown = spare_quiz['questions'][0]
+        assert shown['album']['id'] == album['id'], shown
+        assert shown['album']['cover'] == album['cover_url'], shown   # the moderator can see it too
+        assert shown['ask_artist'] is True and shown['ask_title'] is False
+
+        # -------------------------------------------------- editing a played day
+        # v0.3.0 froze points at answer time, so once anyone has flown, the prompt
+        # is the only thing left that can move.
+        played = questions[7]
+        status, fixed, _ = api(f'/api/questions/{played}', {'prompt': 'Artist and title, please?'},
+                               token=TOKEN, method='PATCH')
+        assert status == 200 and fixed['prompt'] == 'Artist and title, please?', (status, fixed)
+        assert api(f'/api/quizzes/{QUIZ_DATE}', token=TOKEN)[1]['questions'][6]['prompt'] \
+            == 'Artist and title, please?'
+        for frozen in ({'time_limit_sec': 30}, {'snippet_start_sec': 2}, {'snippet_len_sec': 5},
+                       {'ask_artist': False}, {'prompt': 'x', 'snippet_start_sec': 2}):
+            assert api(f'/api/questions/{played}', frozen, token=TOKEN, method='PATCH')[0] == 409, frozen
 
         # -------------------------------------------------- own flight history
         # A passport is required: the cookie is it, so no cookie is 401 rather
@@ -276,8 +388,12 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         print('PASS: quiz preview with answer list, publish/unpublish, moderator audio for an unpublished'
               ' quiz, verdict and tier overrides re-scoring only their own players, duplicate merge,'
               ' player detail across an account, own flight history deduped per day,'
+              ' the editor routes (tiers, day list, track audio, album search) and an album'
+              ' question authored without an admin route, question edits frozen to the prompt'
+              ' once a day is played,'
               ' moderation RPC locked out of PostgREST')
     finally:
-        if quiz_id:
-            db.execute('DELETE FROM quizzes WHERE id = %s', (quiz_id,))
+        for made in (quiz_id, spare_id):
+            if made:
+                db.execute('DELETE FROM quizzes WHERE id = %s', (made,))
         cleanup(db)

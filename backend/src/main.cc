@@ -120,6 +120,56 @@ int main()
             q, artist, year, minRank, limit);
     }, {Get, "auth::Optional", "auth::Moderator"});
 
+    // GET /api/albums?q=&artist=&year=&min_rank=&limit=   the other half of the
+    // quiz-editor search. POST /api/quizzes needs an album_id for an album
+    // question, and /api/tracks reports an album by title only, so before this
+    // route the only way to find one was the admin-only table dump.
+    app().registerHandler("/api/albums", [](const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&cb) {
+        auto num = [&](const char *k, int def, int lo, int hi) {
+            const auto s = req->getParameter(k);
+            const int v = s.empty() ? def : std::atoi(s.c_str());
+            return std::clamp(v, lo, hi);
+        };
+        const auto q = req->getParameter("q"), artist = req->getParameter("artist");
+        const int year = num("year", 0, 0, 9999), minRank = num("min_rank", 0, 0, 1000000),
+                  limit = num("limit", 50, 1, 200);
+        // ponytail: the same ILIKE scan /api/tracks uses; index it when it drags
+        app().getDbClient()->execSqlAsync(
+            "SELECT al.id, al.title, ar.name AS artist, ar.global_rank, "
+            "       al.release_date::text AS release_date, al.total_tracks, al.cover_url, al.deezer_fans "
+            "FROM albums al JOIN artists ar ON ar.id = al.artist_id "
+            "WHERE ($1 = '' OR al.title ILIKE '%' || $1 || '%') "
+            "  AND ($2 = '' OR ar.name  ILIKE '%' || $2 || '%') "
+            "  AND ($3::int = 0 OR extract(year FROM al.release_date) = $3::int) "
+            "  AND ($4::int = 0 OR ar.global_rank <= $4::int) "
+            "ORDER BY al.deezer_fans DESC NULLS LAST, al.id LIMIT $5::int",
+            [cb](const orm::Result &r) {
+                Json::Value out(Json::arrayValue);
+                auto num = [](const orm::Field &f) { return f.isNull() ? Json::Value() : Json::Value(f.as<Json::Int64>()); };
+                for (const auto &row : r) {
+                    Json::Value j;
+                    j["id"] = num(row["id"]);
+                    j["title"] = row["title"].as<std::string>();
+                    j["artist"] = row["artist"].as<std::string>();
+                    j["global_rank"] = num(row["global_rank"]);
+                    j["release_date"] = row["release_date"].isNull() ? Json::Value() : Json::Value(row["release_date"].as<std::string>());
+                    j["total_tracks"] = num(row["total_tracks"]);
+                    j["cover_url"] = row["cover_url"].isNull() ? Json::Value() : Json::Value(row["cover_url"].as<std::string>());
+                    j["deezer_fans"] = num(row["deezer_fans"]);
+                    out.append(j);
+                }
+                cb(HttpResponse::newHttpJsonResponse(out));
+            },
+            [cb](const orm::DrogonDbException &e) {
+                Json::Value j;
+                j["error"] = e.base().what();
+                auto resp = HttpResponse::newHttpJsonResponse(j);
+                resp->setStatusCode(k500InternalServerError);
+                cb(resp);
+            },
+            q, artist, year, minRank, limit);
+    }, {Get, "auth::Optional", "auth::Moderator"});
+
     LOG_INFO << "jamillion listening on :" << port;
     app().addListener("0.0.0.0", port).setThreadNum(4).run();
 }

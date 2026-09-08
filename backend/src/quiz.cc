@@ -522,6 +522,21 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
     }
 }
 
+// The cached clip as a file response, fetching it first if this is its first use.
+// Shared by the player's audio-by-question route and the moderator's
+// audio-by-track one, so the content type and the cache header are decided once.
+HttpResponsePtr clip(long long trackId, const orm::Field &cached, const char *missing) {
+    auto name = cached.isNull() ? std::string{} : cached.as<std::string>();
+    if (name.empty()) name = ensureAudio(trackId);
+    const auto path = audioDir / name;
+    if (name.empty() || !std::filesystem::exists(path)) return auth::error(k404NotFound, missing);
+    const bool mp3 = path.extension() == ".mp3";
+    auto response = HttpResponse::newFileResponse(path.string(), "", CT_CUSTOM,
+                                                  mp3 ? "audio/mpeg" : "audio/mp4");
+    response->addHeader("Cache-Control", "private, max-age=86400");
+    return response;
+}
+
 // Keyed by question, never by track: the question id is the only handle a player
 // is given for a song. Serves the whole 30 s clip.
 // ponytail: the client is trusted to play only the snippet window. Trim it with
@@ -539,16 +554,8 @@ Task<HttpResponsePtr> audio(HttpRequestPtr req, long long questionId) {
             "WHERE q.id = $1::bigint AND ($2::bool OR (z.published AND z.quiz_date <= game_today()))",
             questionId, moderator);
         if (rows.empty()) co_return auth::error(k404NotFound, "No audio for that question");
-        auto name = rows[0]["audio_path"].isNull() ? std::string{} : rows[0]["audio_path"].as<std::string>();
-        if (name.empty()) name = ensureAudio(rows[0]["track_id"].as<long long>());
-        const auto path = audioDir / name;
-        if (name.empty() || !std::filesystem::exists(path))
-            co_return auth::error(k404NotFound, "No audio for that question");
-        const bool mp3 = path.extension() == ".mp3";
-        auto response = HttpResponse::newFileResponse(path.string(), "", CT_CUSTOM,
-                                                      mp3 ? "audio/mpeg" : "audio/mp4");
-        response->addHeader("Cache-Control", "private, max-age=86400");
-        co_return response;
+        co_return clip(rows[0]["track_id"].as<long long>(), rows[0]["audio_path"],
+                       "No audio for that question");
     } catch (const orm::DrogonDbException &e) {
         LOG_ERROR << e.base().what();
         co_return auth::error(k503ServiceUnavailable, "Audio service unavailable");
@@ -556,6 +563,198 @@ Task<HttpResponsePtr> audio(HttpRequestPtr req, long long questionId) {
 }
 
 // ---------------------------------------------------------------- moderation
+
+// GET /api/tracks/{id}/audio   the clip behind a track, before any question uses
+// it. The editor needs to hear a candidate while picking its snippet, and
+// /api/audio/{question} is keyed by question id on purpose, which does not exist
+// until the quiz is saved. Caching here is also why the save is fast later:
+// ensureAudio writes tracks.audio_path, so createQuiz's pre-cache loop finds the
+// file already on disk.
+Task<HttpResponsePtr> trackAudio(HttpRequestPtr, long long trackId) {
+    try {
+        const auto rows = co_await app().getDbClient()->execSqlCoro(
+            "SELECT audio_path FROM tracks WHERE id = $1::bigint", trackId);
+        if (rows.empty()) co_return auth::error(k404NotFound, "No audio for that track");
+        co_return clip(trackId, rows[0]["audio_path"], "No audio for that track");
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Audio service unavailable");
+    }
+}
+
+// GET /api/tiers   the rarity tiers with their ids, which an answer's tier_id
+// override needs. /api/quiz/today serves names and points only, and 404s on a day
+// with no quiz, so the editor cannot read them there.
+Task<HttpResponsePtr> tiers(HttpRequestPtr) {
+    try {
+        Json::Value out(Json::arrayValue);
+        for (const auto &row : co_await app().getDbClient()->execSqlCoro(
+                 "SELECT id, name, points, sort_order FROM rarity_tiers ORDER BY sort_order")) {
+            Json::Value tier;
+            tier["id"] = row["id"].as<int>();
+            tier["name"] = row["name"].as<std::string>();
+            tier["points"] = row["points"].as<int>();
+            tier["sort_order"] = row["sort_order"].as<int>();
+            out.append(tier);
+        }
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+    }
+}
+
+// GET /api/quizzes?from=&to=   which days already have a quiz, so the editor can
+// show a calendar instead of guessing dates. attempts_started > 0 is what marks a
+// day frozen, before a save tries and collects a 409.
+Task<HttpResponsePtr> listQuizzes(HttpRequestPtr req) {
+    const auto from = req->getParameter("from"), to = req->getParameter("to");
+    if ((!from.empty() && !isIsoDate(from)) || (!to.empty() && !isIsoDate(to)))
+        co_return auth::error(k400BadRequest, "from and to must be YYYY-MM-DD");
+    try {
+        Json::Value out(Json::arrayValue);
+        for (const auto &row : co_await app().getDbClient()->execSqlCoro(
+                 "SELECT z.quiz_date::text AS quiz_date, z.published, "
+                 "  (SELECT count(*) FROM questions q WHERE q.quiz_id = z.id) AS questions, "
+                 "  (SELECT count(*) FROM attempts  a WHERE a.quiz_id = z.id) AS attempts_started, "
+                 "  (SELECT count(*) FROM attempts  a WHERE a.quiz_id = z.id "
+                 "     AND a.finished_at IS NOT NULL) AS attempts_finished "
+                 "FROM quizzes z "
+                 "WHERE z.quiz_date BETWEEN coalesce(nullif($1, '')::date, game_today() - 30) "
+                 "                      AND coalesce(nullif($2, '')::date, game_today() + 60) "
+                 "ORDER BY z.quiz_date DESC",
+                 from, to)) {
+            Json::Value day;
+            day["quiz_date"] = row["quiz_date"].as<std::string>();
+            day["published"] = row["published"].as<bool>();
+            day["questions"] = row["questions"].as<int>();
+            day["attempts_started"] = row["attempts_started"].as<int>();
+            day["attempts_finished"] = row["attempts_finished"].as<int>();
+            out.append(day);
+        }
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+    }
+}
+
+// PATCH /api/questions/{id}   the narrow way to fix a live day. Re-POSTing the
+// quiz replaces it only while nobody has played, so once the day has attempts
+// this is the only edit left -- and on a played day it is the prompt alone.
+// v0.3.0 froze points at answer time; moving a track, a snippet or the answer key
+// under people mid-flight would invalidate scores they have already been shown.
+// qtype, position, track_id and album_id are never editable: a different track is
+// a different question, and on an unplayed day re-POSTing the day already does it.
+Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
+    const auto body = req->getJsonObject();
+    if (!body) co_return auth::error(k400BadRequest, "Body must be JSON");
+
+    const bool hasPrompt = body->isMember("prompt"), hasLimit = body->isMember("time_limit_sec"),
+               hasStart = body->isMember("snippet_start_sec"), hasLen = body->isMember("snippet_len_sec"),
+               hasArtist = body->isMember("ask_artist"), hasTitle = body->isMember("ask_title");
+    if (!hasPrompt && !hasLimit && !hasStart && !hasLen && !hasArtist && !hasTitle)
+        co_return auth::error(k400BadRequest, "Nothing to change");
+    // The same wording validate() uses, so the editor renders one vocabulary.
+    if (hasPrompt && (!(*body)["prompt"].isString() || (*body)["prompt"].asString().empty()
+                      || (*body)["prompt"].asString().size() > 500))
+        co_return auth::error(k400BadRequest, "prompt must be 1 to 500 characters");
+    if (hasLimit && (!(*body)["time_limit_sec"].isIntegral() || (*body)["time_limit_sec"].asInt() < 5
+                     || (*body)["time_limit_sec"].asInt() > 60))
+        co_return auth::error(k400BadRequest, "time_limit_sec must be between 5 and 60");
+    if ((hasStart && !(*body)["snippet_start_sec"].isNumeric())
+        || (hasLen && !(*body)["snippet_len_sec"].isNumeric()))
+        co_return auth::error(k400BadRequest, "The snippet must fit inside the 30 second clip");
+    for (const char *flag : {"ask_artist", "ask_title"})
+        if (body->isMember(flag) && !(*body)[flag].isBool())
+            co_return auth::error(k400BadRequest, "ask_artist and ask_title must be booleans");
+
+    auto db = app().getDbClient();
+    try {
+        // The row and whether the day has been played, in one round trip: Drogon's
+        // PG driver reports every failure untyped, so this is decided up front.
+        const auto rows = co_await db->execSqlCoro(
+            "SELECT q.qtype::text AS qtype, q.ask_artist, q.ask_title, "
+            "  q.snippet_start_sec::float8 AS start_sec, q.snippet_len_sec::float8 AS len_sec, "
+            "  EXISTS (SELECT 1 FROM attempts a WHERE a.quiz_id = q.quiz_id) AS played "
+            "FROM questions q WHERE q.id = $1::bigint", questionId);
+        if (rows.empty()) co_return auth::error(k404NotFound, "No such question");
+        const auto qtype = rows[0]["qtype"].as<std::string>();
+
+        if (rows[0]["played"].as<bool>() && (hasLimit || hasStart || hasLen || hasArtist || hasTitle))
+            co_return auth::error(k409Conflict, "Only the prompt can change once the day has been played");
+        if ((hasStart || hasLen) && qtype != "song")
+            co_return auth::error(k400BadRequest, "Only song questions have a snippet");
+        if ((hasArtist || hasTitle) && qtype == "rarest")
+            co_return auth::error(k400BadRequest, "Only song and album questions ask for fields");
+
+        // Checked here rather than left to the DB CHECKs, so a moderator never
+        // reads Postgres's own words back out of the editor.
+        if (hasStart || hasLen) {
+            const double start = hasStart ? (*body)["snippet_start_sec"].asDouble() : rows[0]["start_sec"].as<double>();
+            const double len = hasLen ? (*body)["snippet_len_sec"].asDouble() : rows[0]["len_sec"].as<double>();
+            if (start < 0 || len < 1 || start + len > 30)
+                co_return auth::error(k400BadRequest, "The snippet must fit inside the 30 second clip");
+        }
+        if (hasArtist || hasTitle) {
+            const bool artist = hasArtist ? (*body)["ask_artist"].asBool() : rows[0]["ask_artist"].as<bool>();
+            const bool title = hasTitle ? (*body)["ask_title"].asBool() : rows[0]["ask_title"].as<bool>();
+            if (!artist && !title)
+                co_return auth::error(k400BadRequest,
+                                      "A song or album question must ask for the artist, the title or both");
+        }
+
+        // An absent key keeps its column: '' stands in for "not given", the same
+        // shape review_answer's optional arguments use.
+        const auto text = [&](const char *key, bool has) {
+            return has ? ((*body)[key].isString() ? (*body)[key].asString() : (*body)[key].toStyledString())
+                       : std::string{};
+        };
+        const auto number = [&](const char *key, bool has) {
+            return has ? std::to_string((*body)[key].asDouble()) : std::string{};
+        };
+        const auto updated = co_await db->execSqlCoro(
+            "UPDATE questions SET "
+            "  prompt = coalesce(nullif($2, ''), prompt), "
+            "  time_limit_sec = coalesce(nullif($3, '')::numeric::int, time_limit_sec), "
+            "  snippet_start_sec = coalesce(nullif($4, '')::numeric, snippet_start_sec), "
+            "  snippet_len_sec = coalesce(nullif($5, '')::numeric, snippet_len_sec), "
+            "  ask_artist = coalesce(nullif($6, '')::bool, ask_artist), "
+            "  ask_title = coalesce(nullif($7, '')::bool, ask_title) "
+            "WHERE id = $1::bigint "
+            "RETURNING id, position, qtype::text AS qtype, prompt, time_limit_sec, "
+            "  snippet_start_sec::float8 AS snippet_start_sec, snippet_len_sec::float8 AS snippet_len_sec, "
+            "  ask_artist, ask_title, "
+            "  (SELECT quiz_date::text FROM quizzes z WHERE z.id = quiz_id) AS quiz_date",
+            questionId, text("prompt", hasPrompt), number("time_limit_sec", hasLimit),
+            number("snippet_start_sec", hasStart), number("snippet_len_sec", hasLen),
+            hasArtist ? ((*body)["ask_artist"].asBool() ? "true" : "false") : "",
+            hasTitle ? ((*body)["ask_title"].asBool() ? "true" : "false") : "");
+        if (updated.empty()) co_return auth::error(k404NotFound, "No such question");
+
+        const auto &row = updated[0];
+        Json::Value out;
+        out["id"] = row["id"].as<Json::Int64>();
+        out["quiz_date"] = row["quiz_date"].as<std::string>();
+        out["position"] = row["position"].as<int>();
+        out["qtype"] = row["qtype"].as<std::string>();
+        out["prompt"] = row["prompt"].as<std::string>();
+        out["time_limit_sec"] = row["time_limit_sec"].as<int>();
+        out["snippet_start_sec"] = row["snippet_start_sec"].isNull()
+            ? Json::Value() : Json::Value(row["snippet_start_sec"].as<double>());
+        out["snippet_len_sec"] = row["snippet_len_sec"].isNull()
+            ? Json::Value() : Json::Value(row["snippet_len_sec"].as<double>());
+        if (out["qtype"] != "rarest") {          // omitted for rarest, as getQuiz does
+            out["ask_artist"] = row["ask_artist"].as<bool>();
+            out["ask_title"] = row["ask_title"].as<bool>();
+        }
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+    }
+}
+
 
 // The whole quiz as a moderator sees it: prompts, the track behind a song
 // question, and every answer with its verdict and guess count. Player routes
@@ -589,7 +788,8 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                  "  q.snippet_start_sec::float8 AS snippet_start_sec, "
                  "  q.snippet_len_sec::float8 AS snippet_len_sec, "
                  "  t.id AS track_id, t.title AS track_title, ar.name AS artist, "
-                 "  q.ask_artist, q.ask_title, q.album_id, d.title AS album_title, dar.name AS album_artist "
+                 "  q.ask_artist, q.ask_title, q.album_id, d.title AS album_title, dar.name AS album_artist, "
+                 "  d.cover_url AS album_cover "
                  "FROM questions q LEFT JOIN tracks t ON t.id = q.track_id "
                  "LEFT JOIN albums al ON al.id = t.album_id LEFT JOIN artists ar ON ar.id = al.artist_id "
                  "LEFT JOIN albums d ON d.id = q.album_id LEFT JOIN artists dar ON dar.id = d.artist_id "
@@ -626,6 +826,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                 album["id"] = row["album_id"].as<Json::Int64>();
                 album["title"] = row["album_title"].as<std::string>();
                 album["artist"] = nullable(row["album_artist"]);
+                album["cover"] = nullable(row["album_cover"]);
                 question["album"] = album;
             }
             if (question["qtype"] != "rarest") {
@@ -1009,7 +1210,11 @@ void registerRoutes() {
     app().registerHandler("/api/suggest", &suggest, {Get});
     app().registerHandler("/api/known", &known, {Get});
     app().registerHandler("/api/ideas", &idea, {Post, "auth::Optional"});
+    app().registerHandler("/api/quizzes", &listQuizzes, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quizzes/{1}", &getQuiz, {Get, "auth::Optional", "auth::Moderator"});
+    app().registerHandler("/api/questions/{1}", &patchQuestion, {Patch, "auth::Optional", "auth::Moderator"});
+    app().registerHandler("/api/tracks/{1}/audio", &trackAudio, {Get, "auth::Optional", "auth::Moderator"});
+    app().registerHandler("/api/tiers", &tiers, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quizzes/{1}", &patchQuiz, {Patch, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/answers/{1}", &patchAnswer, {Patch, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/answers/{1}/merge", &mergeAnswer, {Post, "auth::Optional", "auth::Moderator"});
