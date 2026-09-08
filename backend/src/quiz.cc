@@ -68,64 +68,69 @@ Task<std::string> playerFor(HttpRequestPtr req) {
     }
 }
 
-// Serve the attempt's current question, stamping when it was first shown, and
-// report the attempt's progress. Re-serving the same question keeps the original
-// started_at, so a refresh does not hand out extra time.
-Task<Json::Value> progress(long long attemptId) {
+// Report the attempt's progress and, when serve is set, hand over its current
+// question, stamping when it was first shown. Re-serving the same question keeps
+// the original started_at, so a refresh does not hand out extra time.
+// serve = false is the answer route: reading a result must not start the next
+// question's timer. The client asks for the next one with POST /api/attempts.
+Task<Json::Value> progress(long long attemptId, bool serve = true) {
     auto db = app().getDbClient();
-    const auto served = co_await db->execSqlCoro(
-        "UPDATE attempts a SET question_started_at = coalesce(a.question_started_at, now()) "
-        "FROM questions q "
-        "WHERE a.id = $1::bigint AND q.quiz_id = a.quiz_id "
-        "  AND q.position = (SELECT count(*) + 1 FROM attempt_answers aa WHERE aa.attempt_id = a.id) "
-        "RETURNING a.quiz_id, a.total_points, "
-        "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = a.id) AS answered, "
-        "  q.id AS question_id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
-        "  q.snippet_start_sec::float8 AS snippet_start_sec, q.snippet_len_sec::float8 AS snippet_len_sec, "
-        "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
-        "  to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
-        "          'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS deadline",
-        attemptId);
-
     Json::Value out;
     out["id"] = static_cast<Json::Int64>(attemptId);
-    if (served.empty()) {  // every question answered, or the attempt is gone
-        const auto rows = co_await db->execSqlCoro(
-            "SELECT quiz_id, total_points, finished_at IS NOT NULL AS finished, "
-            "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = attempts.id) AS answered "
-            "FROM attempts WHERE id = $1::bigint",
+
+    if (serve) {
+        const auto served = co_await db->execSqlCoro(
+            "UPDATE attempts a SET question_started_at = coalesce(a.question_started_at, now()) "
+            "FROM questions q "
+            "WHERE a.id = $1::bigint AND q.quiz_id = a.quiz_id "
+            "  AND q.position = (SELECT count(*) + 1 FROM attempt_answers aa WHERE aa.attempt_id = a.id) "
+            "RETURNING a.quiz_id, a.total_points, "
+            "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = a.id) AS answered, "
+            "  q.id AS question_id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
+            "  q.snippet_start_sec::float8 AS snippet_start_sec, q.snippet_len_sec::float8 AS snippet_len_sec, "
+            "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
+            "  to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
+            "          'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS deadline",
             attemptId);
-        if (rows.empty()) co_return Json::Value();
-        out["quiz_id"] = rows[0]["quiz_id"].as<Json::Int64>();
-        out["total_points"] = rows[0]["total_points"].as<int>();
-        out["answered"] = rows[0]["answered"].as<int>();
-        out["finished"] = rows[0]["finished"].as<bool>();
-        out["question"] = Json::Value();
-        co_return out;
+        if (!served.empty()) {
+            const auto &row = served[0];
+            out["quiz_id"] = row["quiz_id"].as<Json::Int64>();
+            out["total_points"] = row["total_points"].as<int>();
+            out["answered"] = row["answered"].as<int>();
+            out["finished"] = false;
+            Json::Value question;
+            question["id"] = row["question_id"].as<Json::Int64>();
+            question["position"] = row["position"].as<int>();
+            question["qtype"] = row["qtype"].as<std::string>();
+            question["prompt"] = row["prompt"].as<std::string>();
+            question["time_limit_sec"] = row["time_limit_sec"].as<int>();
+            question["started_at"] = nullable(row["started_at"]);
+            question["deadline"] = nullable(row["deadline"]);
+            // Never the track id: tracks are world readable through the anon key, so it
+            // would give away the song. The clip is fetched by question id instead.
+            if (question["qtype"] == "song") {
+                question["snippet_start_sec"] = row["snippet_start_sec"].as<double>();
+                if (!row["snippet_len_sec"].isNull())
+                    question["snippet_len_sec"] = row["snippet_len_sec"].as<double>();
+                question["audio"] = "/api/audio/" + row["question_id"].as<std::string>();
+            }
+            out["question"] = question;
+            co_return out;
+        }
     }
 
-    const auto &row = served[0];
-    out["quiz_id"] = row["quiz_id"].as<Json::Int64>();
-    out["total_points"] = row["total_points"].as<int>();
-    out["answered"] = row["answered"].as<int>();
-    out["finished"] = false;
-    Json::Value question;
-    question["id"] = row["question_id"].as<Json::Int64>();
-    question["position"] = row["position"].as<int>();
-    question["qtype"] = row["qtype"].as<std::string>();
-    question["prompt"] = row["prompt"].as<std::string>();
-    question["time_limit_sec"] = row["time_limit_sec"].as<int>();
-    question["started_at"] = nullable(row["started_at"]);
-    question["deadline"] = nullable(row["deadline"]);
-    // Never the track id: tracks are world readable through the anon key, so it
-    // would give away the song. The clip is fetched by question id instead.
-    if (question["qtype"] == "song") {
-        question["snippet_start_sec"] = row["snippet_start_sec"].as<double>();
-        if (!row["snippet_len_sec"].isNull())
-            question["snippet_len_sec"] = row["snippet_len_sec"].as<double>();
-        question["audio"] = "/api/audio/" + row["question_id"].as<std::string>();
-    }
-    out["question"] = question;
+    // Not serving, every question answered, or the attempt is gone.
+    const auto rows = co_await db->execSqlCoro(
+        "SELECT quiz_id, total_points, finished_at IS NOT NULL AS finished, "
+        "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = attempts.id) AS answered "
+        "FROM attempts WHERE id = $1::bigint",
+        attemptId);
+    if (rows.empty()) co_return Json::Value();
+    out["quiz_id"] = rows[0]["quiz_id"].as<Json::Int64>();
+    out["total_points"] = rows[0]["total_points"].as<int>();
+    out["answered"] = rows[0]["answered"].as<int>();
+    out["finished"] = rows[0]["finished"].as<bool>();
+    out["question"] = Json::Value();
     co_return out;
 }
 
@@ -269,10 +274,32 @@ Task<HttpResponsePtr> today(HttpRequestPtr req) {
                 quizId, player, who.id);
             if (!rows.empty()) {
                 Json::Value attempt;
-                attempt["id"] = rows[0]["id"].as<Json::Int64>();
+                const auto attemptId = rows[0]["id"].as<long long>();
+                attempt["id"] = static_cast<Json::Int64>(attemptId);
                 attempt["total_points"] = rows[0]["total_points"].as<int>();
                 attempt["answered"] = rows[0]["answered"].as<int>();
                 attempt["finished"] = rows[0]["finished"].as<bool>();
+                // Your own answers, so a refresh mid-flight or after landing still
+                // shows the tiers. Never anyone else's, and never the answer key:
+                // only the display of the answer this player's guess resolved to.
+                Json::Value answers(Json::arrayValue);
+                for (const auto &row : co_await db->execSqlCoro(
+                         "SELECT q.position, aa.raw_text, aa.points, rt.name AS tier, "
+                         "  coalesce(qa.is_correct, false) AS correct "
+                         "FROM attempt_answers aa JOIN questions q ON q.id = aa.question_id "
+                         "LEFT JOIN question_answers qa ON qa.id = aa.answer_id "
+                         "LEFT JOIN rarity_tiers rt ON rt.id = aa.tier_id "
+                         "WHERE aa.attempt_id = $1::bigint ORDER BY q.position",
+                         attemptId)) {
+                    Json::Value answer;
+                    answer["position"] = row["position"].as<int>();
+                    answer["raw_text"] = row["raw_text"].as<std::string>();
+                    answer["correct"] = row["correct"].as<bool>();
+                    answer["tier"] = nullable(row["tier"]);
+                    answer["points"] = row["points"].as<int>();
+                    answers.append(answer);
+                }
+                attempt["answers"] = answers;
                 out["attempt"] = attempt;
             }
         }
@@ -303,13 +330,20 @@ Task<HttpResponsePtr> startAttempt(HttpRequestPtr req) {
         if (!existing.empty()) {
             attemptId = existing[0][0].as<long long>();
         } else {
+            // Two requests from one browser can reach this together: the client asks
+            // for the next question with the same POST, and React's StrictMode alone
+            // fires it twice. ON CONFLICT hands both the same flight, and xmax tells
+            // which one actually created it (0 on a fresh insert).
             // ponytail: two browsers of one account starting in the same instant can
-            // each get an attempt; the per-player UNIQUE still holds. Advisory lock if it matters.
+            // still each get an attempt; the UNIQUE only covers one player row.
+            // Advisory lock if it matters.
             const auto rows = co_await db->execSqlCoro(
-                "INSERT INTO attempts (player_id, quiz_id) VALUES ($1::uuid, $2::bigint) RETURNING id",
+                "INSERT INTO attempts (player_id, quiz_id) VALUES ($1::uuid, $2::bigint) "
+                "ON CONFLICT (player_id, quiz_id) DO UPDATE SET quiz_id = excluded.quiz_id "
+                "RETURNING id, xmax = 0 AS created",
                 player, quizId);
-            attemptId = rows[0][0].as<long long>();
-            created = true;
+            attemptId = rows[0]["id"].as<long long>();
+            created = rows[0]["created"].as<bool>();
         }
         co_return json(co_await progress(attemptId), created ? k201Created : k200OK);
     } catch (const orm::DrogonDbException &e) {
@@ -356,7 +390,9 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
         result["tier"] = nullable(row["tier"]);
         result["points"] = row["points"].as<int>();
 
-        auto out = co_await progress(attemptId);
+        // serve = false: the next question's timer starts when the player asks for
+        // it with POST /api/attempts, not while they are reading this result.
+        auto out = co_await progress(attemptId, false);
         out["result"] = result;
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {

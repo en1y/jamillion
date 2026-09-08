@@ -55,9 +55,20 @@ def fetch_audio(path):
     return response.status, response.read(), response.headers
 
 
+def serve(cookie, token=None):
+    """POST /api/attempts hands over the current question and starts its timer."""
+    status, body, _ = api('/api/attempts', {}, cookie=cookie, token=token)
+    return status, body
+
+
 def answer(cookie, attempt_id, question_id, text):
+    """Serve the current question, then answer it. Since v0.6.0 the answer response
+    carries the result and the totals but never the next question: that one is served
+    by the next POST /api/attempts, so reading a result costs no time on the next."""
+    serve(cookie)
     status, body, _ = api(f'/api/attempts/{attempt_id}/answers',
                           {'question_id': question_id, 'text': text}, cookie=cookie)
+    assert status != 200 or body['question'] is None, body
     return status, body
 
 
@@ -151,7 +162,13 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert status == 200, (status, body)
         assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Main Sequence', 'points': 30}, body['result']
         assert body['total_points'] == 30 and body['answered'] == 1
-        assert body['question']['position'] == 2
+        # Answering does not serve the next question, so no timer is running while
+        # the player reads the result; POST /api/attempts starts question 2's.
+        assert db.execute('SELECT question_started_at FROM attempts WHERE id = %s',
+                          (attempt_id,)).fetchone()[0] is None
+        status, served = serve(cookie)
+        assert status == 200 and served['question']['position'] == 2
+        assert served['question']['started_at'] and served['question']['deadline'] > served['question']['started_at']
         assert answer(cookie, attempt_id, questions[1], 'Kid A')[0] == 409     # already answered
 
         # -------------------------------------------------- unknown, skip, timeout
@@ -178,9 +195,10 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         status, body = answer(cookie, attempt_id, questions[6], 'Answer 6')
         assert body['result']['points'] == 10 and body['total_points'] == 50
         song_id = questions[7]
-        assert body['question']['id'] == song_id and body['question']['qtype'] == 'song'
-        assert body['question']['audio'] == f'/api/audio/{song_id}'
-        assert body['question']['snippet_start_sec'] == 12 and body['question']['snippet_len_sec'] == 10
+        status, served = serve(cookie)
+        assert served['question']['id'] == song_id and served['question']['qtype'] == 'song'
+        assert served['question']['audio'] == f'/api/audio/{song_id}'
+        assert served['question']['snippet_start_sec'] == 12 and served['question']['snippet_len_sec'] == 10
         status, body = answer(cookie, attempt_id, song_id, 'radiohead creep')  # moderator override wins
         assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Supernova', 'points': 100}, body['result']
         assert body['finished'] is True and body['total_points'] == 150 and body['question'] is None
@@ -189,8 +207,18 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert answer(cookie, attempt_id, song_id, 'again')[0] == 409
 
         status, today, _ = api('/api/quiz/today', cookie=cookie)
-        assert today['attempt'] == {'id': attempt_id, 'total_points': 150, 'answered': 7, 'finished': True}, today['attempt']
+        landed = today['attempt']
+        assert {k: landed[k] for k in ('id', 'total_points', 'answered', 'finished')} == \
+               {'id': attempt_id, 'total_points': 150, 'answered': 7, 'finished': True}, landed
         assert today['players_finished'] >= 1
+        # The flight's own answers come back with it, so a refresh still shows the tiers.
+        own = landed['answers']
+        assert [a['position'] for a in own] == [1, 2, 3, 4, 5, 6, 7], own
+        assert own[0] == {'position': 1, 'raw_text': '  KID-a! ', 'correct': True,
+                          'tier': 'Main Sequence', 'points': 30}, own[0]
+        assert own[2] == {'position': 3, 'raw_text': '', 'correct': False, 'tier': None, 'points': 0}, own[2]
+        assert own[6]['tier'] == 'Supernova' and own[6]['points'] == 100, own[6]
+        assert 'normalized' not in str(own) and 'OK Computer' not in str(own)
 
         # -------------------------------------------------- audio
         status, clip, headers = fetch_audio(f'/api/audio/{song_id}')
@@ -237,7 +265,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert status != 200, 'anon must not be able to call the scorer'
 
         print('PASS: quiz create/validation, one-at-a-time delivery, rarity tiers, overrides,'
-              ' timeout/skip, finish, audio by question, per-account dedupe, answer-key and questions RLS')
+              ' timeout/skip, finish, audio by question, per-account dedupe, answer-key and questions RLS,'
+              ' the answer response never serving the next question,'
+              ' and own answers on /api/quiz/today')
     finally:
         if quiz_id:
             db.execute('DELETE FROM quizzes WHERE id = %s', (quiz_id,))
