@@ -141,6 +141,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         status, today, _ = api('/api/quiz/today')
         assert status == 200 and today['id'] == quiz_id and today['question_count'] == 7
         assert today['attempt'] is None and len(today['tiers']) == 6
+        assert today['flight_no'] >= 1
         blob = str(today)
         for leak in ('OK Computer', 'answers', 'track_id', 'normalized'):
             assert leak not in blob, leak
@@ -255,6 +256,10 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert [a['display'] for a in song['answers']] == ['Radiohead Creep', 'Radiohead'], song['answers']
         assert song['answers'][0]['tier'] == 'Supernova' and song['answers'][0]['yours'] is True
         assert 'normalized' not in str(sheet) and 'track_id' not in str(sheet)
+        assert len(sheet['dist']) == 36 and sheet['better_than'] >= 0
+        st, idea, _ = api('/api/ideas', {'text': 'name a dwarf planet'}, cookie=cookie)
+        assert st == 200 and idea.get('ok') is True, (st, idea)
+        assert api('/api/ideas', {'text': 'no'}, cookie=cookie)[0] == 400
 
         # -------------------------------------------------- completions
         status, names, _ = api('/api/suggest?kind=artist&q=' + urllib.parse.quote(artist_name[:3]))

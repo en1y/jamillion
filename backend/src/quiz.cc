@@ -1,7 +1,9 @@
 #include "quiz.h"
 #include "auth.h"
 #include "util.h"
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -258,7 +260,9 @@ Task<HttpResponsePtr> today(HttpRequestPtr req) {
             "SELECT z.id, z.quiz_date::text AS quiz_date, "
             "  (SELECT count(*) FROM questions q WHERE q.quiz_id = z.id) AS question_count, "
             "  (SELECT count(*) FROM attempts att WHERE att.quiz_id = z.id AND att.finished_at IS NOT NULL) "
-            "    AS players_finished "
+            "    AS players_finished, "
+            "  (SELECT count(*) FROM quizzes o WHERE o.published AND o.quiz_date <= z.quiz_date) "
+            "    AS flight_no "
             "FROM quizzes z WHERE z.quiz_date = game_today() AND z.published");
         if (quizzes.empty()) co_return auth::error(k404NotFound, "No quiz today");
         const auto quizId = quizzes[0]["id"].as<long long>();
@@ -268,6 +272,7 @@ Task<HttpResponsePtr> today(HttpRequestPtr req) {
         out["quiz_date"] = quizzes[0]["quiz_date"].as<std::string>();
         out["question_count"] = quizzes[0]["question_count"].as<int>();
         out["players_finished"] = quizzes[0]["players_finished"].as<int>();
+        out["flight_no"] = quizzes[0]["flight_no"].as<int>();
         out["attempt"] = Json::Value();
 
         Json::Value tiers(Json::arrayValue);
@@ -397,6 +402,27 @@ Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
 
         Json::Value out;
         out["questions"] = questions;
+
+        // Score curve of everyone who has landed today, 20-point bins 0–700.
+        Json::Value dist(Json::arrayValue);
+        for (int i = 0; i < 36; i++) dist.append(0);
+        int finished = 0, beaten = 0, score = 0;
+        const auto totals = co_await db->execSqlCoro(
+            "SELECT a.total_points, (a.id = $2::bigint) AS yours "
+            "FROM attempts a WHERE a.quiz_id = $1::bigint AND a.finished_at IS NOT NULL",
+            quizId, attemptId);
+        for (const auto &row : totals) {
+            const int points = row["total_points"].as<int>();
+            const int bin = std::min(35, std::max(0, points / 20));
+            dist[bin] = dist[bin].asInt() + 1;
+            finished++;
+            if (row["yours"].as<bool>()) score = points;
+        }
+        for (const auto &row : totals)
+            if (row["total_points"].as<int>() < score) beaten++;
+        out["dist"] = dist;
+        out["better_than"] = finished ? static_cast<int>(std::lround(100.0 * beaten / finished)) : 0;
+
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {
         LOG_ERROR << e.base().what();
@@ -853,6 +879,39 @@ Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
         co_return auth::error(k503ServiceUnavailable, "Catalog unavailable");
     }
 }
+
+// Question ideas from landed (or any) players. Three per game day; the catalog
+// suggest stays GET /api/suggest, so this lives next door.
+Task<HttpResponsePtr> idea(HttpRequestPtr req) {
+    const auto player = co_await playerFor(req);
+    if (player.empty()) co_return auth::error(k401Unauthorized, "No player passport: GET /api/me first");
+    const auto body = req->getJsonObject();
+    auto text = body && (*body)["text"].isString() ? (*body)["text"].asString() : std::string{};
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t' || text.front() == '\n')) text.erase(text.begin());
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\n')) text.pop_back();
+    if (text.size() < 3 || text.size() > 160)
+        co_return auth::error(k400BadRequest, "Idea must be 3 to 160 characters");
+    try {
+        const auto used = co_await app().getDbClient()->execSqlCoro(
+            "SELECT count(*) FROM question_ideas WHERE player_id = $1::uuid "
+            "  AND ((created_at AT TIME ZONE 'UTC') - interval '4 hours')::date = game_today()",
+            player);
+        if (used[0][0].as<long long>() >= 3) {
+            Json::Value out;
+            out["ok"] = false;
+            out["reason"] = "throttled";
+            co_return json(out);
+        }
+        co_await app().getDbClient()->execSqlCoro(
+            "INSERT INTO question_ideas (player_id, body) VALUES ($1::uuid, $2)", player, text);
+        Json::Value out;
+        out["ok"] = true;
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Could not log that idea");
+    }
+}
 }  // namespace
 
 void configure(const std::filesystem::path &root) {
@@ -870,6 +929,7 @@ void registerRoutes() {
     app().registerHandler("/api/attempts/{1}/answers", &answer, {Post, "auth::Optional"});
     app().registerHandler("/api/audio/{1}", &audio, {Get, "auth::Optional"});
     app().registerHandler("/api/suggest", &suggest, {Get});
+    app().registerHandler("/api/ideas", &idea, {Post, "auth::Optional"});
     app().registerHandler("/api/quizzes/{1}", &getQuiz, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quizzes/{1}", &patchQuiz, {Patch, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/answers/{1}", &patchAnswer, {Patch, "auth::Optional", "auth::Moderator"});
