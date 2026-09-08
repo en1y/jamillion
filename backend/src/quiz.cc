@@ -327,6 +327,83 @@ Task<HttpResponsePtr> today(HttpRequestPtr req) {
     }
 }
 
+// The answer key, but only after this player has landed: prompts plus every
+// accepted answer, rarest first, the way Krillion surfaces the catch.
+Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
+    const auto player = co_await playerFor(req);
+    if (player.empty()) co_return auth::error(k401Unauthorized, "No player passport: GET /api/me first");
+    const auto &who = req->attributes()->get<auth::Identity>("identity");
+    auto db = app().getDbClient();
+    try {
+        const auto quizzes = co_await db->execSqlCoro(
+            "SELECT id FROM quizzes WHERE quiz_date = game_today() AND published");
+        if (quizzes.empty()) co_return auth::error(k404NotFound, "No quiz today");
+        const auto quizId = quizzes[0][0].as<long long>();
+
+        const auto flights = co_await db->execSqlCoro(
+            "SELECT a.id FROM attempts a JOIN players p ON p.id = a.player_id "
+            "WHERE a.quiz_id = $1::bigint AND a.finished_at IS NOT NULL "
+            "  AND (a.player_id = $2::uuid OR p.user_id = nullif($3, '')::uuid) LIMIT 1",
+            quizId, player, who.id);
+        if (flights.empty()) co_return auth::error(k403Forbidden, "Finish today's flight first");
+        const auto attemptId = flights[0][0].as<long long>();
+
+        Json::Value questions(Json::arrayValue);
+        std::map<long long, Json::ArrayIndex> index;
+        for (const auto &row : co_await db->execSqlCoro(
+                 "SELECT id, position, prompt FROM questions WHERE quiz_id = $1::bigint ORDER BY position",
+                 quizId)) {
+            const auto id = row["id"].as<long long>();
+            Json::Value question;
+            question["position"] = row["position"].as<int>();
+            question["prompt"] = row["prompt"].as<std::string>();
+            question["answers"] = Json::Value(Json::arrayValue);
+            index[id] = questions.size();
+            questions.append(question);
+        }
+
+        // Override tier wins; otherwise the live share, same rule as submit_answer.
+        // Unguessed answers have share 0 and land on the rarest tier.
+        for (const auto &row : co_await db->execSqlCoro(
+                 "SELECT qa.question_id, qa.display, "
+                 "  coalesce(ov.name, live.name) AS tier, "
+                 "  coalesce(ov.points, live.points) AS points, "
+                 "  coalesce(ov.sort_order, live.sort_order, 0) AS sort_order, "
+                 "  (aa.answer_id IS NOT NULL) AS yours "
+                 "FROM question_answers qa "
+                 "LEFT JOIN rarity_tiers ov ON ov.id = qa.tier_id "
+                 "LEFT JOIN LATERAL ("
+                 "  SELECT rt.name, rt.points, rt.sort_order FROM rarity_tiers rt "
+                 "  WHERE qa.tier_id IS NULL AND rt.max_share >= ("
+                 "    qa.guess_count::numeric / greatest("
+                 "      (SELECT count(*)::numeric FROM attempt_answers WHERE question_id = qa.question_id), 1))"
+                 "  ORDER BY rt.max_share LIMIT 1"
+                 ") live ON true "
+                 "LEFT JOIN attempt_answers aa ON aa.question_id = qa.question_id "
+                 "  AND aa.attempt_id = $2::bigint AND aa.answer_id = qa.id "
+                 "WHERE qa.is_correct AND qa.question_id IN "
+                 "  (SELECT id FROM questions WHERE quiz_id = $1::bigint) "
+                 "ORDER BY sort_order DESC, qa.display",
+                 quizId, attemptId)) {
+            const auto slot = index.find(row["question_id"].as<long long>());
+            if (slot == index.end()) continue;
+            Json::Value answer;
+            answer["display"] = row["display"].as<std::string>();
+            answer["tier"] = nullable(row["tier"]);
+            answer["points"] = row["points"].isNull() ? 0 : row["points"].as<int>();
+            answer["yours"] = row["yours"].as<bool>();
+            questions[slot->second]["answers"].append(answer);
+        }
+
+        Json::Value out;
+        out["questions"] = questions;
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+    }
+}
+
 Task<HttpResponsePtr> startAttempt(HttpRequestPtr req) {
     const auto player = co_await playerFor(req);
     if (player.empty()) co_return auth::error(k401Unauthorized, "No player passport: GET /api/me first");
@@ -788,6 +865,7 @@ void configure(const std::filesystem::path &root) {
 void registerRoutes() {
     app().registerHandler("/api/quizzes", &createQuiz, {Post, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quiz/today", &today, {Get, "auth::Optional"});
+    app().registerHandler("/api/quiz/today/reveal", &reveal, {Get, "auth::Optional"});
     app().registerHandler("/api/attempts", &startAttempt, {Post, "auth::Optional"});
     app().registerHandler("/api/attempts/{1}/answers", &answer, {Post, "auth::Optional"});
     app().registerHandler("/api/audio/{1}", &audio, {Get, "auth::Optional"});

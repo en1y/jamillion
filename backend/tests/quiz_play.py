@@ -233,6 +233,25 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert own[6]['tier'] == 'Supernova' and own[6]['points'] == 100, own[6]
         assert 'normalized' not in str(own) and 'OK Computer' not in str(own)
 
+        # -------------------------------------------------- the haul, after landing
+        assert api('/api/quiz/today/reveal')[0] == 401
+        _, still_diving = me()
+        api('/api/attempts', {}, cookie=still_diving)
+        assert api('/api/quiz/today/reveal', cookie=still_diving)[0] == 403
+        status, sheet, _ = api('/api/quiz/today/reveal', cookie=cookie)
+        assert status == 200, (status, sheet)
+        assert [q['position'] for q in sheet['questions']] == [1, 2, 3, 4, 5, 6, 7]
+        q1 = sheet['questions'][0]
+        assert q1['prompt'] == 'Name a Radiohead album'
+        # Rarest first: Kid A (Main Sequence) above the crowd's OK Computer (Nebula).
+        assert [a['display'] for a in q1['answers']] == ['Kid A', 'OK Computer'], q1['answers']
+        assert q1['answers'][0]['yours'] is True and q1['answers'][1]['yours'] is False
+        assert q1['answers'][0]['tier'] == 'Main Sequence' and q1['answers'][1]['tier'] == 'Nebula'
+        song = sheet['questions'][6]
+        assert [a['display'] for a in song['answers']] == ['Radiohead Creep', 'Radiohead'], song['answers']
+        assert song['answers'][0]['tier'] == 'Supernova' and song['answers'][0]['yours'] is True
+        assert 'normalized' not in str(sheet) and 'track_id' not in str(sheet)
+
         # -------------------------------------------------- completions
         status, names, _ = api('/api/suggest?kind=artist&q=' + urllib.parse.quote(artist_name[:3]))
         assert status == 200 and artist_name in names, (artist_name, names)
@@ -287,8 +306,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
 
         print('PASS: quiz create/validation, one-at-a-time delivery, rarity tiers, overrides,'
               ' timeout/skip, finish, audio by question, per-account dedupe, answer-key and questions RLS,'
-              ' the answer response never serving the next question,'
-              ' and own answers on /api/quiz/today')
+              ' the answer response never serving the next question, own answers on /api/quiz/today,'
+              ' and the post-flight reveal sorted by rarity')
     finally:
         if quiz_id:
             db.execute('DELETE FROM quizzes WHERE id = %s', (quiz_id,))
