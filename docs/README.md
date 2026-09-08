@@ -2,7 +2,7 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
 
-**Current: v0.7.1 — Results, Krillion-shaped.** After a flight the page is Krillion's landing screen in space: a score curve of today's pilots, a 7-question flight log, the bearing for what the total means, copy-by-flight-number, every accepted answer under the haul, a logbook, a countdown to 04:00 UTC, a GitHub bug link and a box for question ideas. The solar system is still the page behind it.
+**Current: v0.8.0 — flight history.** Every flight you have flown is on `/#/flights`: how many, the current streak, best and average altitude, and one expandable row per flight with its date, altitude and tier grid. It comes from the server, so it follows the account across browsers and sits on the guest passport otherwise.
 
 ## The game
 

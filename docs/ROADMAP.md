@@ -122,13 +122,25 @@ Decisions worth carrying forward:
 Decisions worth carrying forward:
 
 - **The bearing is total-score bands, not per-answer tiers.** A 150-point flight is still a Nebula even if one answer was a Supernova, the same way Krillion's 0–150 is still Plankton. Protostar is skipped as a band, as Too Clever is on Krillion.
-- **The logbook lives in localStorage** until account history exists. A reload of the same day does not double-count; a gap in `quiz_date` breaks the streak.
+- **The logbook lived in localStorage** until account history existed. v0.8.0 derives it from the server instead: see there.
 - **Bugs go to GitHub**, `en1y/jamillion` issues, not a mailbox. Ideas go through the backend so they sit next to the quiz they might become.
 
-## v0.8.0 — Frontend: accounts and moderator
+## v0.8.0 — Frontend: flight history
 
-- Login / register / history.
-- Quiz editor: track search, waveform + snippet picker, answer/tier table.
+Login and register already shipped with v0.2.0's `#/account` panel, so the unbuilt half of "accounts" was history. The quiz editor is its own tag below, because a minor bump should work end to end.
+
+- [x] `GET /api/me/flights` — every flight this passport has flown, newest first, with the tier and points of each answer. Guests included: the passport is the `jam_player` cookie.
+- [x] `#/flights`, behind the dock's flight log button: flights, streak, best and average altitude, one expandable row per flight with its tier grid.
+- [x] The logbook on the results screen is derived from those flights; the localStorage one is gone.
+
+Decisions worth carrying forward:
+
+- **History is a route, not a client cache.** The query is `getPlayer`'s, with the same account fan-out (`p.user_id = (SELECT user_id FROM players WHERE id = $1)`), so a signed-in player sees one history whichever browser they fly from. A guest row matches only itself, because its `user_id` is NULL and NULL matches nothing.
+- **It names the tier, never the accepted answer.** `/api/players/{id}` reports the `matched` display because it is a moderator route; this one keeps v0.6.0's rule that your own results carry the tier you were shown. The answers come back in exactly the shape `/api/quiz/today` uses, so the frontend needed no new type.
+- **One source for the streak.** The localStorage logbook was deleted rather than kept beside the server's, because two counters for one streak is a bug that only shows up on someone else's browser. `summarize()` walks the flights newest-first with the same `nextIsoDate` step the old `recordFlight` used.
+- **One row per day, the best one.** `attempts` is unique per `(player_id, quiz_id)`, not per account, so two browsers that each flew a day as guests and then signed into the same account own two attempts for it. `DISTINCT ON (quiz_date)` collapses them; without it the streak stopped at 1 and React saw a duplicate key.
+- **A 401 renders as an empty log.** A browser that has never called `/api/me` has no passport, which to a player is the same thing as no flights.
+
 
 ## v0.9.0 — Frontend: admin
 

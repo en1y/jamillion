@@ -148,7 +148,7 @@ On a fresh database there is no quiz to play. This writes a music quiz for the c
 psql "$DATABASE_URL" -f scripts/demo_quiz.sql
 ```
 
-A guest needs no account: the `jam_player` cookie is the passport. Reloading mid-flight returns to the current question with the time that is left, so the button reads **RESUME ASCENT**. Once the seventh is answered the day's results stand until the 04:00 UTC rollover: altitude in AU, one row per question, and a share text with one glyph per tier. Without a quiz for today the button is disabled and says so.
+A guest needs no account: the `jam_player` cookie is the passport. Reloading mid-flight returns to the current question with the time that is left, so the button reads **RESUME ASCENT**. Once the seventh is answered the day's results stand until the 04:00 UTC rollover: altitude in AU, one row per question, and a share text with one glyph per tier. Without a quiz for today the button is disabled and says so. **flight log** in the dock opens `/#/flights`: how many flights, the current streak, best and average altitude, and one expandable row per flight with its date, altitude and tier grid. It reads `/api/me/flights`, so it follows the account across browsers once signed in and sits on the guest passport otherwise; the logbook line on the results screen comes from the same place, and nothing is kept in localStorage.
 
 The pure part of the flight (points to AU, the linear track, the landmark order and passed-landmark label, and the share text) has a test with no browser and no framework:
 
@@ -199,7 +199,7 @@ All three scripts share their fixtures through `backend/tests/common.py`. Run th
 
 `npm test` in `frontend/` runs `flight.test.ts` on `node --test`: the altitude conversion, the linear track, the landmark order, the landmark you have passed and the share text. It needs neither a browser nor the backend.
 
-`moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST.
+`moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST. Since v0.8.0 it also covers `GET /api/me/flights`: the 401 without a passport, a guest seeing only its own flights, both browsers of an account reporting the same list with the tier and never the matched answer, a day owned twice collapsing to its best flight, and `limit` being clamped rather than rejected.
 
 `admin.py` does not own the game day, so it runs in any order. It builds its own quiz 400 days out and writes finished attempts straight to the tables instead of playing them through the timer, because the timer is already `quiz_play.py`'s job. It covers the user listing and its filters, a role change taking effect on the next request, the last admin surviving both demotion and deletion, per-question stats with the height histogram, the allowlisted table dump refusing everything else, tier edits leaving already-awarded points alone, and an account deletion that keeps the flights and releases the quiz it created. It briefly demotes any other admin so it can test the last-admin rule, and restores them in its `finally` block.
 
@@ -255,6 +255,22 @@ Since v0.6.0 that attempt also carries `answers`, your own results so far, one r
 ```
 
 Rarity is read as the answer lands: an accepted answer given by a share of players at or below a tier's `max_share` takes the rarest tier that fits, and the points are then frozen. The first player to give a correct answer therefore scores Nebula, exactly as in Krillion. A guess nobody has approved is still stored, with `is_correct` null, waiting for the v0.4 moderator review.
+
+**Flight history.** `GET /api/me/flights` is every flight this passport has flown, newest first. It needs no token: guests have flights too, and the `jam_player` cookie is the passport, so a request without one is 401 rather than an empty list. `limit` defaults to 60 and clamps to 1–365.
+
+```bash
+curl -b /tmp/jam.cookies localhost:8080/api/me/flights
+curl -b /tmp/jam.cookies -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/me/flights
+```
+
+```json
+[{"quiz_date": "2026-09-08", "flight_no": 1, "total_points": 90, "height_au": 15.43,
+  "finished": true,
+  "answers": [{"position": 1, "raw_text": "Parachutes", "correct": true,
+               "tier": "Nebula", "points": 10}]}]
+```
+
+Signed in, the list covers every player row of the account, the same fan-out `GET /api/players/{id}` uses, so a flight taken on another browser is in it. A guest row reports only itself. One row per day: `attempts` is unique per `(player_id, quiz_id)` rather than per account, so two browsers that each flew a day as guests and then signed into the same account own two attempts for it, and the history keeps the better one. `answers` names the tier you were given and never the accepted answer your guess matched: that is `/api/players/{id}`'s job, and it is a moderator route.
 
 **Completions.** `GET /api/suggest?kind=artist|title|album&q=` returns up to eight catalog names for the answer fields: prefix matches first, then by popularity, nothing under two letters. It is public and reads only the catalog, never the answer key.
 
