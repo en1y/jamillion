@@ -747,6 +747,35 @@ Task<HttpResponsePtr> getPlayer(HttpRequestPtr, std::string playerId) {
         co_return auth::error(k503ServiceUnavailable, "Player service unavailable");
     }
 }
+// GET /api/suggest?kind=artist|title|album&q=   completions for the answer fields
+// of song and album questions. Catalog names only, never the answer key, so it
+// needs no passport.
+Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
+    const auto kind = req->getParameter("kind");
+    auto q = req->getParameter("q");
+    if (q.size() > 100) q.resize(100);
+    // A prefix match ranks first, then the bigger name; ILIKE scans are fine at this size.
+    const char *sql =
+        kind == "artist" ? "SELECT name FROM artists WHERE name ILIKE '%' || $1::text || '%' "
+                           "ORDER BY name ILIKE $1::text || '%' DESC, global_rank NULLS LAST, name LIMIT 8"
+      : kind == "title"  ? "SELECT title FROM (SELECT DISTINCT ON (norm_title) title, deezer_rank FROM tracks "
+                           "  WHERE title ILIKE '%' || $1::text || '%' ORDER BY norm_title, deezer_rank DESC NULLS LAST) t "
+                           "ORDER BY title ILIKE $1::text || '%' DESC, deezer_rank DESC NULLS LAST, title LIMIT 8"
+      : kind == "album"  ? "SELECT title FROM albums WHERE title ILIKE '%' || $1::text || '%' GROUP BY title "
+                           "ORDER BY title ILIKE $1::text || '%' DESC, max(deezer_fans) DESC NULLS LAST, title LIMIT 8"
+      : nullptr;
+    if (!sql) co_return auth::error(k400BadRequest, "kind must be artist, title or album");
+    Json::Value out(Json::arrayValue);
+    if (q.size() < 2) co_return json(out);   // two letters before the catalog is scanned
+    try {
+        for (const auto &row : co_await app().getDbClient()->execSqlCoro(sql, q))
+            out.append(row[0].as<std::string>());
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Catalog unavailable");
+    }
+}
 }  // namespace
 
 void configure(const std::filesystem::path &root) {
@@ -762,6 +791,7 @@ void registerRoutes() {
     app().registerHandler("/api/attempts", &startAttempt, {Post, "auth::Optional"});
     app().registerHandler("/api/attempts/{1}/answers", &answer, {Post, "auth::Optional"});
     app().registerHandler("/api/audio/{1}", &audio, {Get, "auth::Optional"});
+    app().registerHandler("/api/suggest", &suggest, {Get});
     app().registerHandler("/api/quizzes/{1}", &getQuiz, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quizzes/{1}", &patchQuiz, {Patch, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/answers/{1}", &patchAnswer, {Patch, "auth::Optional", "auth::Moderator"});

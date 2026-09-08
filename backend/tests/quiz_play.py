@@ -7,6 +7,7 @@ It owns today's quiz, so it refuses to run when one already exists.
 """
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -96,7 +97,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                            'ORDER BY deezer_rank DESC NULLS LAST LIMIT 1').fetchone()
         assert track, 'The catalog has no track with a preview; seed one first'
         track_id = track[0]
-        album_id = db.execute('SELECT album_id FROM tracks WHERE id = %s', (track_id,)).fetchone()[0]
+        album_id, artist_name = db.execute(
+            'SELECT t.album_id, ar.name FROM tracks t JOIN albums al ON al.id = t.album_id '
+            'JOIN artists ar ON ar.id = al.artist_id WHERE t.id = %s', (track_id,)).fetchone()
         assert api('/api/quizzes', build_quiz(track_id), token=TOKEN)[0] == 403
         assert api('/api/quizzes', build_quiz(track_id))[0] == 401
         db.execute("UPDATE profiles SET role = 'moderator' WHERE id = %s", (uid,))
@@ -229,6 +232,14 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert own[2] == {'position': 3, 'raw_text': '', 'correct': False, 'tier': None, 'points': 0}, own[2]
         assert own[6]['tier'] == 'Supernova' and own[6]['points'] == 100, own[6]
         assert 'normalized' not in str(own) and 'OK Computer' not in str(own)
+
+        # -------------------------------------------------- completions
+        status, names, _ = api('/api/suggest?kind=artist&q=' + urllib.parse.quote(artist_name[:3]))
+        assert status == 200 and artist_name in names, (artist_name, names)
+        assert api('/api/suggest?kind=artist&q=x')[1] == []                 # one letter: nothing scanned
+        assert api('/api/suggest?kind=bogus&q=abc')[0] == 400
+        assert 'OK Computer' not in str(api('/api/suggest?kind=album&q=ok%20co')[1]) or \
+               db.execute("SELECT 1 FROM albums WHERE title = 'OK Computer'").fetchone()   # catalog only
 
         # -------------------------------------------------- audio
         status, clip, headers = fetch_audio(f'/api/audio/{song_id}')
