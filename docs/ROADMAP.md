@@ -141,6 +141,18 @@ Decisions worth carrying forward:
 - **One row per day, the best one.** `attempts` is unique per `(player_id, quiz_id)`, not per account, so two browsers that each flew a day as guests and then signed into the same account own two attempts for it. `DISTINCT ON (quiz_date)` collapses them; without it the streak stopped at 1 and React saw a duplicate key.
 - **A 401 renders as an empty log.** A browser that has never called `/api/me` has no passport, which to a player is the same thing as no flights.
 
+## v0.8.1 — Answer fields check the catalog
+
+- [x] `GET /api/known?kind=artist|title|album&q=` — is this a real catalog name? Compared through `normalize_answer()`, so casing and punctuation still pass.
+- [x] Song and album questions check each filled field on ANSWER. An unrecognised name is refused once with the field flagged; pressing ANSWER again sends it as is.
+
+Decisions worth carrying forward:
+
+- **The check is against the catalog, never the answer key.** Refusing anything not in `question_answers` would turn every question into an oracle: a player types until the game says yes, which hands out the key, removes the rarity mechanic and starves the v0.4 review queue. The catalog is already public through the anon key and `/api/suggest`, so asking it whether a name exists reveals nothing new.
+- **It refuses once, not forever.** The catalog is the top artists, not every recording, and a moderator may accept an answer that is not a catalog name at all. A second press on the unchanged text sends it, so the nudge can never trap a correct answer. The guess still lands with `is_correct` null for review.
+- **The clock is untouched.** At zero the client submits whatever is typed, checked or not, and a failing `/api/known` fails open. A validation step must not cost a player their guess.
+- **Rarest questions are never checked.** There is no catalog kind for a free-text answer, and inventing one would be the answer-key oracle by another route.
+
 
 ## v0.9.0 — Frontend: admin
 
