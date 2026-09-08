@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { getFlights, getReveal, sendIdea, startAttempt, submitAnswer, suggest } from './api'
+import { getFlights, getReveal, isKnown, sendIdea, startAttempt, submitAnswer, suggest } from './api'
 import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
 import {
   altitudeAu, bandFor, countdown, curveGeom, emojiFor, emojiForTier, EMPTY_LOG,
@@ -299,15 +299,16 @@ function useSuggest(kind: SuggestKind | null, value: string) {
   return kind && q.length >= 2 ? options : []
 }
 
-function Input({ field, value, onChange, autoFocus }: {
-  field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean
+function Input({ field, value, onChange, autoFocus, invalid }: {
+  field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
 }) {
   const options = useSuggest(field.kind, value)
   const list = field.kind ? `${field.key}-options` : undefined
   return (<>
     <input name={field.key} list={list} value={value} onChange={event => onChange(event.target.value)}
            autoFocus={autoFocus} autoComplete="off" autoCapitalize="off" spellCheck={false}
-           enterKeyHint="send" maxLength={100} aria-label={field.label} placeholder={field.label} />
+           enterKeyHint="send" maxLength={100} aria-label={field.label} placeholder={field.label}
+           aria-invalid={invalid || undefined} />
     {list && <datalist id={list}>{options.map(option => <option key={option} value={option} />)}</datalist>}
   </>)
 }
@@ -327,7 +328,10 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   const fields = fieldsFor(question)
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
+  const [unknown, setUnknown] = useState<Field[]>([])
   const sent = useRef(false)
+  // What was already queried and refused, so pressing ANSWER again sends it.
+  const queried = useRef<string | null>(null)
   // Two fields become one answer, "Artist — Title", which normalises to the same
   // key as a moderator's "Artist Title"; a lone field matches the artist-only row.
   const joined = fields.map(field => (values[field.key] ?? '').trim()).filter(Boolean).join(' — ')
@@ -347,8 +351,30 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     }
   }
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  /** Fields holding something the music catalog does not know. Empty on a rarest
+   *  question (no kind to check), on an empty field (a deliberate skip), and
+   *  whenever the check itself fails: a catalog hiccup must never eat a guess. */
+  async function unrecognised(): Promise<Field[]> {
+    const checks = fields
+      .filter(field => field.kind && (values[field.key] ?? '').trim())
+      .map(async field => (await isKnown(field.kind!, values[field.key].trim())).known ? null : field)
+    try {
+      return (await Promise.all(checks)).filter(field => field !== null)
+    } catch { return [] }
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (sent.current) return
+    // Checked once. Pressing ANSWER again sends it anyway, because the catalog is
+    // the top artists rather than every recording, and a right answer it has never
+    // heard of must not be trapped behind this.
+    if (queried.current !== joined) {
+      queried.current = joined
+      const bad = await unrecognised()
+      if (bad.length > 0) return setUnknown(bad)
+    }
+    setUnknown([])
     void send(joined)
   }
 
@@ -365,12 +391,19 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
         <div className="fields">
           {fields.map((field, i) => (
             <Input key={field.key} field={field} value={values[field.key] ?? ''} autoFocus={i === 0}
-                   onChange={value => setValues(prev => ({ ...prev, [field.key]: value }))} />
+                   invalid={unknown.some(bad => bad.key === field.key)}
+                   onChange={value => { setUnknown([]); setValues(prev => ({ ...prev, [field.key]: value })) }} />
           ))}
         </div>
         <button className="cta" type="submit">ANSWER ▲</button>
         <button className="chip" type="button" onClick={() => void send('')}>skip</button>
       </form>
+      {unknown.length > 0 && (
+        <p className="notice" role="alert">
+          No {unknown.map(field => field.label).join(' or ')} by that name in the catalog
+          — check the spelling, or press ANSWER again to send it as is.
+        </p>
+      )}
       {error && <p className="notice" role="alert">{error}</p>}
     </div>
   </>)

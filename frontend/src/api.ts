@@ -108,6 +108,12 @@ export type SuggestKind = 'artist' | 'title' | 'album'
 export const suggest = (kind: SuggestKind, q: string) =>
   call<string[]>(`/api/suggest?kind=${kind}&q=${encodeURIComponent(q)}`)
 
+/** Is this a real name in the music catalog? Used to nudge a player off a typo
+ *  before it costs them the guess. Catalog only, so it says nothing about the
+ *  answer key; public for the same reason /api/suggest is. */
+export const isKnown = (kind: SuggestKind, q: string) =>
+  call<{ known: boolean }>(`/api/known?kind=${kind}&q=${encodeURIComponent(q)}`)
+
 export interface RevealedAnswer { display: string; tier: string | null; points: number; yours: boolean }
 export interface RevealedQuestion { position: number; prompt: string; answers: RevealedAnswer[] }
 export interface Reveal {

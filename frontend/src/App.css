@@ -111,6 +111,7 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .fields { flex: 1; display: flex; gap: 8px; min-width: 0; }
 .fields input { margin: 0; min-width: 0; font-size: 22px; padding: 12px 14px 10px; background: #0b1526e6; border: 2px solid #2c6d8cd7; transition: border-color .25s; }
 .fields input:focus { outline: 0; border-color: var(--ion); }
+.fields input[aria-invalid] { border-color: var(--pink); }
 .hud .cta { font-size: 21px; padding: 12px 20px 10px; white-space: nowrap; }
 .hud .notice { max-width: 900px; margin: 10px auto 0; }
 .ring { --p: 1; position: relative; flex: none; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center;

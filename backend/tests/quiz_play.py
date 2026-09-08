@@ -269,6 +269,22 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert 'OK Computer' not in str(api('/api/suggest?kind=album&q=ok%20co')[1]) or \
                db.execute("SELECT 1 FROM albums WHERE title = 'OK Computer'").fetchone()   # catalog only
 
+        # -------------------------------------------------- catalog check
+        # The answer fields ask whether a name is real before it costs the guess.
+        # It compares through normalize_answer, so case and punctuation still pass,
+        # and it reads the catalog only: nothing here can be used to probe the key.
+        def known(kind, q):
+            return api(f'/api/known?kind={kind}&q=' + urllib.parse.quote(q))
+
+        assert known('artist', artist_name)[1] == {'known': True}, artist_name
+        assert known('artist', artist_name.upper() + '!')[1] == {'known': True}
+        assert known('artist', 'zzz not a real artist zzz')[1] == {'known': False}
+        assert known('artist', '')[1] == {'known': True}          # empty is a skip, never unknown
+        assert known('bogus', 'abc')[0] == 400
+        # It answers about the catalog, not the answer key: 'Answer 2' is accepted
+        # for question 2 and is not a track, so it must still come back unknown.
+        assert known('title', 'Answer 2')[1] == {'known': False}
+
         # -------------------------------------------------- audio
         status, clip, headers = fetch_audio(f'/api/audio/{song_id}')
         assert status == 200 and headers['Content-Type'].startswith('audio/'), headers.get('Content-Type')

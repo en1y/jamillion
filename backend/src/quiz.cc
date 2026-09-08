@@ -900,6 +900,34 @@ Task<HttpResponsePtr> getPlayer(HttpRequestPtr, std::string playerId) {
         co_return auth::error(k503ServiceUnavailable, "Player service unavailable");
     }
 }
+// GET /api/known?kind=artist|title|album&q=   is this a real catalog name?
+// The answer fields nudge a player away from a typo before it costs them the
+// guess. It compares through normalize_answer(), the same collapse the scorer
+// uses, so case and punctuation never make a real name look unknown. Catalog
+// only, never the answer key: what is on the list for a question stays shut.
+Task<HttpResponsePtr> known(HttpRequestPtr req) {
+    const auto kind = req->getParameter("kind");
+    auto q = req->getParameter("q");
+    if (q.size() > 100) q.resize(100);
+    const char *sql =
+        kind == "artist" ? "SELECT EXISTS (SELECT 1 FROM artists WHERE normalize_answer(name) = normalize_answer($1))"
+      : kind == "title"  ? "SELECT EXISTS (SELECT 1 FROM tracks WHERE normalize_answer(title) = normalize_answer($1))"
+      : kind == "album"  ? "SELECT EXISTS (SELECT 1 FROM albums WHERE normalize_answer(title) = normalize_answer($1))"
+      : nullptr;
+    if (!sql) co_return auth::error(k400BadRequest, "kind must be artist, title or album");
+    Json::Value out;
+    // Nothing to judge yet, and an empty field is a deliberate skip: never unknown.
+    if (q.empty()) { out["known"] = true; co_return json(out); }
+    try {
+        const auto rows = co_await app().getDbClient()->execSqlCoro(sql, q);
+        out["known"] = rows[0][0].as<bool>();
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Catalog unavailable");
+    }
+}
+
 // GET /api/suggest?kind=artist|title|album&q=   completions for the answer fields
 // of song and album questions. Catalog names only, never the answer key, so it
 // needs no passport.
@@ -979,6 +1007,7 @@ void registerRoutes() {
     app().registerHandler("/api/attempts/{1}/answers", &answer, {Post, "auth::Optional"});
     app().registerHandler("/api/audio/{1}", &audio, {Get, "auth::Optional"});
     app().registerHandler("/api/suggest", &suggest, {Get});
+    app().registerHandler("/api/known", &known, {Get});
     app().registerHandler("/api/ideas", &idea, {Post, "auth::Optional"});
     app().registerHandler("/api/quizzes/{1}", &getQuiz, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quizzes/{1}", &patchQuiz, {Patch, "auth::Optional", "auth::Moderator"});
