@@ -3,9 +3,11 @@ import type { FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { getPlayer, supabase } from './supabase'
 import type { Player } from './supabase'
+import { getToday } from './api'
+import type { Today } from './api'
+import { Play, Results, Scene } from './Play'
+import { altitudeAu, formatDate, passed } from './flight'
 import './App.css'
-
-const TIERS = [['NEBULA', 10], ['PROTOSTAR', 15], ['MAIN SEQUENCE', 30], ['RED GIANT', 60], ['SUPERGIANT', 85], ['SUPERNOVA', 100]] as const
 
 // ponytail: hash routing, no router dependency. Add one when there are real routes.
 function useHash() {
@@ -26,6 +28,11 @@ function App() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [retry, setRetry] = useState(0)
+  const [quiz, setQuiz] = useState<{ key: string; today: Today | null } | null>(null)
+  const [flying, setFlying] = useState(false)
+  // What the scene behind the page shows: the flight's running total while flying,
+  // else the day's attempt. Keyed to the identity so a sign-out does not keep it.
+  const [flown, setFlown] = useState<{ who: string; points: number } | null>(null)
   const onAccount = useHash() === '#/account'
 
   useEffect(() => {
@@ -42,6 +49,21 @@ function App() {
   const loading = !initialized || result?.key !== requestKey
   const player = loading ? null : result?.player
   const playerError = loading ? '' : result?.error
+  // The day's quiz, keyed like the player above: undefined while it loads for the
+  // current identity, null when nothing is scheduled today.
+  useEffect(() => {
+    if (!initialized) return
+    let live = true
+    getToday(token)
+      .then(next => { if (live) setQuiz({ key: requestKey, today: next }) })
+      .catch(() => { if (live) setQuiz({ key: requestKey, today: null }) })
+    return () => { live = false }
+  }, [token, initialized, requestKey])
+  const today = quiz?.key === requestKey ? quiz.today : undefined
+  const who = token ?? 'guest'
+  const points = flown?.who === who ? flown.points : today?.attempt?.total_points ?? 0
+  const au = altitudeAu(points)
+
   useEffect(() => {
     if (!initialized) return
     const controller = new AbortController()
@@ -88,12 +110,20 @@ function App() {
     } finally { setBusy(false) }
   }
 
+  const landed = Boolean(today?.attempt?.finished)
   const passport = loading ? 'passport ⟳' : session ? (player?.profile?.username ?? 'account') : 'sign in'
 
-  return (
-    <main>
+  return (<>
+    <Scene au={au} />
+    <main className={flying ? 'flying' : undefined}>
       <header>
         <a className="brand" href="#/">✦ JAMILLION</a>
+        {today && !onAccount && (
+          <span className="stats" role="status" aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
+            <span className="stat"><small>ALT</small>{au.toFixed(1)} AU</span>
+            <span className="stat"><small>SCORE</small>{points}</span>
+          </span>
+        )}
         {onAccount
           ? <a className="chip" href="#/">◀ launchpad</a>
           : <a className="chip" href="#/account">{passport}</a>}
@@ -131,40 +161,53 @@ function App() {
         </section>
       ) : (
         <section className="launchpad">
-          <h1 className="glitch">JAMILLION</h1>
-          <p className="tagline">THE DAILY FLIGHT</p>
-          <p className="meta">7 questions · 20 seconds each · rarer answers fly further</p>
+          {flying ? (
+            <Play today={today!} token={token} onPoints={next => setFlown({ who, points: next })} onDone={() => { setFlying(false); setRetry(n => n + 1) }} />
+          ) : landed ? (
+            <Results today={today!} token={token} />
+          ) : (<>
+            <h1 className="glitch wave" aria-label="JAMILLION">
+              {'JAMILLION'.split('').map((letter, i) =>
+                <span key={i} style={{ animationDelay: `${0.18 * i}s` }}>{letter}</span>)}
+            </h1>
+            <p className="tagline">THE DAILY FLIGHT</p>
+            <p className="meta">7 questions · 20 seconds each · rarer answers fly further</p>
 
-          <div className="sky" aria-hidden="true">
-            <span className="mark">120 AU · HELIOPAUSE</span>
-            <span className="rocket">▲</span>
-            <span className="sun" />
-          </div>
+            <div className="spacer" />
 
-          <details className="howto">
-            <summary>▪ HOW TO PLAY</summary>
-            <p>Seven questions a day, twenty seconds each. Every correct answer lifts you — and the fewer players who said it, the higher you climb.</p>
-            <ol className="tiers">
-              {TIERS.map(([name, points]) => <li key={name}><span>{name}</span><b>{points}</b></li>)}
-            </ol>
-            <p className="meta">700 points ≈ 120 AU: the heliopause, the edge of the Sun's reach.</p>
-          </details>
+            <details className="howto">
+              <summary>▪ HOW TO PLAY</summary>
+              <p>Seven questions a day, twenty seconds each. Every correct answer lifts you — and the fewer players who said it, the higher you climb.</p>
+              <ol className="tiers">
+                {today?.tiers.map(tier => <li key={tier.name}><span>{tier.name}</span><b>{tier.points}</b></li>)}
+              </ol>
+              <p className="meta">700 points ≈ 120 AU: the heliopause, the edge of the Sun's reach.</p>
+            </details>
 
-          <button className="cta" disabled>▲ BEGIN ASCENT ▲</button>
-          <p className="preflight" role="status">{loading ? 'Checking your passport…' : player?.authenticated ? `Cleared for launch · ${player.profile?.username ?? player.role}` : 'Guest passport ready · daily flights board soon'}</p>
-          {playerError && <p className="notice" role="alert">{playerError} <button className="chip" type="button" onClick={() => setRetry(n => n + 1)}>Retry</button></p>}
+            <button className="cta big" disabled={!today || loading} onClick={() => setFlying(true)}>
+              {today?.attempt ? '▲ RESUME ASCENT ▲' : '▲ BEGIN ASCENT ▲'}
+            </button>
+            <p className="preflight" role="status">{
+              loading || today === undefined ? 'Checking your passport…'
+                : today === null ? 'No flight scheduled today · come back after 04:00 UTC'
+                : player?.authenticated ? `Cleared for launch · ${player.profile?.username ?? player.role}`
+                : 'Guest passport ready · no account needed'}</p>
+            {playerError && <p className="notice" role="alert">{playerError} <button className="chip" type="button" onClick={() => setRetry(n => n + 1)}>Retry</button></p>}
+          </>)}
 
-          <nav className="dock">
-            <span className="flight">FLIGHT #001</span>
-            <span>
-              <a className="chip" href="#/account">passport</a>
-              <button className="chip" type="button" disabled>flight log ⟲</button>
-              <button className="chip" type="button" disabled>archive</button>
-            </span>
-          </nav>
+          {!flying && (
+            <nav className="dock">
+              <span className="flight">{today ? `FLIGHT ${formatDate(today.quiz_date)}` : 'FLIGHT —'}</span>
+              <span>
+                <a className="chip" href="#/account">passport</a>
+                <button className="chip" type="button" disabled>flight log ⟲</button>
+                <button className="chip" type="button" disabled>archive</button>
+              </span>
+            </nav>
+          )}
         </section>
       )}
     </main>
-  )
+  </>)
 }
 export default App
