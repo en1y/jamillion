@@ -6,7 +6,7 @@ import type { Player } from './supabase'
 import { getToday } from './api'
 import type { Today } from './api'
 import { Play, Results, Scene } from './Play'
-import { altitudeAu, formatDate, passed } from './flight'
+import { altitudeAu, passed } from './flight'
 import './App.css'
 
 // ponytail: hash routing, no router dependency. Add one when there are real routes.
@@ -160,12 +160,12 @@ function App() {
           {message && <p className="notice" role="status">{message}</p>}
         </section>
       ) : (
-        <section className="launchpad">
+        <section className={landed ? 'launchpad landed' : 'launchpad'}>
           {flying ? (
             <Play today={today!} token={token} onPoints={next => setFlown({ who, points: next })} onDone={() => { setFlying(false); setRetry(n => n + 1) }} />
           ) : landed ? (
             <Results today={today!} token={token} />
-          ) : (<>
+          ) : (<>)
             <h1 className="glitch wave" aria-label="JAMILLION">
               {'JAMILLION'.split('').map((letter, i) =>
                 <span key={i} style={{ animationDelay: `${0.18 * i}s` }}>{letter}</span>)}
@@ -197,7 +197,7 @@ function App() {
 
           {!flying && (
             <nav className="dock">
-              <span className="flight">{today ? `FLIGHT ${formatDate(today.quiz_date)}` : 'FLIGHT —'}</span>
+              <span className="flight">{today ? `FLIGHT #${today.flight_no}` : 'FLIGHT —'}</span>
               <span>
                 <a className="chip" href="#/account">passport</a>
                 <button className="chip" type="button" disabled>flight log ⟲</button>

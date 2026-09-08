@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { getReveal, startAttempt, submitAnswer, suggest } from './api'
-import type { Answered, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
-import { altitudeAu, emojiFor, emojiForTier, formatDate, LANDMARKS, passed, shareText, trackPx } from './flight'
+import { getReveal, sendIdea, startAttempt, submitAnswer, suggest } from './api'
+import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
+import {
+  altitudeAu, bandFor, countdown, curveGeom, emojiFor, emojiForTier, LANDMARKS,
+  loadLog, logDepth, MAX_POINTS, nextRollover, passed, recordFlight, saveLog, SCORE_BANDS,
+  shareText, TIER_META, trackPx,
+} from './flight'
 
 interface Star { x: number; y: number; r: number; vx: number; vy: number; a: number; tw: number }
 interface Comet { x: number; y: number; vx: number; vy: number; len: number }
@@ -426,42 +430,189 @@ export function Play({ today, token, onPoints, onDone }: {
   )
 }
 
+const BUGS = 'https://github.com/en1y/jamillion/issues/new?labels=bug'
+
+function Curve({ dist, score, better }: { dist: number[]; score: number; better: number }) {
+  const geom = curveGeom(dist, score)
+  if (!geom) return better ? <p className="better">better than {better}% of today's pilots</p> : null
+  const youLabel = Math.min(Math.max(geom.youX, 14), 306)
+  return (
+    <div className="curve">
+      <svg viewBox="0 0 320 96" role="img"
+           aria-label={`Score distribution of today's pilots; your score beats ${better}% of them`}>
+        <defs>
+          <linearGradient id="curve-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--ion)" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="var(--ion)" stopOpacity="0.02" />
+          </linearGradient>
+          <clipPath id="curve-beaten"><rect x="0" y="0" width={geom.youX} height="96" /></clipPath>
+        </defs>
+        <path d={geom.fill} fill="url(#curve-fill)" opacity="0.28" />
+        <path d={geom.fill} fill="url(#curve-fill)" clipPath="url(#curve-beaten)" />
+        <path d={geom.line} fill="none" stroke="var(--ion)" strokeWidth="1.4" strokeOpacity="0.75" />
+        <line x1="0" y1={geom.base} x2={geom.width} y2={geom.base} stroke="var(--line)" />
+        {[100, 200, 300, 400, 500, 600].map(tick => {
+          const x = tick / MAX_POINTS * geom.width
+          const hide = Math.abs(x - geom.youX) < 18
+          return (
+            <g key={tick}>
+              <line x1={x} y1={geom.base} x2={x} y2={geom.base + 3.5} stroke="var(--mute)" strokeOpacity="0.5" />
+              {!hide && <text x={x} y="90" textAnchor="middle" fill="var(--mute)" opacity="0.55">{tick}</text>}
+            </g>
+          )
+        })}
+        <line x1={geom.youX} y1={Math.min(geom.youY, 74) - 3} x2={geom.youX} y2={geom.base} stroke="var(--pink)" strokeWidth="1.2" />
+        <circle cx={geom.youX} cy={geom.youY} r="2.6" fill="var(--pink)" />
+        <text x={youLabel} y="90" textAnchor="middle" fill="var(--pink)" letterSpacing="0.12em">YOU</text>
+        <text x="0" y="90" fill="var(--mute)" opacity="0.6">0</text>
+        <text x={geom.width} y="90" textAnchor="end" fill="var(--mute)" opacity="0.6">{MAX_POINTS}</text>
+      </svg>
+      <p className="better">better than {better}% of today's pilots</p>
+    </div>
+  )
+}
+
+function FlightLog({ answers, tiers }: { answers: OwnAnswer[]; tiers: Today['tiers'] }) {
+  return (
+    <section className="flog">
+      <p className="fathom">flight log <span>further = rarer</span></p>
+      <div className="flog-chart">
+        {[0, 0.25, 0.5, 0.75, 1].map(step => (
+          <div key={step} className="flog-rule" style={{ top: `${step * 100}%`, opacity: step === 0 ? 1 : 0.5 }}>
+            <span>{step === 0 ? '0 AU' : Math.round(step * 120)}</span>
+          </div>
+        ))}
+        <div className="flog-cols">
+          {answers.map((answer, i) => {
+            const meta = answer.correct && answer.tier ? TIER_META[answer.tier] : null
+            const depth = logDepth(answer.tier, answer.correct)
+            const color = meta?.color ?? 'var(--mute)'
+            return (
+              <div key={answer.position} className="flog-col">
+                <div className="flog-line" aria-hidden="true"
+                     style={{ height: `calc(${depth * 100}% - 8px)`,
+                              background: `linear-gradient(180deg, transparent, ${color})` }} />
+                <div className="flog-dot" style={{ top: `${depth * 100}%` }}
+                     title={`Question ${answer.position}: ${answer.raw_text.trim() || 'miss'}, ${answer.points} pts`}>
+                  <span className={meta ? 'flog-chip' : 'flog-miss'}
+                        style={meta ? { background: color, boxShadow: `0 0 10px ${color}`, animationDelay: `${90 * i}ms` }
+                                    : { animationDelay: `${90 * i}ms` }}>
+                    {meta ? emojiFor(answer, tiers) : null}
+                  </span>
+                </div>
+                <span className="flog-n">{answer.position}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <div className="flog-pad" />
+    </section>
+  )
+}
+
+function Ideas({ token }: { token?: string }) {
+  const [text, setText] = useState('')
+  const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'throttled' | 'error'>('idle')
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const idea = text.trim()
+    if (idea.length < 3 || state === 'sending') return
+    setState('sending')
+    try {
+      const next = await sendIdea(idea, token)
+      setState(next.reason === 'throttled' ? 'throttled' : next.ok ? 'sent' : 'error')
+    } catch { setState('error') }
+  }
+  if (state === 'sent') return <p className="meta">logged — it might surface in a future flight.</p>
+  if (state === 'throttled') return <p className="meta">that's plenty for today — come back tomorrow.</p>
+  return (
+    <form className="idea" onSubmit={submit}>
+      <label htmlFor="idea">got an idea for a question? tell us what to ask</label>
+      <div>
+        <input id="idea" value={text} maxLength={160} placeholder="name a moon of Saturn…"
+               onChange={event => { setText(event.target.value); if (state === 'error') setState('idle') }} />
+        <button className="chip" type="submit" disabled={text.trim().length < 3 || state === 'sending'}>
+          {state === 'sending' ? 'sending…' : 'submit'}
+        </button>
+      </div>
+      {state === 'error' && <p className="meta">couldn't send — try again in a moment.</p>}
+    </form>
+  )
+}
+
 export function Results({ today, token }: { today: Today; token?: string }) {
-  const [shared, setShared] = useState('')
+  const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
   const [sheet, setSheet] = useState<RevealedQuestion[] | null>(null)
+  const [dist, setDist] = useState<number[] | null>(null)
+  const [better, setBetter] = useState(0)
+  const [left, setLeft] = useState(() => countdown(nextRollover()))
   const attempt = today.attempt
+  const log = recordFlight(loadLog(), today.quiz_date, attempt?.total_points ?? 0)
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
   useEffect(() => {
     let live = true
-    getReveal(token).then(next => { if (live) setSheet(next.questions) }).catch(() => { if (live) setSheet([]) })
+    getReveal(token).then(next => {
+      if (!live) return
+      setSheet(next.questions)
+      setDist(next.dist)
+      setBetter(next.better_than)
+    }).catch(() => { if (live) setSheet([]) })
     return () => { live = false }
   }, [token])
+  useEffect(() => { saveLog(log) }, [today.quiz_date, attempt?.total_points])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const tick = () => setLeft(countdown(nextRollover()))
+    const timer = setInterval(tick, 1000)
+    return () => clearInterval(timer)
+  }, [])
   if (!attempt) return null
   const { answers, total_points: points } = attempt
   const au = altitudeAu(points)
+  const band = bandFor(points)
+  const text = shareText(today.flight_no, points, answers, today.tiers)
+  const avg = log.played ? Math.round(log.total / log.played) : 0
 
-  async function share() {
-    const text = shareText(today.quiz_date, points, answers, today.tiers, location.origin)
-    try {
-      if (navigator.share) await navigator.share({ text })
-      else { await navigator.clipboard.writeText(text); setShared('Copied to your clipboard.') }
-    } catch { setShared(text) }   // refused or unsupported: show it, they can select it
+  async function copy() {
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    catch { setCopied(false) }
   }
 
   return (
-    <section className="card results">
-      <p className="eyebrow">FLIGHT {formatDate(today.quiz_date)} · COMPLETE</p>
-      <h1 className="glitch wave" aria-label={`${au.toFixed(1)} AU`}>
-        {`${au.toFixed(1)} AU`.split('').map((letter, i) =>
-          <span key={`${letter}-${i}`} style={{ animationDelay: `${0.18 * i}s` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}
-      </h1>
-      <p className="tagline">{points} POINTS · PAST {passed(au).toUpperCase()}</p>
-      <p className="meta">{today.players_finished} {today.players_finished === 1 ? 'pilot has' : 'pilots have'} landed today</p>
-      <button className="cta" type="button" onClick={() => void share()}>SHARE FLIGHT</button>
-      {shared && <p className="notice" role="status">{shared}</p>}
+    <section className="results">
+      <header className="results-head">
+        <span className="brand-mark">JAMILLION</span>
+        <span className="meta">Flight #{today.flight_no} complete</span>
+      </header>
+      <p className="results-score">
+        <b>{points}</b>
+        <span>{au.toFixed(1)} AU · past {passed(au)}</span>
+      </p>
+      {dist && <Curve dist={dist} score={points} better={better} />}
+
+      <FlightLog answers={answers} tiers={today.tiers} />
+
+      <section className="bearing">
+        <p className="fathom">the bearing</p>
+        <ul>
+          {SCORE_BANDS.map(row => (
+            <li key={row.min} className={band === row ? 'here' : undefined}>
+              <span className="bearing-icon">{emojiForTier(row.tier, today.tiers)}</span>
+              <span className="bearing-range">{row.range}</span>
+              <span className="bearing-verdict">{row.verdict}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <div className="copy-row">
+        <button className="cta" type="button" onClick={() => void copy()}>{copied ? 'Copied ✓' : 'Copy result'}</button>
+        {canShare && <button className="chip" type="button" onClick={() => void navigator.share({ text })}>Share…</button>}
+      </div>
 
       <div className="haul">
-        <p className="eyebrow">THE HAUL <span>tap a question for every answer</span></p>
+        <p className="fathom">the haul <span>tap a question for every answer</span></p>
         <ul>
           {answers.map(answer => {
             const question = sheet?.find(row => row.position === answer.position)
@@ -471,9 +622,10 @@ export function Results({ today, token }: { today: Today; token?: string }) {
                 <button type="button" className="round" onClick={() => setOpen(expanded ? null : answer.position)}
                         aria-expanded={expanded}>
                   <span className="n">{answer.position}</span>
+                  <span className="glyph">{emojiFor(answer, today.tiers)}</span>
                   <span className="said">
                     <small>{question?.prompt ?? `question ${answer.position}`}</small>
-                    {emojiFor(answer, today.tiers)} {answer.raw_text.trim() || (answer.tier ?? 'skipped')}
+                    {answer.raw_text.trim() ? answer.raw_text.trim() : (answer.tier ?? 'skipped')}
                   </span>
                   <b>{answer.points}</b>
                   <span className="more" aria-hidden="true">{expanded ? '−' : '+'}</span>
@@ -484,8 +636,12 @@ export function Results({ today, token }: { today: Today; token?: string }) {
                     {sheet && !question && <li className="meta">no chart for this question</li>}
                     {question?.answers.map(option => (
                       <li key={option.display} className={option.yours ? 'yours' : undefined}>
-                        <span>{emojiForTier(option.tier, today.tiers)} {option.display}
-                          {option.yours && <i>you</i>}</span>
+                        <span className="glyph">{emojiForTier(option.tier, today.tiers)}</span>
+                        <span className="said">
+                          {option.display}{option.yours && <i>you</i>}
+                          {option.tier && TIER_META[option.tier] &&
+                            <small>{TIER_META[option.tier].blurb}</small>}
+                        </span>
                         <b>+{option.points}</b>
                       </li>
                     ))}
@@ -496,6 +652,19 @@ export function Results({ today, token }: { today: Today; token?: string }) {
           })}
         </ul>
       </div>
+
+      <section className="logbook">
+        <p className="fathom">logbook</p>
+        <p className="meta">streak <b>{log.streak}</b> · played <b>{log.played}</b> · avg <b>{avg}</b> · best <b>{log.best}</b></p>
+      </section>
+
+      <p className="next-flight">next flight in <span>{left}</span>
+        {left === 'ready' && <button className="chip" type="button" onClick={() => location.reload()}>refresh</button>}</p>
+
+      <p className="bugs">found a bug?{' '}
+        <a href={`${BUGS}&title=${encodeURIComponent(`Bug on flight #${today.flight_no}`)}`}
+           target="_blank" rel="noreferrer">open an issue on GitHub</a></p>
+      <Ideas token={token} />
     </section>
   )
 }

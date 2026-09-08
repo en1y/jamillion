@@ -26,6 +26,7 @@ export interface Today {
   quiz_date: string
   question_count: number
   players_finished: number
+  flight_no: number
   tiers: Tier[]
   attempt: Attempt | null
 }
@@ -109,7 +110,16 @@ export const suggest = (kind: SuggestKind, q: string) =>
 
 export interface RevealedAnswer { display: string; tier: string | null; points: number; yours: boolean }
 export interface RevealedQuestion { position: number; prompt: string; answers: RevealedAnswer[] }
+export interface Reveal {
+  questions: RevealedQuestion[]
+  dist: number[]
+  better_than: number
+}
 
-/** Accepted answers for today, rarest first. 403 until this player has landed. */
+/** Accepted answers for today, rarest first, plus the day's score curve. 403 until landed. */
 export const getReveal = (token?: string) =>
-  call<{ questions: RevealedQuestion[] }>('/api/quiz/today/reveal', token)
+  call<Reveal>('/api/quiz/today/reveal', token)
+
+/** A prompt idea from the post-flight screen. 3 per game day. */
+export const sendIdea = (text: string, token?: string) =>
+  call<{ ok: boolean; reason?: string }>('/api/ideas', token, { method: 'POST', body: JSON.stringify({ text }) })

@@ -58,8 +58,145 @@ export function formatDate(iso: string): string {
   return match ? `${match[3]}.${match[2]}.${match[1]}` : iso
 }
 
-export function shareText(date: string, points: number, answers: OwnAnswer[],
-                          tiers: Tier[], origin: string): string {
+export function shareText(flight: number, points: number, answers: OwnAnswer[],
+                          tiers: Tier[]): string {
   const grid = answers.map(answer => emojiFor(answer, tiers)).join('')
-  return `JAMILLION ${formatDate(date)} · ${altitudeAu(points).toFixed(1)} AU\n${grid}\n${origin}`
+  return `JAMILLION #${flight}\n${altitudeAu(points).toFixed(1)} AU\n\n${grid}`
+}
+
+export const MAX_POINTS = 700
+export const DIST_BINS = 36
+
+export interface TierMeta { height: number; color: string; blurb: string }
+
+/** Height is 0 at the Sun, 1 at the heliopause, matching Krillion's dive-log depths. */
+export const TIER_META: Record<string, TierMeta> = {
+  Nebula:          { height: 0.08, color: '#8fa3c4', blurb: 'The answer everyone blurts out.' },
+  Protostar:       { height: 0.18, color: '#ff9f43', blurb: 'A famously “obscure” pick. Everyone reaches for it.' },
+  'Main Sequence': { height: 0.36, color: '#7fe9ff', blurb: 'Solid — flying with the field.' },
+  'Red Giant':     { height: 0.60, color: '#e0714a', blurb: 'Genuinely uncommon. Nice pull.' },
+  Supergiant:      { height: 0.82, color: '#9d7bff', blurb: 'True obscurity. Few go this far.' },
+  Supernova:       { height: 0.97, color: '#ffc46b', blurb: 'The designated gem. Edge of the system.' },
+}
+
+export interface ScoreBand { min: number; tier: string; range: string; verdict: string }
+
+export const SCORE_BANDS: ScoreBand[] = [
+  { min: 0,   tier: 'Nebula',        range: '0–150',   verdict: 'Nebula. Still among the inner planets.' },
+  { min: 151, tier: 'Main Sequence', range: '151–250', verdict: 'Main sequence. Past the asteroid belt.' },
+  { min: 251, tier: 'Red Giant',     range: '251–350', verdict: 'Red giant. Out among the giants.' },
+  { min: 351, tier: 'Supergiant',    range: '351–449', verdict: 'Supergiant. The Kuiper belt is in the rear view.' },
+  { min: 450, tier: 'Supernova',     range: '450+',    verdict: 'Supernova. Heliopause. Absurd.' },
+]
+
+export const bandFor = (points: number) =>
+  [...SCORE_BANDS].reverse().find(band => points >= band.min) ?? SCORE_BANDS[0]
+
+/** How far down the flight log a mark sits: 0 at the Sun, ~1 at the heliopause.
+ *  Same depths Krillion uses, so a miss hugs the top and a Supernova lands at the bottom. */
+export function logDepth(tier: string | null, correct: boolean) {
+  if (!correct || !tier) return 0.03
+  return TIER_META[tier]?.height ?? 0.03
+}
+
+export function smoothDist(dist: number[]): number[] {
+  const kernel = [0.06, 0.24, 0.4, 0.24, 0.06]
+  return dist.map((_, i) => {
+    let n = 0, a = 0
+    for (let t = -2; t <= 2; t++) {
+      const s = i + t
+      if (s < 0 || s >= dist.length) continue
+      n += dist[s] * kernel[t + 2]
+      a += kernel[t + 2]
+    }
+    return a > 0 ? n / a : 0
+  })
+}
+
+function catmull(points: [number, number][]): string {
+  if (points.length < 2) return ''
+  let d = `M ${points[0][0]} ${points[0][1]}`
+  for (let r = 0; r < points.length - 1; r++) {
+    const prev = points[Math.max(0, r - 1)]
+    const a = points[r]
+    const b = points[r + 1]
+    const next = points[Math.min(points.length - 1, r + 2)]
+    d += ` C ${a[0] + (b[0] - prev[0]) / 6} ${a[1] + (b[1] - prev[1]) / 6},`
+      + ` ${b[0] - (next[0] - a[0]) / 6} ${b[1] - (next[1] - a[1]) / 6},`
+      + ` ${b[0]} ${b[1]}`
+  }
+  return d
+}
+
+export function curveGeom(dist: number[], score: number) {
+  const smooth = smoothDist(dist)
+  const peak = Math.max(...smooth)
+  if (!(peak > 0)) return null
+  const width = 320, base = 78, rise = 68
+  const pts: [number, number][] = [[0, base]]
+  smooth.forEach((v, i) => pts.push([((i + 0.5) / smooth.length) * width, base - v / peak * rise]))
+  pts.push([width, base])
+  const line = catmull(pts)
+  const youX = Math.min(Math.max(score, 0), MAX_POINTS) / MAX_POINTS * width
+  let youY = base
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x0, y0] = pts[i], [x1, y1] = pts[i + 1]
+    if (youX >= x0 && youX <= x1) {
+      youY = y0 + (y1 - y0) * (x1 === x0 ? 0 : (youX - x0) / (x1 - x0))
+      break
+    }
+  }
+  return { line, fill: `${line} L ${width} ${base} L 0 ${base} Z`, youX, youY, width, base }
+}
+
+/** The quiz day rolls at 04:00 UTC, same as game_today() in the database. */
+export function nextRollover(now = Date.now()): Date {
+  const date = new Date(now)
+  const next = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 4, 0, 0)
+  return new Date(now < next ? next : next + 86_400_000)
+}
+
+export function countdown(to: Date, now = Date.now()): string {
+  const left = to.getTime() - now
+  if (left <= 0) return 'ready'
+  const s = Math.floor(left / 1000)
+  const hh = String(Math.floor(s / 3600)).padStart(2, '0')
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+  return `${hh}:${mm}:${ss}`
+}
+
+export function nextIsoDate(iso: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!match) return iso
+  return new Date(Date.UTC(+match[1], +match[2] - 1, +match[3] + 1)).toISOString().slice(0, 10)
+}
+
+export interface Logbook { streak: number; played: number; total: number; best: number; lastDate: string | null }
+
+export const EMPTY_LOG: Logbook = { streak: 0, played: 0, total: 0, best: 0, lastDate: null }
+
+export function recordFlight(log: Logbook, quizDate: string, points: number): Logbook {
+  if (log.lastDate === quizDate) return log
+  return {
+    streak: log.lastDate && nextIsoDate(log.lastDate) === quizDate ? log.streak + 1 : 1,
+    played: log.played + 1,
+    total: log.total + points,
+    best: Math.max(log.best, points),
+    lastDate: quizDate,
+  }
+}
+
+export const LOG_KEY = 'jamillion-logbook'
+
+export function loadLog(): Logbook {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LOG_KEY) ?? '')
+    if (raw && typeof raw.played === 'number') return { ...EMPTY_LOG, ...raw }
+  } catch { /* first visit, or a leftover from another tab */ }
+  return { ...EMPTY_LOG }
+}
+
+export function saveLog(log: Logbook) {
+  localStorage.setItem(LOG_KEY, JSON.stringify(log))
 }
