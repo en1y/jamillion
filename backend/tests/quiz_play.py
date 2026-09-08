@@ -28,6 +28,10 @@ def api(path, data=None, cookie=None, token=None, method=None):
     return request(BASE + path, data, headers, method)
 
 
+MUSIC = {2: 'Name a Coldplay album', 3: 'Name a Queen song', 4: 'Name a member of The Beatles',
+         5: 'Name a Nirvana album', 6: 'Name a Michael Jackson album', 7: 'Name a Radiohead song'}
+
+
 def build_quiz(track_id, album_id=None):
     """Five rarest questions, an album question (title only) and a song question."""
     questions = [{
@@ -36,7 +40,7 @@ def build_quiz(track_id, album_id=None):
     }]
     for position in range(2, 7):
         questions.append({
-            'position': position, 'qtype': 'rarest', 'prompt': f'Question {position}',
+            'position': position, 'qtype': 'rarest', 'prompt': MUSIC[position],
             'answers': [{'display': f'Answer {position}'}],
         })
     if album_id:   # the album behind the track: its title is the only field asked for
