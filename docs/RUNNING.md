@@ -150,7 +150,7 @@ psql "$DATABASE_URL" -f scripts/demo_quiz.sql
 
 A guest needs no account: the `jam_player` cookie is the passport. Reloading mid-flight returns to the current question with the time that is left, so the button reads **RESUME ASCENT**. Once the seventh is answered the day's results stand until the 04:00 UTC rollover: altitude in AU, one row per question, and a share text with one glyph per tier. Without a quiz for today the button is disabled and says so.
 
-The pure part of the flight (points to AU, the log-scaled track, the share text) has a test with no browser and no framework:
+The pure part of the flight (points to AU, the linear track, the landmark order and passed-landmark label, and the share text) has a test with no browser and no framework:
 
 ```bash
 npm test
