@@ -23,14 +23,41 @@ function sprinkle(count: number, width: number, height: number, speed: number): 
 }
 
 function throwComet(width: number, height: number): Comet {
-  const fromLeft = Math.random() < 0.5
-  const rad = rand(18, 52) * Math.PI / 180
+  const edge = Math.floor(Math.random() * 4)
   const speed = rand(5.5, 11)
+  const angle = rand(18, 52) * Math.PI / 180
+  let x: number
+  let y: number
+  let vx: number
+  let vy: number
+
+  if (edge === 0) { // left, heading right
+    x = -30
+    y = rand(0, height)
+    vx = Math.cos(angle) * speed
+    vy = Math.sin(angle) * speed
+  } else if (edge === 1) { // right, heading left
+    x = width + 30
+    y = rand(0, height)
+    vx = -Math.cos(angle) * speed
+    vy = Math.sin(angle) * speed
+  } else if (edge === 2) { // top, heading down
+    x = rand(0, width)
+    y = -30
+    vx = Math.sin(angle) * speed
+    vy = Math.cos(angle) * speed
+  } else { // bottom, heading up
+    x = rand(0, width)
+    y = height + 30
+    vx = Math.sin(angle) * speed
+    vy = -Math.cos(angle) * speed
+  }
+
   return {
-    x: fromLeft ? -30 : width + 30,
-    y: rand(height * 0.04, height * 0.48),
-    vx: Math.cos(rad) * speed * (fromLeft ? 1 : -1),
-    vy: Math.sin(rad) * speed,
+    x,
+    y,
+    vx,
+    vy,
     len: rand(70, 160),
   }
 }
@@ -116,7 +143,7 @@ function Starfield() {
         ctx!.beginPath()
         ctx!.arc(comet.x, comet.y, 1.8, 0, Math.PI * 2)
         ctx!.fill()
-        if (comet.x < -200 || comet.x > width + 200 || comet.y > height + 80) {
+        if (comet.x < -200 || comet.x > width + 200 || comet.y < -200 || comet.y > height + 200) {
           comet = null
           wait = rand(5000, 14000)
         }
@@ -424,7 +451,10 @@ export function Results({ today, token }: { today: Today; token?: string }) {
   return (
     <section className="card results">
       <p className="eyebrow">FLIGHT {formatDate(today.quiz_date)} · COMPLETE</p>
-      <h1 className="glitch">{au.toFixed(1)} AU</h1>
+      <h1 className="glitch wave" aria-label={`${au.toFixed(1)} AU`}>
+        {`${au.toFixed(1)} AU`.split('').map((letter, i) =>
+          <span key={`${letter}-${i}`} style={{ animationDelay: `${0.18 * i}s` }}>{letter === ' ' ? '\u00a0' : letter}</span>)}
+      </h1>
       <p className="tagline">{points} POINTS · PAST {passed(au).toUpperCase()}</p>
       <p className="meta">{today.players_finished} {today.players_finished === 1 ? 'pilot has' : 'pilots have'} landed today</p>
       <button className="cta" type="button" onClick={() => void share()}>SHARE FLIGHT</button>
