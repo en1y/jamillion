@@ -153,6 +153,26 @@ Decisions worth carrying forward:
 - **The clock is untouched.** At zero the client submits whatever is typed, checked or not, and a failing `/api/known` fails open. A validation step must not cost a player their guess.
 - **Rarest questions are never checked.** There is no catalog kind for a free-text answer, and inventing one would be the answer-key oracle by another route.
 
+## v0.8.2 — The editor's backend
+
+The quiz editor could not be started: six things it needs did not exist, and one of them meant a whole question type was unauthorable. Split from the UI so each tag works end to end and the contract can be exercised by curl before a component is written.
+
+- [x] `GET /api/albums?q=&artist=&year=&min_rank=&limit=` — the other half of `/api/tracks`.
+- [x] `GET /api/tiers` — the tiers **with ids**, which a `tier_id` override needs.
+- [x] `GET /api/quizzes?from=&to=` — which days already have a quiz, and which are frozen.
+- [x] `GET /api/tracks/{id}/audio` — a clip before any question uses it.
+- [x] `album.cover` in `GET /api/quizzes/{date}`.
+- [x] `PATCH /api/questions/{id}` — the prompt always, the rest only while the day is unplayed.
+
+Decisions worth carrying forward:
+
+- **Album questions had shipped unauthorable.** v0.7.0 added `qtype: album`, and `POST /api/quizzes` requires an `album_id` for one, but `/api/tracks` reports an album by title, `/api/suggest?kind=album` groups ids away, and the only route that yielded one was the **admin**-only table dump. A moderator could not write the question type built for them. `GET /api/albums` is the fix, and the integration test is an album question authored end to end without touching an admin route.
+- **Tier ids were in the same position.** `/api/quiz/today` serves `{name, points}` and 404s when no quiz is scheduled, so nothing a moderator could reach said what to send as `tier_id`.
+- **Auditioning a track is what makes saving fast.** `ensureAudio` is idempotent and writes `tracks.audio_path`, so the picker's preview leaves the clip cached and `createQuiz`'s blocking pre-cache loop (1–3 s per uncached track) finds every file already on disk. A measured save with a warm clip is 0.2 s. The editor gets this for free from the route it needed anyway.
+- **One clip helper, two routes.** The filename-to-response sequence was inline in `audio` and is now `clip()`, so the content type and the cache header are decided in one place rather than copied.
+- **A played day freezes at the prompt.** v0.3.0 froze points at answer time; moving a track, a snippet or the answer key under people mid-flight would invalidate scores already shown. So `PATCH /api/questions/{id}` takes the prompt on any day and everything else only while `attempts` is empty — 409 otherwise. `qtype`, `position`, `track_id` and `album_id` are never editable: a different track is a different question, and on an unplayed day re-POSTing the day already does it.
+- **The DB CHECKs are pre-empted, not surfaced.** The snippet window and the ask-flag rule are checked in the handler so a moderator never reads Postgres's own words out of the editor — the same reason v0.4.0 stopped relying on `isUniqueViolation`.
+
 
 ## v0.9.0 — Frontend: admin
 

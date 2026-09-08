@@ -292,6 +292,8 @@ On a song or album question the client checks each filled field with this before
 
 Everything here needs a moderator or admin access token. Anonymous requests get 401, plain users 403.
 
+The routes in this section are the quiz editor's whole contract: search the catalog, read the tier ids, see which days are filled, hear a clip before the quiz exists, write the day, then review the guesses it collects.
+
 **Preview a day.** `GET /api/quizzes/{date}` is the whole quiz as a moderator sees it: prompts, the track behind each song question, the album behind each album question with `ask_artist` and `ask_title`, and every answer with its verdict, its guess count and any tier override. This is the one place a track or album id appears in a response; the player routes still never carry one.
 
 ```bash
@@ -339,6 +341,46 @@ curl -X POST localhost:8080/api/answers/420/merge -H "Authorization: Bearer $ACC
 ```
 
 Answers that differ only in case, punctuation or accents never become separate rows in the first place: `normalize_answer()` collapses them as they land, so `The Bends!` is already counted as `the bends`. Merging is for the spellings normalisation cannot see, like `The Bends album`. Both ids must belong to the same question, or the answer is 400.
+
+**The editor's routes.** Five additions in v0.8.2, all moderator or admin, that together make a quiz authorable without an admin's table dump.
+
+`GET /api/albums?q=&artist=&year=&min_rank=&limit=` is the other half of `/api/tracks`. `POST /api/quizzes` needs an `album_id` for an album question, and `/api/tracks` reports an album by title only, so before this the only source of one was `GET /api/tables/albums` — an **admin** route. Same filters and the same clamps as `/api/tracks`; `limit` defaults to 50 and caps at 200.
+
+```bash
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/albums?artist=radiohead&limit=1'
+```
+
+```json
+[{"id": 117, "title": "OK Computer", "artist": "Radiohead", "global_rank": 3,
+  "release_date": "1997-06-17", "total_tracks": 12,
+  "cover_url": "https://cdn-images.dzcdn.net/…", "deezer_fans": 181569}]
+```
+
+`GET /api/tiers` is the tier list **with ids**, which an answer's `tier_id` override needs. `/api/quiz/today` carries names and points only, and 404s on a day with no quiz, so the editor cannot read them there. `rarity_tiers` is world readable anyway; the guard only keeps the editor's surface in one place.
+
+```json
+[{"id": 1, "name": "Nebula", "points": 10, "sort_order": 1}]
+```
+
+`GET /api/quizzes?from=&to=` lists which days already have a quiz, so the editor can show a calendar rather than guess dates. Both bounds are optional and default to `game_today() - 30` … `game_today() + 60`; a malformed one is 400. `attempts_started` above zero is what marks a day frozen, before a save tries and collects a 409.
+
+```json
+[{"quiz_date": "2026-09-08", "published": true, "questions": 7,
+  "attempts_started": 7, "attempts_finished": 7}]
+```
+
+`GET /api/tracks/{id}/audio` streams a track's clip **before any question uses it**, which `/api/audio/{question}` cannot do because it is keyed by question id on purpose. This is what lets the snippet picker audition a candidate. It is also why saving is quick: `fetch_audio.py` writes `tracks.audio_path`, so by the time the day is posted, `POST /api/quizzes`'s pre-cache loop finds every file already on disk instead of spending 1–3 s per track.
+
+Finally, `GET /api/quizzes/{date}` now reports `album.cover` alongside `album.id/title/artist`, so a moderator can see the image players will be shown.
+
+**Fix a live day.** `PATCH /api/questions/{id}` is the one edit that survives publication. Re-POSTing a quiz replaces it only while nobody has played, so once the day has attempts this is all that is left — and on a played day it is the prompt alone.
+
+```bash
+curl -X PATCH localhost:8080/api/questions/533 -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"prompt": "Who sings this, and what is it called?"}'
+```
+
+While the day is unplayed it also takes `time_limit_sec` (5–60), `snippet_start_sec` and `snippet_len_sec` (song questions; the window must fit inside the 30 s clip), and `ask_artist` / `ask_title` (song and album; at least one must stay true). A key left out keeps its value. Any of those on a day that has attempts is **409 `Only the prompt can change once the day has been played`**: v0.3.0 froze points at answer time, and moving a track, a snippet or the answer key under people mid-flight would invalidate scores they have already been shown. `qtype`, `position`, `track_id` and `album_id` are never editable — a different track is a different question, and on an unplayed day re-POSTing the day already does it. The response is the question as `GET /api/quizzes/{date}` shapes it. Unknown id 404, empty body 400 `Nothing to change`.
 
 **Player detail.** `GET /api/players/{id}` reports every flight of that player with its height, and each answer with the accepted answer it matched. A signed-in player has one row per browser, so a linked row reports the whole account rather than the one browser.
 
