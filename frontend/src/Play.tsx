@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { getReveal, sendIdea, startAttempt, submitAnswer, suggest } from './api'
+import { getFlights, getReveal, sendIdea, startAttempt, submitAnswer, suggest } from './api'
 import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
 import {
-  altitudeAu, bandFor, countdown, curveGeom, emojiFor, emojiForTier, LANDMARKS,
-  loadLog, logDepth, MAX_POINTS, nextRollover, passed, recordFlight, saveLog, SCORE_BANDS,
-  shareText, TIER_META, trackPx,
+  altitudeAu, bandFor, countdown, curveGeom, emojiFor, emojiForTier, EMPTY_LOG,
+  LANDMARKS, logDepth, MAX_POINTS, nextRollover, passed, SCORE_BANDS, shareText,
+  summarize, TIER_META, trackPx,
 } from './flight'
 
 interface Star { x: number; y: number; r: number; vx: number; vy: number; a: number; tw: number }
@@ -548,8 +548,8 @@ export function Results({ today, token }: { today: Today; token?: string }) {
   const [dist, setDist] = useState<number[] | null>(null)
   const [better, setBetter] = useState(0)
   const [left, setLeft] = useState(() => countdown(nextRollover()))
+  const [log, setLog] = useState(EMPTY_LOG)
   const attempt = today.attempt
-  const log = recordFlight(loadLog(), today.quiz_date, attempt?.total_points ?? 0)
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
   useEffect(() => {
     let live = true
@@ -559,9 +559,10 @@ export function Results({ today, token }: { today: Today; token?: string }) {
       setDist(next.dist)
       setBetter(next.better_than)
     }).catch(() => { if (live) setSheet([]) })
+    // The logbook is the server's flights now, not a localStorage counter.
+    getFlights(token).then(flights => { if (live) setLog(summarize(flights)) }).catch(() => {})
     return () => { live = false }
   }, [token])
-  useEffect(() => { saveLog(log) }, [today.quiz_date, attempt?.total_points])  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const tick = () => setLeft(countdown(nextRollover()))
     const timer = setInterval(tick, 1000)
@@ -653,10 +654,12 @@ export function Results({ today, token }: { today: Today; token?: string }) {
         </ul>
       </div>
 
-      <section className="logbook">
-        <p className="fathom">logbook</p>
-        <p className="meta">streak <b>{log.streak}</b> · played <b>{log.played}</b> · avg <b>{avg}</b> · best <b>{log.best}</b></p>
-      </section>
+      {log.played > 0 && (
+        <section className="logbook">
+          <p className="fathom">logbook</p>
+          <p className="meta">streak <b>{log.streak}</b> · played <b>{log.played}</b> · avg <b>{avg}</b> · best <b>{log.best}</b></p>
+        </section>
+      )}
 
       <p className="next-flight">next flight in <span>{left}</span>
         {left === 'ready' && <button className="chip" type="button" onClick={() => location.reload()}>refresh</button>}</p>

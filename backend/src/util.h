@@ -1,5 +1,6 @@
 #pragma once
 #include <drogon/drogon.h>
+#include <memory>
 #include <cctype>
 #include <string>
 
@@ -36,4 +37,15 @@ inline Json::Value nullableBool(const drogon::orm::Field &f) {
 
 inline Json::Value nullableInt(const drogon::orm::Field &f) {
     return f.isNull() ? Json::Value() : Json::Value(f.as<Json::Int64>());
+}
+
+// Postgres types the rows for us with json_agg; this turns the text column back
+// into a Json::Value. Shared by the raw table dump and the flight history.
+inline bool parseJson(const std::string &text, Json::Value &out) {
+    Json::CharReaderBuilder builder;
+    const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+    std::string errors;
+    if (reader->parse(text.data(), text.data() + text.size(), &out, &errors)) return true;
+    LOG_ERROR << errors;
+    return false;
 }

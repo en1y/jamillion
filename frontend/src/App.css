@@ -190,6 +190,23 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .sheet li.yours { background: #16294a80; }
 .sheet i { margin-left: 8px; font-style: normal; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ion); }
 
+/* --- flight log: the same row vocabulary as .haul, opened by <details> ---- */
+.logbook-stats { flex-wrap: wrap; margin: 4px 0 12px; }
+.flights { list-style: none; width: 100%; min-width: 0; padding: 0; margin: 0 0 12px; }
+.flights > li { border-bottom: 1px solid var(--line); }
+.flights summary { display: flex; align-items: flex-start; gap: 8px; padding: 10px 2px 8px; cursor: pointer; }
+.flights summary::-webkit-details-marker { display: none; }
+.flights summary::marker { content: ""; }
+.flights summary:hover { background: #16294a66; }
+.flights .n { flex: none; width: 2.4em; color: var(--mute); font-size: 15px; }
+.flights .said { flex: 1; min-width: 0; color: var(--ink); }
+.flights .said small { display: block; font-size: 13px; letter-spacing: .06em; color: var(--mute); }
+.flights .grid { overflow-wrap: anywhere; }
+.flights b { flex: none; color: var(--flare); font-weight: 400; }
+.flights .more { flex: none; width: 1em; color: var(--mute); text-align: center; }
+.flights .more::before { content: "+"; }
+.flights details[open] .more::before { content: "−"; }
+
 .logbook .meta b { color: var(--ink); font-weight: 400; }
 .next-flight { margin: 0; letter-spacing: .12em; text-transform: uppercase; color: var(--mute); }
 .next-flight span { color: var(--ion); font-variant-numeric: tabular-nums; }

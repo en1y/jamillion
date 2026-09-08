@@ -772,6 +772,56 @@ Task<HttpResponsePtr> mergeAnswer(HttpRequestPtr req, long long answerId) {
 
 // One player's flights, with every answer and the height it reached. A signed-in
 // player has one row per browser, so a linked row reports the whole account.
+// GET /api/me/flights?limit=   your own past flights, newest first. Guests have
+// them too, so the passport is the jam_player cookie rather than a token; the
+// account fan-out is the same as getPlayer's, so every browser of one account
+// reports as one history.
+// It names the tier and never the accepted answer a guess matched: same rule as
+// /api/quiz/today, on a second route.
+Task<HttpResponsePtr> myFlights(HttpRequestPtr req) {
+    const auto player = co_await playerFor(req);
+    if (player.empty()) co_return auth::error(k401Unauthorized, "No player passport: GET /api/me first");
+    const auto raw = req->getParameter("limit");
+    const int limit = std::clamp(raw.empty() ? 60 : std::atoi(raw.c_str()), 1, 365);
+    try {
+        // ponytail: one query, answers nested by json_agg. A per-row flight_no
+        // subquery is cheap against one quiz a day.
+        // DISTINCT ON collapses a day to its best flight: attempts are unique per
+        // (player_id, quiz_id), not per account, so two browsers that each flew a
+        // day as guests and then signed into the same account own two rows for it.
+        const auto rows = co_await app().getDbClient()->execSqlCoro(
+            "SELECT coalesce(json_agg(f ORDER BY f.quiz_date DESC), '[]')::text AS flights FROM ("
+            "  SELECT DISTINCT ON (z.quiz_date)"
+            "         z.quiz_date::text AS quiz_date, a.total_points,"
+            "         round(a.total_points * 0.1714, 2)::float8 AS height_au,"
+            "         a.finished_at IS NOT NULL AS finished,"
+            "         (SELECT count(*) FROM quizzes z2"
+            "           WHERE z2.published AND z2.quiz_date <= z.quiz_date) AS flight_no,"
+            "         coalesce((SELECT json_agg(json_build_object("
+            "               'position', q.position, 'raw_text', aa.raw_text,"
+            "               'correct', qa.is_correct IS TRUE,"
+            "               'tier', rt.name, 'points', aa.points) ORDER BY q.position)"
+            "           FROM attempt_answers aa"
+            "                JOIN questions q ON q.id = aa.question_id"
+            "                LEFT JOIN question_answers qa ON qa.id = aa.answer_id"
+            "                LEFT JOIN rarity_tiers rt ON rt.id = aa.tier_id"
+            "           WHERE aa.attempt_id = a.id), '[]') AS answers"
+            "    FROM attempts a JOIN players p ON p.id = a.player_id"
+            "         JOIN quizzes z ON z.id = a.quiz_id"
+            "   WHERE p.id = $1::uuid OR p.user_id = (SELECT user_id FROM players WHERE id = $1::uuid)"
+            "   ORDER BY z.quiz_date DESC, a.total_points DESC LIMIT $2::int) f",
+            player, limit);
+
+        Json::Value flights;
+        if (!parseJson(rows[0]["flights"].as<std::string>(), flights))
+            co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+        co_return json(flights);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+    }
+}
+
 Task<HttpResponsePtr> getPlayer(HttpRequestPtr, std::string playerId) {
     if (!auth::isUuid(playerId)) co_return auth::error(k404NotFound, "No such player");
     auto db = app().getDbClient();
@@ -934,6 +984,7 @@ void registerRoutes() {
     app().registerHandler("/api/quizzes/{1}", &patchQuiz, {Patch, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/answers/{1}", &patchAnswer, {Patch, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/answers/{1}/merge", &mergeAnswer, {Post, "auth::Optional", "auth::Moderator"});
+    app().registerHandler("/api/me/flights", &myFlights, {Get, "auth::Optional"});
     app().registerHandler("/api/players/{1}", &getPlayer, {Get, "auth::Optional", "auth::Moderator"});
 }
 }

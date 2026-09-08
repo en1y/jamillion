@@ -123,3 +123,18 @@ export const getReveal = (token?: string) =>
 /** A prompt idea from the post-flight screen. 3 per game day. */
 export const sendIdea = (text: string, token?: string) =>
   call<{ ok: boolean; reason?: string }>('/api/ideas', token, { method: 'POST', body: JSON.stringify({ text }) })
+
+/** One past flight. `answers` is the same shape as your own answers on
+ *  /api/quiz/today: the tier you were given, never the accepted answer you matched. */
+export interface Flight {
+  quiz_date: string
+  flight_no: number
+  total_points: number
+  height_au: number
+  finished: boolean
+  answers: OwnAnswer[]
+}
+
+/** Every flight this passport has flown, newest first. Signed in, that is every
+ *  browser of the account; as a guest, this browser's cookie. */
+export const getFlights = (token?: string) => call<Flight[]>('/api/me/flights', token)

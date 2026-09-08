@@ -218,6 +218,47 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
             assert status == 200 and detail['username'], (status, detail)
             assert [a['id'] for a in detail['attempts']] == [mine['id']], detail['attempts']
 
+
+        # -------------------------------------------------- own flight history
+        # A passport is required: the cookie is it, so no cookie is 401 rather
+        # than an empty list.
+        assert api('/api/me/flights')[0] == 401
+        assert api('/api/me/flights', token=TOKEN)[0] == 401
+
+        # A guest sees only its own row; user_id is NULL and NULL matches nothing.
+        _, guest_cookie = me()
+        _, guest_attempt, _ = api('/api/attempts', {}, cookie=guest_cookie)
+        api(f"/api/attempts/{guest_attempt['id']}/answers",
+            {'question_id': questions[1], 'text': 'Kid A'}, cookie=guest_cookie)
+        status, guest_flights, _ = api('/api/me/flights', cookie=guest_cookie)
+        assert status == 200 and [f['quiz_date'] for f in guest_flights] == [QUIZ_DATE], guest_flights
+
+        # Both browsers of the account report the one flight, with its tiers and
+        # never the accepted answer the guess matched.
+        for cookie in (cookie_a, cookie_b):
+            status, flights, headers = api('/api/me/flights', cookie=cookie, token=TOKEN)
+            assert status == 200 and headers['Cache-Control'] == 'no-store'
+            assert [f['quiz_date'] for f in flights] == [QUIZ_DATE], flights
+            row = flights[0]
+            assert isinstance(row['flight_no'], int) and row['finished'] is False
+            assert row['height_au'] == round(row['total_points'] * 0.1714, 2)
+            for answer in row['answers']:
+                assert set(answer) == {'position', 'raw_text', 'correct', 'tier', 'points'}, answer
+
+        # attempts are unique per (player_id, quiz_id), not per account, so two
+        # browsers that each flew a day as guests and then signed in own two rows
+        # for it. The history collapses a day to its best flight.
+        db.execute('INSERT INTO attempts (player_id, quiz_id, total_points, finished_at)'
+                   ' VALUES (%s, %s, 999, now())', (player_b, quiz_id))
+        status, flights, _ = api('/api/me/flights', cookie=cookie_a, token=TOKEN)
+        assert status == 200 and len(flights) == 1, flights
+        assert flights[0]['total_points'] == 999 and flights[0]['finished'] is True, flights[0]
+        db.execute('DELETE FROM attempts WHERE player_id = %s AND total_points = 999', (player_b,))
+
+        # limit is clamped, never rejected
+        for value in ('0', 'abc', '99999', '-5'):
+            assert api(f'/api/me/flights?limit={value}', cookie=cookie_a, token=TOKEN)[0] == 200
+
         assert api('/api/players/not-a-uuid', token=TOKEN)[0] == 404
         assert api(f'/api/players/{uuid.uuid4()}', token=TOKEN)[0] == 404
         assert api(f'/api/players/{album_player}')[0] == 401
@@ -234,7 +275,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
 
         print('PASS: quiz preview with answer list, publish/unpublish, moderator audio for an unpublished'
               ' quiz, verdict and tier overrides re-scoring only their own players, duplicate merge,'
-              ' player detail across an account, moderation RPC locked out of PostgREST')
+              ' player detail across an account, own flight history deduped per day,'
+              ' moderation RPC locked out of PostgREST')
     finally:
         if quiz_id:
             db.execute('DELETE FROM quizzes WHERE id = %s', (quiz_id,))

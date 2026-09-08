@@ -255,14 +255,8 @@ Task<HttpResponsePtr> readTable(HttpRequestPtr req, std::string name) {
             clampParam(req, "limit", 100, 1, 500), clampParam(req, "offset", 0, 0, 100000000));
 
         Json::Value parsed;
-        const auto body = rows[0]["rows"].as<std::string>();
-        Json::CharReaderBuilder builder;
-        const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-        std::string errors;
-        if (!reader->parse(body.data(), body.data() + body.size(), &parsed, &errors)) {
-            LOG_ERROR << errors;
+        if (!parseJson(rows[0]["rows"].as<std::string>(), parsed))
             co_return auth::error(k503ServiceUnavailable, "Admin service unavailable");
-        }
         Json::Value out;
         out["table"] = name;
         out["rows"] = parsed;

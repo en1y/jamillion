@@ -1,6 +1,6 @@
 // The flight: points to altitude, altitude to a position on the track, and the
 // share text. Pure, so flight.test.ts can check it without a browser.
-import type { OwnAnswer, Tier } from './api'
+import type { Flight, OwnAnswer, Tier } from './api'
 
 export const AU_PER_POINT = 0.1714
 export const HELIOPAUSE_AU = 120          // 700 points, a perfect run
@@ -176,27 +176,20 @@ export interface Logbook { streak: number; played: number; total: number; best: 
 
 export const EMPTY_LOG: Logbook = { streak: 0, played: 0, total: 0, best: 0, lastDate: null }
 
-export function recordFlight(log: Logbook, quizDate: string, points: number): Logbook {
-  if (log.lastDate === quizDate) return log
+/** The logbook, derived from the flights the server reports rather than kept in
+ *  localStorage: it follows the account across browsers, and there is one place
+ *  a streak can be wrong. Flights arrive newest first; the streak walks back
+ *  while each older row is exactly one game day earlier. */
+export function summarize(flights: Flight[]): Logbook {
+  if (flights.length === 0) return { ...EMPTY_LOG }
+  let streak = 1
+  while (streak < flights.length &&
+         nextIsoDate(flights[streak].quiz_date) === flights[streak - 1].quiz_date) streak++
   return {
-    streak: log.lastDate && nextIsoDate(log.lastDate) === quizDate ? log.streak + 1 : 1,
-    played: log.played + 1,
-    total: log.total + points,
-    best: Math.max(log.best, points),
-    lastDate: quizDate,
+    streak,
+    played: flights.length,
+    total: flights.reduce((sum, flight) => sum + flight.total_points, 0),
+    best: flights.reduce((top, flight) => Math.max(top, flight.total_points), 0),
+    lastDate: flights[0].quiz_date,
   }
-}
-
-export const LOG_KEY = 'jamillion-logbook'
-
-export function loadLog(): Logbook {
-  try {
-    const raw = JSON.parse(localStorage.getItem(LOG_KEY) ?? '')
-    if (raw && typeof raw.played === 'number') return { ...EMPTY_LOG, ...raw }
-  } catch { /* first visit, or a leftover from another tab */ }
-  return { ...EMPTY_LOG }
-}
-
-export function saveLog(log: Logbook) {
-  localStorage.setItem(LOG_KEY, JSON.stringify(log))
 }

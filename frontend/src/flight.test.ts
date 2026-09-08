@@ -4,7 +4,7 @@ import test from 'node:test'
 import type { OwnAnswer, Tier } from './api.ts'
 import {
   altitudeAu, bandFor, countdown, EMPTY_LOG, formatDate, HELIOPAUSE_AU, LANDMARKS,
-  logDepth, nextIsoDate, nextRollover, passed, PX_PER_AU, recordFlight, shareText, trackPx,
+  logDepth, nextIsoDate, nextRollover, passed, PX_PER_AU, shareText, summarize, trackPx,
 } from './flight.ts'
 
 const TIERS: Tier[] = [
@@ -71,17 +71,35 @@ test('the bearing picks the rarest band the score still reaches', () => {
   assert.equal(bandFor(700).tier, 'Supernova')
 })
 
-test('the logbook counts a flight once and keeps a streak across consecutive days', () => {
-  const first = recordFlight(EMPTY_LOG, '2026-09-08', 40)
-  assert.equal(first.played, 1)
-  assert.equal(first.streak, 1)
-  assert.equal(first.best, 40)
-  assert.equal(recordFlight(first, '2026-09-08', 99).played, 1)   // same day is a no-op
-  const next = recordFlight(first, '2026-09-09', 10)
-  assert.equal(next.streak, 2)
-  assert.equal(next.played, 2)
-  assert.equal(next.best, 40)
-  assert.equal(recordFlight(next, '2026-09-11', 80).streak, 1)    // a gap breaks it
+test('the logbook is derived from the flights the server reports, newest first', () => {
+  // ponytail: a plain object per flight; only the two fields summarize() reads.
+  const flown = (quiz_date: string, total_points: number) =>
+    ({ quiz_date, total_points, flight_no: 1, height_au: 0, finished: true, answers: [] })
+
+  assert.deepEqual(summarize([]), EMPTY_LOG)
+
+  const one = summarize([flown('2026-09-08', 40)])
+  assert.equal(one.played, 1)
+  assert.equal(one.streak, 1)
+  assert.equal(one.best, 40)
+  assert.equal(one.lastDate, '2026-09-08')
+
+  const run = summarize([flown('2026-09-10', 10), flown('2026-09-09', 40), flown('2026-09-08', 30)])
+  assert.equal(run.streak, 3)
+  assert.equal(run.played, 3)
+  assert.equal(run.total, 80)
+  assert.equal(run.best, 40)
+
+  // a missing day breaks the streak but not the totals
+  const gap = summarize([flown('2026-09-11', 80), flown('2026-09-09', 40), flown('2026-09-08', 30)])
+  assert.equal(gap.streak, 1)
+  assert.equal(gap.played, 3)
+  assert.equal(gap.best, 80)
+
+  // an unfinished flight still counts: it is a day you showed up
+  const today = summarize([{ ...flown('2026-09-12', 0), finished: false }, flown('2026-09-11', 60)])
+  assert.equal(today.streak, 2)
+  assert.equal(today.played, 2)
 })
 
 test('iso dates step in UTC so a streak does not depend on the browser timezone', () => {

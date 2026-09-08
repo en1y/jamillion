@@ -6,6 +6,7 @@ import type { Player } from './supabase'
 import { getToday } from './api'
 import type { Today } from './api'
 import { Play, Results, Scene } from './Play'
+import { Flights } from './Flights'
 import { altitudeAu, passed } from './flight'
 import './App.css'
 
@@ -33,7 +34,11 @@ function App() {
   // What the scene behind the page shows: the flight's running total while flying,
   // else the day's attempt. Keyed to the identity so a sign-out does not keep it.
   const [flown, setFlown] = useState<{ who: string; points: number } | null>(null)
-  const onAccount = useHash() === '#/account'
+  const hash = useHash()
+  const [, screen = ''] = hash.split('/')                // '#/flights'
+  const onAccount = screen === 'account'
+  const onFlights = screen === 'flights'
+  const away = onAccount || onFlights
 
   useEffect(() => {
     if (!supabase) return
@@ -118,18 +123,20 @@ function App() {
     <main className={flying ? 'flying' : undefined}>
       <header>
         <a className="brand" href="#/">✦ JAMILLION</a>
-        {today && !onAccount && (
+        {today && !away && (
           <span className="stats" role="status" aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
             <span className="stat"><small>ALT</small>{au.toFixed(1)} AU</span>
             <span className="stat"><small>SCORE</small>{points}</span>
           </span>
         )}
-        {onAccount
+        {away
           ? <a className="chip" href="#/">◀ launchpad</a>
           : <a className="chip" href="#/account">{passport}</a>}
       </header>
 
-      {onAccount ? (
+      {onFlights ? (
+        <Flights token={token} signedIn={Boolean(session)} tiers={today?.tiers} />
+      ) : onAccount ? (
         <section className="panel" aria-labelledby="account-heading">
           <p className="eyebrow">FLIGHT PASSPORT</p>
           <h2 id="account-heading">{session ? (player?.profile ? `Welcome, ${player.profile.username}` : 'Your account') : 'Make yourself at home'}</h2>
@@ -165,7 +172,7 @@ function App() {
             <Play today={today!} token={token} onPoints={next => setFlown({ who, points: next })} onDone={() => { setFlying(false); setRetry(n => n + 1) }} />
           ) : landed ? (
             <Results today={today!} token={token} />
-          ) : (<>)
+          ) : (<>
             <h1 className="glitch wave" aria-label="JAMILLION">
               {'JAMILLION'.split('').map((letter, i) =>
                 <span key={i} style={{ animationDelay: `${0.18 * i}s` }}>{letter}</span>)}
@@ -200,7 +207,7 @@ function App() {
               <span className="flight">{today ? `FLIGHT #${today.flight_no}` : 'FLIGHT —'}</span>
               <span>
                 <a className="chip" href="#/account">passport</a>
-                <button className="chip" type="button" disabled>flight log ⟲</button>
+                <a className="chip" href="#/flights">flight log</a>
                 <button className="chip" type="button" disabled>archive</button>
               </span>
             </nav>
