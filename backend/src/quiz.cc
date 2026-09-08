@@ -81,13 +81,14 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
     if (serve) {
         const auto served = co_await db->execSqlCoro(
             "UPDATE attempts a SET question_started_at = coalesce(a.question_started_at, now()) "
-            "FROM questions q "
+            "FROM questions q LEFT JOIN albums al ON al.id = q.album_id "
             "WHERE a.id = $1::bigint AND q.quiz_id = a.quiz_id "
             "  AND q.position = (SELECT count(*) + 1 FROM attempt_answers aa WHERE aa.attempt_id = a.id) "
             "RETURNING a.quiz_id, a.total_points, "
             "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = a.id) AS answered, "
             "  q.id AS question_id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
             "  q.snippet_start_sec::float8 AS snippet_start_sec, q.snippet_len_sec::float8 AS snippet_len_sec, "
+            "  q.ask_artist, q.ask_title, al.cover_url, "
             "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
             "  to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
             "          'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS deadline",
@@ -108,6 +109,13 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             question["deadline"] = nullable(row["deadline"]);
             // Never the track id: tracks are world readable through the anon key, so it
             // would give away the song. The clip is fetched by question id instead.
+            if (question["qtype"] != "rarest") {
+                question["ask_artist"] = row["ask_artist"].as<bool>();
+                question["ask_title"] = row["ask_title"].as<bool>();
+            }
+            // An album question shows the cover. The Deezer URL is a content hash: it
+            // names neither the album nor the artist.
+            if (question["qtype"] == "album") question["cover"] = nullable(row["cover_url"]);
             if (question["qtype"] == "song") {
                 question["snippet_start_sec"] = row["snippet_start_sec"].as<double>();
                 if (!row["snippet_len_sec"].isNull())
@@ -150,7 +158,7 @@ const char *validate(const Json::Value &body) {
         if (seen[position]) return "Duplicate question position";
         seen[position] = true;
         const auto type = q["qtype"].asString();
-        if (type != "rarest" && type != "song") return "qtype must be rarest or song";
+        if (type != "rarest" && type != "song" && type != "album") return "qtype must be rarest, song or album";
         if (!q["prompt"].isString() || q["prompt"].asString().empty() ||
             q["prompt"].asString().size() > 500) return "prompt must be 1 to 500 characters";
         if (q.isMember("time_limit_sec") &&
@@ -159,6 +167,13 @@ const char *validate(const Json::Value &body) {
         if (type == "song" && (!q["track_id"].isIntegral() || !q["snippet_start_sec"].isNumeric() ||
                                !q["snippet_len_sec"].isNumeric()))
             return "song questions need track_id, snippet_start_sec and snippet_len_sec";
+        if (type == "album" && !q["album_id"].isIntegral()) return "album questions need album_id";
+        if (type != "rarest") {
+            for (const char *flag : {"ask_artist", "ask_title"})
+                if (q.isMember(flag) && !q[flag].isBool()) return "ask_artist and ask_title must be booleans";
+            if (!q.get("ask_artist", true).asBool() && !q.get("ask_title", true).asBool())
+                return "A song or album question must ask for the artist, the title or both";
+        }
         const auto &answers = q["answers"];
         if (!answers.isArray() || answers.empty()) return "Each question needs at least one answer";
         for (const auto &a : answers) {
@@ -207,11 +222,13 @@ Task<HttpResponsePtr> createQuiz(HttpRequestPtr req) {
             "  VALUES ($1::date, $2::bool, $3::uuid) RETURNING id), "
             "qs AS ("
             "  INSERT INTO questions (quiz_id, position, qtype, prompt, time_limit_sec, "
-            "                         track_id, snippet_start_sec, snippet_len_sec) "
+            "                         track_id, snippet_start_sec, snippet_len_sec, album_id, ask_artist, ask_title) "
             "  SELECT qz.id, q.position, q.qtype::question_type, q.prompt, coalesce(q.time_limit_sec, 20), "
-            "         q.track_id, q.snippet_start_sec, q.snippet_len_sec "
+            "         q.track_id, q.snippet_start_sec, q.snippet_len_sec, q.album_id, "
+            "         coalesce(q.ask_artist, true), coalesce(q.ask_title, true) "
             "  FROM qz, jsonb_to_recordset($4::jsonb) AS q(position int, qtype text, prompt text, "
-            "       time_limit_sec int, track_id bigint, snippet_start_sec numeric, snippet_len_sec numeric) "
+            "       time_limit_sec int, track_id bigint, snippet_start_sec numeric, snippet_len_sec numeric, "
+            "       album_id bigint, ask_artist bool, ask_title bool) "
             "  RETURNING id, position), "
             "ans AS ("
             "  INSERT INTO question_answers (question_id, normalized, display, is_correct, tier_id) "
@@ -468,9 +485,11 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                  "SELECT q.id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
                  "  q.snippet_start_sec::float8 AS snippet_start_sec, "
                  "  q.snippet_len_sec::float8 AS snippet_len_sec, "
-                 "  t.id AS track_id, t.title AS track_title, ar.name AS artist "
+                 "  t.id AS track_id, t.title AS track_title, ar.name AS artist, "
+                 "  q.ask_artist, q.ask_title, q.album_id, d.title AS album_title, dar.name AS album_artist "
                  "FROM questions q LEFT JOIN tracks t ON t.id = q.track_id "
                  "LEFT JOIN albums al ON al.id = t.album_id LEFT JOIN artists ar ON ar.id = al.artist_id "
+                 "LEFT JOIN albums d ON d.id = q.album_id LEFT JOIN artists dar ON dar.id = d.artist_id "
                  "WHERE q.quiz_id = $1::bigint ORDER BY q.position",
                  quizId)) {
             const auto id = row["id"].as<long long>();
@@ -496,6 +515,19 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                 track["artist"] = nullable(row["artist"]);
                 question["track"] = track;
                 question["audio"] = "/api/audio/" + row["id"].as<std::string>();
+            }
+            if (row["album_id"].isNull()) {
+                question["album"] = Json::Value();
+            } else {
+                Json::Value album;
+                album["id"] = row["album_id"].as<Json::Int64>();
+                album["title"] = row["album_title"].as<std::string>();
+                album["artist"] = nullable(row["album_artist"]);
+                question["album"] = album;
+            }
+            if (question["qtype"] != "rarest") {
+                question["ask_artist"] = row["ask_artist"].as<bool>();
+                question["ask_title"] = row["ask_title"].as<bool>();
             }
             question["answers"] = Json::Value(Json::arrayValue);
             index[id] = questions.size();

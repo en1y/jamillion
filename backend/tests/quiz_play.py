@@ -27,8 +27,8 @@ def api(path, data=None, cookie=None, token=None, method=None):
     return request(BASE + path, data, headers, method)
 
 
-def build_quiz(track_id):
-    """Six rarest questions plus one song question, positions 1..7."""
+def build_quiz(track_id, album_id=None):
+    """Five rarest questions, an album question (title only) and a song question."""
     questions = [{
         'position': 1, 'qtype': 'rarest', 'prompt': 'Name a Radiohead album',
         'answers': [{'display': 'OK Computer'}, {'display': 'Kid A'}],
@@ -38,6 +38,8 @@ def build_quiz(track_id):
             'position': position, 'qtype': 'rarest', 'prompt': f'Question {position}',
             'answers': [{'display': f'Answer {position}'}],
         })
+    if album_id:   # the album behind the track: its title is the only field asked for
+        questions[5].update(qtype='album', prompt='Whose album is this?', album_id=album_id, ask_artist=False)
     questions.append({
         'position': 7, 'qtype': 'song', 'prompt': 'Artist and title?', 'track_id': track_id,
         'snippet_start_sec': 12, 'snippet_len_sec': 10,
@@ -94,6 +96,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                            'ORDER BY deezer_rank DESC NULLS LAST LIMIT 1').fetchone()
         assert track, 'The catalog has no track with a preview; seed one first'
         track_id = track[0]
+        album_id = db.execute('SELECT album_id FROM tracks WHERE id = %s', (track_id,)).fetchone()[0]
         assert api('/api/quizzes', build_quiz(track_id), token=TOKEN)[0] == 403
         assert api('/api/quizzes', build_quiz(track_id))[0] == 401
         db.execute("UPDATE profiles SET role = 'moderator' WHERE id = %s", (uid,))
@@ -106,7 +109,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                        lambda q: q['questions'][0].update(answers=[]),
                        lambda q: q['questions'][0].update(prompt=''),
                        lambda q: q['questions'][0].update(time_limit_sec=600),
-                       lambda q: q['questions'][1].update(position=1)):
+                       lambda q: q['questions'][1].update(position=1),
+                       lambda q: q['questions'][6].update(ask_artist=False, ask_title=False),
+                       lambda q: q['questions'][5].update(qtype='album')):        # no album_id
             broken = build_quiz(track_id)
             mutate(broken)
             assert api('/api/quizzes', broken, token=TOKEN)[0] == 400, mutate
@@ -115,7 +120,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api('/api/quizzes', bad_snippet, token=TOKEN)[0] == 400   # CHECK snippet_in_clip
 
         # -------------------------------------------------- create the quiz
-        status, created, _ = api('/api/quizzes', build_quiz(track_id), token=TOKEN)
+        status, created, _ = api('/api/quizzes', build_quiz(track_id, album_id), token=TOKEN)
         assert status == 201, (status, created)
         quiz_id = created['id']
         audio_path = db.execute('SELECT audio_path FROM tracks WHERE id = %s', (track_id,)).fetchone()[0]
@@ -192,6 +197,10 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         # -------------------------------------------------- finish, with the song
         status, body = answer(cookie, attempt_id, questions[5], 'Answer 5')
         assert body['result']['points'] == 10 and body['total_points'] == 40
+        status, served = serve(cookie)                                    # the album question
+        assert served['question']['qtype'] == 'album' and served['question']['cover'], served['question']
+        assert served['question']['ask_artist'] is False and served['question']['ask_title'] is True
+        assert 'album_id' not in served['question'] and 'track_id' not in served['question']
         status, body = answer(cookie, attempt_id, questions[6], 'Answer 6')
         assert body['result']['points'] == 10 and body['total_points'] == 50
         song_id = questions[7]
@@ -199,6 +208,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['id'] == song_id and served['question']['qtype'] == 'song'
         assert served['question']['audio'] == f'/api/audio/{song_id}'
         assert served['question']['snippet_start_sec'] == 12 and served['question']['snippet_len_sec'] == 10
+        assert served['question']['ask_artist'] is True and served['question']['ask_title'] is True
         status, body = answer(cookie, attempt_id, song_id, 'radiohead creep')  # moderator override wins
         assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Supernova', 'points': 100}, body['result']
         assert body['finished'] is True and body['total_points'] == 150 and body['question'] is None
