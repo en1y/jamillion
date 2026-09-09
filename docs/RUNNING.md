@@ -82,13 +82,16 @@ It commits one artist per transaction, so it is resumable and safe to interrupt:
 | `--start 213` | resume at rank 213 |
 | `--artists "Radiohead" "Bjork"` | seed specific names instead of the chart |
 | `--detail-cap 120` | tracks per artist that get an ISRC/BPM lookup, one request each |
-| `--youtube-cap 25` | tracks per artist looked up on YouTube |
 | `--lastfm-cap 25` | tracks per artist that get listen counts |
+| `--yt-albums 60` | albums + singles per artist read on YouTube Music |
+| `--yt-refresh` | re-read play counts that are already stored |
 | `--no-youtube`, `--no-spotify` | skip those sources |
 
 Caps apply to the most popular tracks first. Every other track still gets title, album, release date, duration, rank and a preview clip.
 
-Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. If YouTube Music starts refusing requests, the seeder says so once and skips YouTube for the rest of the run; everything else still gets stored. Re-running the same command later fills in the missing video ids: every write is an upsert or a fill-where-null, so a re-run only fetches what is missing.
+Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. Re-running the same command later fills in what is missing: every write is an upsert or a fill-where-null, so a re-run only fetches what is not there yet.
+
+YouTube gives two different numbers and the seeder stores both. `tracks.ytmusic_plays` is the figure the YouTube Music app shows under a song -- plays summed over every upload of that recording, so 3 B for Smells Like Teen Spirit where its art track alone has 280 M views. Only the app's private API serves it, so `ytmusicapi` reads the artist's albums and singles pages (one search per artist, cached in `artists.ytmusic_id`, then one request per album, paced to about one a second) and the artist's monthly listeners land in `artists.ytmusic_listeners`. The app rounds what it shows ("3B", "282M"), and that is what gets stored: three significant digits at best, exact enough to rank by. `tracks.youtube_views` is then the exact view count of the video YouTube Music picked, from the official Data API at one quota unit per 50 videos, if `YOUTUBE_API_KEY` is set. When YouTube Music keeps refusing requests the seeder says so once, finishes the run without it, and a later run fills in what is NULL; artists that already have play counts are skipped, so a re-run moves forward instead of redoing the same names. `--yt-refresh` re-reads counts that are already stored.
 
 Audio: the seed stores a preview URL per track. Deezer's links expire after about a day, so the downloader re-resolves a fresh one from the stored Deezer id. The clip is cached locally the first time a track is used in a quiz:
 
@@ -119,14 +122,19 @@ curl localhost:8080/api/health
 
 Should return `{"ok":true,"tiers":6}`.
 
-Track search requires a moderator/admin access token; all filters are optional:
+Catalog search requires a moderator/admin access token. One route answers every question, by stacking filters and sorts:
 
 ```bash
-curl -H "Authorization: Bearer $ACCESS_TOKEN" \
-  'localhost:8080/api/tracks?q=love&artist=rihanna&year=2008&min_rank=50&limit=20'
+curl -X POST localhost:8080/api/catalog -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+    "entity": "tracks",
+    "filters": [{"field": "artist.name", "op": "eq", "value": "Adele"},
+                {"field": "track.lastfm_listeners", "op": "gte", "value": 1000000}],
+    "sorts": [{"field": "track.lastfm_listeners", "dir": "desc"}],
+    "limit": 20}'
 ```
 
-`q` and `artist` are case-insensitive substrings, `year` is the release year, `min_rank` keeps only artists ranked at or above that position (`global_rank <= min_rank`), `limit` defaults to 50 and caps at 200. Results are ordered by Deezer popularity.
+See [the catalog query](#the-catalog-query) below for the field list, the operators and the response shape.
 
 ## 4. Frontend
 
@@ -183,7 +191,7 @@ curl -b /tmp/jam.cookies -c /tmp/jam.cookies \
 
 The signed `jam_player` cookie lasts a year, is HttpOnly, SameSite=Lax, and scoped to `/`. Set `COOKIE_SECURE=true` when serving over HTTPS. A valid guest row is linked atomically on sign-in, preserving its existing attempts. Linked cookies grant no account access without a token: sign-out or switching accounts creates a fresh player row. Multiple browser player rows can belong to one profile; history can be collected through `players.user_id`. Since v0.3.0 the daily attempt is deduplicated across those rows, so a signed-in player gets one flight a day whichever browser they use.
 
-Backend routes attach `auth::Optional` first, followed by `auth::User`, `auth::Moderator`, or `auth::Admin` as needed. User requires sign-in, Moderator admits moderators/admins, and Admin admits only admins. Anonymous access to guarded routes returns 401; insufficient roles return 403. `/api/me` admits guests; `/api/tracks` requires Moderator. `/api/health` stays public.
+Backend routes attach `auth::Optional` first, followed by `auth::User`, `auth::Moderator`, or `auth::Admin` as needed. User requires sign-in, Moderator admits moderators/admins, and Admin admits only admins. Anonymous access to guarded routes returns 401; insufficient roles return 403. `/api/me` admits guests; `/api/catalog` requires Moderator. `/api/health` stays public.
 
 Sign-out ends the Supabase session on this browser. Like other locally verified JWTs, an already issued access token remains valid until expiry; deleting its profile makes the backend reject it immediately.
 
@@ -211,7 +219,7 @@ All three scripts share their fixtures through `backend/tests/common.py`. Run th
 
 `moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST. Since v0.8.0 it also covers `GET /api/me/flights`: the 401 without a passport, a guest seeing only its own flights, both browsers of an account reporting the same list with the tier and never the matched answer, a day owned twice collapsing to its best flight, and `limit` being clamped rather than rejected.
 
-`admin.py` does not own the game day, so it runs in any order. It builds its own quiz 400 days out and writes finished attempts straight to the tables instead of playing them through the timer, because the timer is already `quiz_play.py`'s job. It covers the user listing and its filters, a role change taking effect on the next request, the last admin surviving both demotion and deletion, per-question stats with the height histogram, the allowlisted table dump refusing everything else, tier edits leaving already-awarded points alone, and an account deletion that keeps the flights and releases the quiz it created. It briefly demotes any other admin so it can test the last-admin rule, and restores them in its `finally` block.
+`admin.py` does not own the game day, so it runs in any order. It builds its own quiz 400 days out and writes finished attempts straight to the tables instead of playing them through the timer, because the timer is already `quiz_play.py`'s job. It covers the user listing with its filters and sorts, a role change taking effect on the next request, the last admin surviving both demotion and deletion, per-question stats with the height histogram, the allowlisted table dump refusing everything else, tier edits leaving already-awarded points alone, and an account deletion that keeps the flights and releases the quiz it created. It briefly demotes any other admin so it can test the last-admin rule, and restores them in its `finally` block.
 
 The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `TEST_API_URL` for another backend port, refuses non-local services, and creates/deletes only its own test accounts and player rows. It checks real signup/login, concurrent first-admin creation, guest persistence/linking, concurrent account isolation, role changes, malformed/expired/forged tokens, deleted profiles, and answer-key RLS. On an empty auth database it also verifies the first-signup admin rule. Local email confirmation must be disabled for these tests.
 
@@ -229,7 +237,7 @@ curl -X POST localhost:8080/api/quizzes -H "Authorization: Bearer $ACCESS_TOKEN"
     {"position": 1, "qtype": "rarest", "prompt": "Name a Radiohead album",
      "answers": [{"display": "OK Computer"}, {"display": "Kid A"}]},
     {"position": 2, "qtype": "song", "prompt": "Artist and title?", "track_id": 123,
-     "snippet_start_sec": 12, "snippet_len_sec": 10,
+     "snippet_start_sec": 12, "snippet_len_sec": 10, "time_limit_sec": 0, "ask_album": true,
      "answers": [{"display": "Radiohead Creep", "tier_id": 6}, {"display": "Radiohead", "tier_id": 2}]},
     {"position": 3, "qtype": "album", "prompt": "Whose album is this?", "album_id": 45,
      "ask_artist": true, "ask_title": false,
@@ -237,7 +245,23 @@ curl -X POST localhost:8080/api/quizzes -H "Authorization: Bearer $ACCESS_TOKEN"
   ]}'
 ```
 
-Find `track_id` with `/api/tracks` (section 3) and `album_id` in the `albums` table (Studio, or `GET /api/tables/albums` as an admin). Saving a song question downloads its clip first, by running `scripts/fetch_audio.py` through `.venv/bin/python` if that exists and `python3` otherwise; a track with no reachable preview fails the whole save with 422 rather than storing an unplayable quiz. Re-posting the same date replaces a quiz nobody has played yet, and returns 409 once it has attempts.
+Find `track_id` and `album_id` with `POST /api/catalog` (section 3).
+
+`time_limit_sec` is **0 for no clock** or 5–60 seconds; it defaults to 20 when the key is absent. An untimed question is served with `deadline: null`, the player's ring is not drawn, and nothing is ever counted late. The editor defaults a song or an album question to no clock and a rarest question to 20 s.
+
+`ask_artist`, `ask_title` and `ask_album` are the fields a song or album question puts in front of the player, in that order; their answer is those fields joined with `—`. At least one must be true. Each field is a separate input in the player's HUD with the catalog's completions listed under it (`/api/suggest`), so the three-field question is picked rather than typed.
+
+The `answers` you POST are the key exactly as stored: the API knows nothing about fields and combinations. It is the **editor** that expands them — one row per field, plus every combination of those fields.
+
+A combination is worth its fields **added up**. Each field carries a tier, a player scores every field they got right, and `full_tier_id` in the editor is an optional **bonus** on top for getting all of them — leave it at *no bonus* and a perfect answer is simply the whole sum. Because a sum is rarely a number any rarity tier names, each combination row carries an explicit `points` (0–700) that overrides its tier's own value; `tier_id` still rides along, so the player is shown a star as usual. Reopening a saved day folds the combinations back up, so the moderator edits fields, not a 2ⁿ list.
+
+```json
+{"display": "Lady Gaga — Poker Face — The Fame", "tier_id": 4, "points": 105}
+```
+
+In the editor, results collected from a catalog query can take their tiers from the sort they were found in. The **tiers** select beside the collect buttons chooses: *spread down the sort* puts Nebula at the top of the list and Supernova at the bottom with the rest stacked evenly between, so sorting by listeners descending makes the ladder read as popularity; *by rarity* leaves every added answer to score by how rare it turns out to be. Answers already in the table are never re-tiered by a later add — a repeat is skipped as a duplicate, so change the tiers in place or **remove all** first.
+
+`points` is yours to set on any answer, not just a generated one, and **0 is a real choice**: accepted, counted as a guess, worth nothing. Every tier select in the editor and the review queue offers it as *0 pts · no score* beside *by rarity* and the six tiers. `PATCH /api/answers/{id}` takes `points` alongside `is_correct` and `tier_id`; `null` puts the answer back on its tier, and setting a `tier_id` by hand clears whatever override the answer carried, so the tier the moderator picked is what takes effect. `ask_album` — *which record is this song from* — is **song only**: on an album question the album title is what `ask_title` already means, and asking for it twice is rejected with 400. Saving a song question downloads its clip first, by running `scripts/fetch_audio.py` through `.venv/bin/python` if that exists and `python3` otherwise; a track with no reachable preview fails the whole save with 422 rather than storing an unplayable quiz. Re-posting the same date replaces a quiz nobody has played yet, and returns 409 once it has attempts.
 
 **Play.** Every route below needs the `jam_player` cookie from `GET /api/me`, so fetch that first (section 6).
 
@@ -352,19 +376,76 @@ curl -X POST localhost:8080/api/answers/420/merge -H "Authorization: Bearer $ACC
 
 Answers that differ only in case, punctuation or accents never become separate rows in the first place: `normalize_answer()` collapses them as they land, so `The Bends!` is already counted as `the bends`. Merging is for the spellings normalisation cannot see, like `The Bends album`. Both ids must belong to the same question, or the answer is 400.
 
-**The editor's routes.** Five additions in v0.8.2, all moderator or admin, that together make a quiz authorable without an admin's table dump.
+**The editor's routes.** All moderator or admin, and together they make a quiz authorable without an admin's table dump.
 
-`GET /api/albums?q=&artist=&year=&min_rank=&limit=` is the other half of `/api/tracks`. `POST /api/quizzes` needs an `album_id` for an album question, and `/api/tracks` reports an album by title only, so before this the only source of one was `GET /api/tables/albums` — an **admin** route. Same filters and the same clamps as `/api/tracks`; `limit` defaults to 50 and caps at 200.
+### The catalog query
 
-```bash
-curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/albums?artist=radiohead&limit=1'
-```
+`POST /api/catalog` replaced `GET /api/tracks` and `GET /api/albums` in v0.8.4. Those two took four fixed filters and one fixed sort each; the questions a moderator actually writes need more than that — *songs on this album in running order*, *British bands formed before 1980*, *this artist's tracks over a million listens* — so the route takes a **stack** of filters and a **stack** of sorts over an allowlist of columns instead.
 
 ```json
-[{"id": 117, "title": "OK Computer", "artist": "Radiohead", "global_rank": 3,
-  "release_date": "1997-06-17", "total_tracks": 12,
-  "cover_url": "https://cdn-images.dzcdn.net/…", "deezer_fans": 181569}]
+{"entity": "tracks",
+ "filters": [{"field": "album.title", "op": "eq", "value": "Parachutes"}],
+ "sorts": [{"field": "track.track_number", "dir": "asc"}],
+ "limit": 50, "offset": 0}
 ```
+
+- `entity` — `tracks`, `albums` or `artists`. It decides which fields exist and what a row is.
+- `filters` — ANDed. `in` covers the common *either of these* case (`"value": "adele, coldplay"`), which is why there is no OR grouping.
+- `sorts` — applied in order, always `NULLS LAST`. Empty means Deezer popularity for tracks, Deezer fans for albums, `global_rank` for artists.
+- `limit` 1–500 (default 50), `offset` 0–1000000.
+
+Operators are decided by the field's datatype:
+
+| Datatype | Operators |
+|----------|-----------|
+| text     | `contains` `starts` `ends` `eq` `ne` `in` `null` `notnull` |
+| number   | `eq` `ne` `lt` `lte` `gt` `gte` `in` `null` `notnull` |
+| date     | `eq` `ne` `lt` `lte` `gt` `gte` `null` `notnull` (`YYYY-MM-DD`) |
+| boolean  | `eq` `ne` `null` `notnull` (`"true"` / `"false"`) |
+
+Text compares case-insensitively, and `ne` is `IS DISTINCT FROM`, so a null row counts as *not* the value rather than dropping out.
+
+**When an artist started.** `artist.begin_year` is MusicBrainz's *begin*, which is a birth year for a person and a formation year for a group — so filtering it under 1980 sweeps up Eminem, born 1972 and not yet rapping. Three fields separate the meanings:
+
+| Field | Is |
+|-------|----|
+| `artist.formed_year` | `begin_year` when `artist_type` is `Group`, else null — bands only |
+| `artist.born_year` | `begin_year` when `artist_type` is `Person`, else null — people only |
+| `artist.first_release` / `artist.first_release_year` | the earliest release date of anything by them **in this catalog** |
+
+`first_release` is the one that answers "when did they start" for both kinds, but it is bounded by what the seeder holds: an artist known here only from a later compilation reads late (The Beatles come out as 1993). `formed_year` and `born_year` are only as good as `artist_type`, which Deezer/MusicBrainz sometimes gets wrong — Kanye West is filed as a `Group`.
+
+**How big a song is.** Four counts, each meaning something different:
+
+| Field | Is |
+|-------|----|
+| `track.ytmusic_plays` | the play count the YouTube Music app shows — plays over every upload of the recording, rounded to a few digits (`3000000000` for Smells Like Teen Spirit). The editor's track results show it by default |
+| `track.youtube_views` | exact views of the one video YouTube Music plays for it |
+| `track.lastfm_listeners` / `lastfm_playcount` | Last.fm scrobblers, a smaller and rockier crowd |
+| `track.deezer_rank` | Deezer's 0–1 000 000 popularity score, the default sort |
+
+`artist.ytmusic_listeners` is the artist's YouTube Music monthly listeners, shown by default on artist results. All of them are `notnull`-filterable, so a seed that has not run YouTube yet can be told apart from a song nobody plays.
+
+A row carries every column its entity has, keyed exactly as the field is, plus `id`:
+
+```json
+{"entity": "tracks", "total": 10,
+ "rows": [{"id": 5, "total": 10, "track.title": "Yellow", "track.lastfm_listeners": 3650716,
+           "album.title": "Parachutes", "artist.name": "Coldplay", "artist.country": "GB", "…": "…"}]}
+```
+
+`total` is the match count before `limit`, so the editor can say *16 matches, top 5*.
+
+`GET /api/catalog/fields` describes the allowlist — every column, its datatype, the entities it belongs to, and the operator list per datatype. The editor's whole filter UI is built from this reply, so a column added to `kColumns` in `backend/src/catalog.cc` appears in the browser without a line of frontend changing.
+
+```json
+{"entities": [{"name": "tracks", "label": "songs"}, "…"],
+ "operators": {"text": ["contains", "…"], "number": ["eq", "…"]},
+ "fields": [{"key": "artist.lastfm_listeners", "type": "number",
+             "entities": ["tracks", "albums", "artists"]}]}
+```
+
+**The allowlist is the security boundary.** No table name, column name or operator ever reaches the SQL from the request — only a key that matched a row in `kColumns` or `kOps`. Values are always bound parameters. An unknown field, or an operator the field's datatype does not offer, is 400 rather than a silently ignored clause.
 
 `GET /api/tiers` is the tier list **with ids**, which an answer's `tier_id` override needs. `/api/quiz/today` carries names and points only, and 404s on a day with no quiz, so the editor cannot read them there. `rarity_tiers` is world readable anyway; the guard only keeps the editor's surface in one place.
 
@@ -378,6 +459,8 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/albums?artist=
 [{"quiz_date": "2026-09-08", "published": true, "questions": 7,
   "attempts_started": 7, "attempts_finished": 7}]
 ```
+
+**Why the snippet window is 30 seconds.** It is the clip, not a limit we chose. Deezer and the iTunes fallback serve a 30 s preview and nothing longer, and `CLAUDE.md` rules out full-track downloads, so 30 s is the whole of the audio that exists for a track. The schema says so too: `snippet_start_sec BETWEEN 0 AND 30` and the `snippet_in_clip` CHECK. The editor's waveform is that clip end to end, and the window on it is trimmed the way an audio editor trims: drag either **edge** to move that end alone, the **middle** to slide the whole window without resizing it, or bare waveform to draw a new one. The cursor says which. The start can never cross its own end (1 s minimum) and sliding to either end of the clip stops rather than shortening the window; the two sliders below stay, as the keyboard's way in and the only way to nudge by exactly a second.
 
 `GET /api/tracks/{id}/audio` streams a track's clip **before any question uses it**, which `/api/audio/{question}` cannot do because it is keyed by question id on purpose. This is what lets the snippet picker audition a candidate. It is also why saving is quick: `fetch_audio.py` writes `tracks.audio_path`, so by the time the day is posted, `POST /api/quizzes`'s pre-cache loop finds every file already on disk instead of spending 1–3 s per track.
 
@@ -416,8 +499,11 @@ Everything here needs an **admin** access token. Anonymous requests get 401, pla
 
 **Users.** All filters are optional: `q` is a case-insensitive substring of the username or the email, `role` is one of `user`, `moderator`, `admin`, `limit` defaults to 50 and caps at 200, `offset` pages.
 
+`sort` orders the page by `username`, `email`, `role`, `created_at`, `browsers` or `attempts`, and `dir` is `asc` (the default) or `desc`; anything else is a 400, because the sort key is interpolated into the statement and the allowlist is what makes that safe. `role` orders on the enum rather than its spelling, so ascending reads user → moderator → admin. The default stays oldest account first, and every sort falls back to the user id, so paging never shows one account twice while skipping another.
+
 ```bash
 curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/users?q=ana&role=moderator&limit=20'
+curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/users?sort=attempts&dir=desc'
 ```
 
 ```json

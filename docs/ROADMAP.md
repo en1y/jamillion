@@ -13,7 +13,7 @@ Backend first (v0.1 – v0.5), frontend second (v0.6 – v0.9).
 
 - [x] Supabase stack running, schema applied as a migration.
 - [~] Seed top 500 artists: Deezer catalog (albums, tracks, labels, UPC/ISRC, BPM, fans, preview clips), Last.fm ranking + listen counts, MusicBrainz country/type/gender/years, YouTube video ids + views. Originals only. Running.
-- [x] `GET /api/tracks?q=&artist=&year=&min_rank=` search for the quiz editor.
+- [x] `GET /api/tracks?q=&artist=&year=&min_rank=` search for the quiz editor. Replaced by `POST /api/catalog` in v0.8.4.
 - Patch ideas: raise `--detail-cap` for full ISRC coverage, album-level genres, MusicBrainz writer credits.
 
 ## v0.2.0 — Auth and players
@@ -62,7 +62,7 @@ Decisions worth carrying forward:
 
 Implemented and locally verified; release tag pending.
 
-- [x] Users: list, change role, delete. `GET /api/users`, `PATCH /api/users/{id}`, `DELETE /api/users/{id}`.
+- [x] Users: list (filtered and sorted), change role, delete. `GET /api/users`, `PATCH /api/users/{id}`, `DELETE /api/users/{id}`.
 - [x] Per-question stats: most guessed answers with their share, height histogram (`quiz_heights` view). `GET /api/quizzes/{date}/stats`.
 - [x] Raw table view (read-only, over an allowlist of tables). `GET /api/tables`, `GET /api/tables/{name}`.
 - [x] Edit `rarity_tiers` (names, points, shares). `PATCH /api/tiers/{id}`.
@@ -157,7 +157,7 @@ Decisions worth carrying forward:
 
 The quiz editor could not be started: six things it needs did not exist, and one of them meant a whole question type was unauthorable. Split from the UI so each tag works end to end and the contract can be exercised by curl before a component is written.
 
-- [x] `GET /api/albums?q=&artist=&year=&min_rank=&limit=` — the other half of `/api/tracks`.
+- [x] `GET /api/albums?q=&artist=&year=&min_rank=&limit=` — the other half of `/api/tracks`. Both replaced by `POST /api/catalog` in v0.8.4.
 - [x] `GET /api/tiers` — the tiers **with ids**, which a `tier_id` override needs.
 - [x] `GET /api/quizzes?from=&to=` — which days already have a quiz, and which are frozen.
 - [x] `GET /api/tracks/{id}/audio` — a clip before any question uses it.
@@ -192,6 +192,59 @@ Decisions worth carrying forward:
 - **Auditioning is what makes the save fast.** The picker's preview caches the clip through `ensureAudio`, so `createQuiz`'s pre-cache loop finds the file on disk. Measured: 0.2 s to save a day whose track had been auditioned.
 - **A frozen day shows one list of answers, not two.** The accepted-answer editor is hidden once the day has attempts, because the review queue below it lists the same answers with controls that actually do something. Two lists of the same thing, one inert, is how a moderator learns to distrust the screen.
 - **Four routes, still no router.** The hash is split once into a screen and an argument. A dependency earns its place when a screen needs two segments.
+
+## v0.8.4 — The catalog query
+
+`/api/tracks` and `/api/albums` took four fixed filters and one fixed sort each, and the editor's picker was two text boxes over them. That answers *find me this song*; it does not answer the questions a moderator actually writes. "Name an Adele song over a million listens" and "name a song from Coldplay's Parachutes" are queries, and a moderator should not have to type out twenty answers the database already knows.
+
+- [x] `POST /api/catalog` — one route over `tracks`, `albums` and `artists`, taking a **stack** of filters and a **stack** of sorts across 35 allowlisted columns.
+- [x] `GET /api/catalog/fields` — the allowlist itself: every column, its datatype, and the operators that datatype offers.
+- [x] `GET /api/tracks` and `GET /api/albums` deleted; nothing calls them any more.
+- [x] The editor's query builder: entity switch, stacked filter rows, stacked sort rows, sortable column headings, and a results table with the numbers you sorted by in it.
+- [x] Results become accepted answers in one press — all of them, or the ticked ones — as the title, `artist — title`, or the artist.
+- [x] The same builder is the song and album picker, so one component and one route cover both jobs.
+- [x] `artist.formed_year`, `artist.born_year` and `artist.first_release` — because `begin_year` alone is a trap.
+
+Decisions worth carrying forward:
+
+- **The allowlist is the whole security boundary.** No table name, column name or operator reaches the SQL from the request — only a key that matched a row in `kColumns` or `kOps`; values are always bound parameters. The same trade `/api/tables` makes, and the reason there is no `?where=` and no free SQL.
+- **The datatype decides the operators, not the field.** `contains` is offered on text and refused on a number, `gte` the other way round, and the editor reads both lists off `/api/catalog/fields`. A column added to `kColumns` appears in the browser with no frontend change, which is the point of serving the schema rather than keeping a second copy in TypeScript.
+- **AND only, with `in` for the common OR.** Stacked filters all have to match. Real OR needs grouping, which doubles the UI for a need that "one of: adele, coldplay" already covers.
+- **Every column comes back, not a projection.** A row carries all 35 of its entity's fields, so the table can show whatever was filtered or sorted on without a second request describing what to select. `json_agg` in Postgres types the rows, so nothing is marshalled field by field in C++ either.
+- **The answers are materialised, not a saved query.** A query becomes rows in `question_answers` at the moment the moderator presses the button. Tiers hang off individual answers, `submit_answer()` matches against them, and the review queue edits them — a live rule would have to fight all three.
+- **`begin_year` means two different things.** MusicBrainz's artist *begin* is a birth year for a person and a formation year for a group, so "bands formed before 1980" on the raw column returns Eminem, born 1972. `formed_year` and `born_year` are that column split by `artist_type`, and `first_release` — the earliest record by them in the catalog — is the one that answers the question for both kinds. It is honest about its bound: an artist held here only from a later compilation reads late.
+- **The derived date is a LATERAL, not a subquery in the select list.** The same artist repeats all the way down a page of tracks; as two correlated subqueries a 500-row page cost 86 ms, as a memoised `LEFT JOIN LATERAL` it costs 1 ms.
+- **The counts are on screen.** The results table shows the row's identity plus every field filtered or sorted on, so "sorted by listens" is a number you can read rather than an ordering taken on trust.
+
+## v0.8.5 — The question, as a moderator would want to write it
+
+Four things the song question had been getting wrong: the moderator retyped an answer key the database already knew, there was no way to ask which record a song came from, and the 20 second clock -- written for a rarest question -- was being applied to one where you listen first and then remember.
+
+- [x] `ask_album` on a song question: which record is this from. Song only, and rejected on an album question, where `ask_title` is already the album's title.
+- [x] `time_limit_sec = 0` is no clock, in the schema, the handler and the served question (`deadline: null`). Song and album questions default to it; the editor sets it per question.
+- [x] A song or album question writes its own answer key from the pick and the fields it asks for, and rewrites it whenever either changes.
+- [x] The snippet window is trimmed on the waveform: either edge moves that end, the middle slides the whole thing, bare waveform draws a new one.
+- [x] The moderator edits one row per field and one tier for "all of them right"; the combinations are generated on the way out and folded back up on the way in.
+- [x] The player's fields complete against the catalog in a real dropdown, not a `<datalist>` the browser may or may not draw.
+- [x] Points add up across the fields a player got right; `question_answers.points` carries a total no tier can name, and the all-correct bonus is optional.
+- [x] Results collected from the catalog can take their tiers from the sort they were found in, and the whole lot can be taken back out in one press.
+- [x] "0 pts · no score" in every tier select, in the editor and in the review queue.
+
+Decisions worth carrying forward:
+
+- **The key is every combination; the moderator is not.** A player who fills two of three fields typed something right, so all 2ⁿ−1 non-empty subsets have to be stored. But a 7-row list of concatenations is not something anyone should read, let alone edit: the editor shows one row per field plus a single "all three right → tier", and `expandAnswers` writes the rest on the way out. `absorb` folds them back up when a saved day reopens, and the round trip is exact.
+- **A combination is worth its fields added up.** Each field carries a tier, a player scores every field they got right, and the "all of them" tier is an optional *bonus* on top rather than a replacement — leave it off and a perfect answer is simply the sum. A sum is rarely a number the fixed rarity ladder names, so `question_answers.points` was added to override the tier's own value; `tier_id` stays, and is still the star the player is shown. A field left "by rarity" has no fixed value, so combinations containing it fall back to a tier while the ones that avoid it still add up.
+- **A verb on a toggle is a trap.** "Spread the tiers" was a chip, on by default, and pressing it read as *do this* while actually meaning *stop doing this* — so the one press that felt like switching it on switched it off, and every answer landed on rarity. It is a select now, sitting beside "each answer is…", and which mode is on is simply written in the control. A toggle whose label is an instruction can only be understood by someone who already knows its state.
+- **The sort is the rarity.** Twenty-five answers out of one query all landing on "by rarity" is a question that scores everything the same until enough people have played. "Spread the tiers" hands them out down the ladder in the order they are shown — Nebula at the top of the sort, Supernova at the bottom, both ends getting a couple of rows and the middle dividing evenly (`Math.round(i * (T-1) / (N-1))`). Sorting by listeners descending therefore reads as popularity, which is the point; sorting by something else means something else, and that is the moderator's business.
+- **Adding twenty-five rows in one press needs a way back.** "remove all N" drops everything the moderator or the catalog put in, and leaves the seeded field rows alone — those are generated from the pick, not added.
+- **Worth nothing is a verdict, not an absence.** "0 pts · no score" sits in every tier select — the draft's answer rows, the fields of a song question, and the review queue on a played day — beside *by rarity* and the six tiers. It stores `points = 0`, so the answer is still accepted and still counted as a guess; it simply scores nothing, and a field set to it contributes nothing to the sums around it. The select value is the sentinel `'zero'` rather than `0`, which would read as a tier id.
+- **A hand-set tier clears the generated sum.** `review_answer` takes the answer's `points` outright, and `PATCH /api/answers/{id}` sends none of its own when the body carried a `tier_id`. Without it, a moderator retiering a combination in the review queue would watch the override silently win and conclude the select was broken.
+- **The draft key carries a shape version.** A draft written before `ask_album` and the track's album existed restored with those missing, and the symptom was silent: ticking "ask for the album" seeded nothing, because the saved pick had no album on it. `jamillion-draft-2-` drops a stale draft instead of half-reading it, and `restore()` fills in whatever a future shape adds.
+- **A `<datalist>` is not a dropdown.** Browsers draw it their own way or not at all, and a three-field song question is exactly where a player needs to see what the catalog has. The replacement is a listbox that opens *upward*, because the fields live in the HUD along the bottom edge; `mousedown` is swallowed so a click lands on a list that is still open, and Enter takes the highlighted option instead of sending the guess.
+- **Seeded rows are marked, so reseeding is not destructive.** `DraftAnswer.seeded` is draft-only (`toPayload` sends `display` and `tier_id`). Flipping an ask flag rebuilds the seeded rows and leaves anything typed by hand; a hand-typed row that normalises to a new seed loses to the seed rather than becoming a clash `draftProblems` has to report.
+- **0 rather than a nullable column.** `time_limit_sec` is `NOT NULL DEFAULT 20` and every read multiplies it into an interval; a null would have meant touching each of those. 0 falls out naturally — the deadline is a `CASE`, and the late check gains one `time_limit_sec > 0`. The range moved into the schema at the same time, where it should have been.
+- **The window is edited where it is drawn.** Dragging it around as a whole was half the job: a snippet is chosen by ear, one end at a time. A press is classified by where it lands — within 0.75 s of an edge trims that end, inside slides the window, outside draws a new one — and the cursor (`col-resize` / `grab` / `crosshair`) is written straight to the node rather than through a render, since it changes on every mouse move. The grab zone is in seconds, not pixels, so it does not shift with the width of the deck.
+- **30 seconds is the clip, not a choice.** Deezer and the iTunes fallback serve a 30 s preview and CLAUDE.md rules out full tracks, so there is no more song to select from. The waveform is that clip end to end, and `snippet_in_clip` says the same thing in the schema.
 
 ## v0.9.0 — Frontend: admin
 

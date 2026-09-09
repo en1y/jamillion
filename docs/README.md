@@ -1,16 +1,17 @@
 # Jamillion
 
-A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, ~20 seconds each. The rarer your correct answer, the further you fly.
+A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, on a clock or in your own time. The rarer your correct answer, the further you fly.
 
-**Current: v0.8.3 — the quiz editor.** Moderators get a flight deck: pick a day, search the catalog, drag a snippet window over a decoded waveform, write the accepted answers with their tiers, publish. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
+**Current: v0.8.7 — the catalog query.** Moderators get a flight deck: pick a day, drag a snippet window over a decoded waveform, write the accepted answers with their tiers, publish. Answers come out of the catalog rather than out of memory — stack filters and sorts over songs, albums and artists (*this artist's tracks over a million listens, biggest first*; *the songs on this album, in running order*) and turn the results into accepted answers in one press. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
 
 ## The game
 
 - **7 prompts per day**, the same for everyone, published at 04:00 UTC.
+- **The clock is per question.** A rarest question runs 20 seconds by default; a song or an album question runs untimed, because listening to a snippet and pulling a name out of memory is not a reflex test. A moderator can set any question to no clock or to 5–60 seconds.
 - **Three question types**
   - **Rarest** — open answer. Any correct answer counts, but rarity among all players decides the tier.
-  - **Song** — a short audio snippet plays (moderator picks the start time). Guess the artist, the title or both, whichever the moderator asks for. Moderators assign a tier to each accepted answer (artist only, title only, both, …).
-  - **Album** — the cover is shown. Same fields and scoring as a song question.
+  - **Song** — a short audio snippet plays (moderator picks the start time). Guess the artist, the title, the album it came from, or any combination the moderator asks for — one field per input, each completing against the catalog. The answer key is written from the track rather than typed: the moderator sets what each field is worth and a player scores every field they got right, added up. Getting all of them can carry an optional bonus on top; without one, a perfect answer is simply the whole sum.
+  - **Album** — the cover is shown. Same fields and scoring as a song question, minus the album field, which is what its title already is.
 - **Rarity tiers** follow the life of a star, newborn to supernova:
 
   | Tier          | Points | Krillion equivalent |
@@ -38,7 +39,7 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 - **Backend** — C++20, [Drogon](https://github.com/drogonframework/drogon) (pulled in by CMake FetchContent, nothing to install globally).
 - **Database and auth** — [Supabase](https://supabase.com) from the start, running locally in Docker. Postgres holds everything, Supabase Auth handles accounts, and the schema lives in `supabase/migrations/` so it deploys to a hosted Supabase project unchanged. Row level security is on for every table.
 - **Frontend** — React + Vite + TypeScript.
-- **Music data** — Python seed script (`scripts/seed_music.py`). Deezer is the catalog backbone: artists, albums and tracks with labels, release dates, UPC/ISRC, BPM, fan counts and official 30 s preview clips, all without an API key. Last.fm supplies the candidate set of artists and real listen counts; the seeder re-sorts that set by listener count, so `global_rank` 1 is the biggest artist rather than the most-trending one. MusicBrainz adds country, artist type, gender and active years. YouTube Music and the YouTube Data API add video ids and view counts. Spotify contributes ids only, because in 2025 it stopped serving popularity, followers, genres, top tracks and audio features to new apps.
+- **Music data** — Python seed script (`scripts/seed_music.py`). Deezer is the catalog backbone: artists, albums and tracks with labels, release dates, UPC/ISRC, BPM, fan counts and official 30 s preview clips, all without an API key. Last.fm supplies the candidate set of artists and real listen counts; the seeder re-sorts that set by listener count, so `global_rank` 1 is the biggest artist rather than the most-trending one. MusicBrainz adds country, artist type, gender and active years. YouTube Music adds the song play count the app shows (plays over every upload of a recording, rounded), the video it plays and the artist's monthly listeners; the YouTube Data API adds exact views and likes for those videos. Spotify contributes ids only, because in 2025 it stopped serving popularity, followers, genres, top tracks and audio features to new apps.
 - Only original studio recordings are stored. Live versions, remixes, demos and acoustic cuts are skipped, and remaster or deluxe duplicates collapse into one row per song.
 - Audio is never in the database. A track's preview clip is downloaded to `data/audio/` the first time it is used in a quiz.
 
