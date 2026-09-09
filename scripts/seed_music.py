@@ -15,7 +15,10 @@ Sources, and why:
   Spotify  -> ids only. As of 2025 Spotify no longer serves popularity, followers,
               genres, top tracks or audio features to new apps, so it is a
               cross-reference, not a data source.
-  YouTube  -> video id (YouTube Music search) + views, likes, publish date (Data API)
+  YouTube Music -> the song play count and video id the app shows for every track
+              on the artist's albums and singles, plus the artist's monthly listeners
+              (ytmusicapi, unofficial, paced). YouTube Data API -> exact views, likes
+              and publish date for those videos, if YOUTUBE_API_KEY is set.
 
 Only original studio recordings are kept: live versions, remixes, demos and acoustic
 cuts are skipped, and remaster/deluxe duplicates collapse into one row per song.
@@ -99,10 +102,15 @@ VERSION_WORDS = re.compile(r"\b(live|remix|remixes|acoustic|unplugged|demo|instr
                            r"a cappella|acapella|dub|extended|orchestral|mono|stereo|remaster\w*)\b", re.I)
 SUFFIX = re.compile(r"\s+-\s+(.*)$|[(\[]([^)\]]*)[)\]]")
 
-def is_original(title, version=None):
+def is_original(title, version=None, remaster_ok=False):
     if version and VERSION_WORDS.search(version): return False   # Deezer's title_version field
     if re.search(r"\blive (at|in|from|on)\b", title, re.I): return False
-    return not any(VERSION_WORDS.search(p) for m in SUFFIX.finditer(title) for p in m.groups() if p)
+    parts = [p for m in SUFFIX.finditer(title) for p in m.groups() if p]
+    # YouTube Music often carries only the remastered edition of an old record, and
+    # "Serve The Servants (2023 Remaster)" is the same song; the catalog side keeps
+    # the default, where the plain Deezer title always exists and wins the dedupe
+    if remaster_ok: parts = [re.sub(r"remaster\w*", "", p, flags=re.I) for p in parts]
+    return not any(VERSION_WORDS.search(p) for p in parts)
 
 def norm_title(t):
     """'Creep - Remastered 2009' -> 'creep'. Also what the game matches answers against."""
@@ -247,45 +255,149 @@ def pick(cur, tracks, column, cap):
     keep = {r[0] for r in cur.fetchall()}
     return [t for t in tracks if t[0] in keep]
 
-YT_THROTTLED = False   # once YouTube Music starts refusing, skip it for the rest of the run
+# ---------------------------------------------------------------- youtube
+#
+# Two different numbers come out of YouTube, and the game wants the second:
+#   youtube_views   one video's view count, exact, from the official Data API
+#   ytmusic_plays   the song figure YouTube Music shows -- plays over every upload
+#                   of the recording (official video + art track + lyric video ...),
+#                   rounded to a few digits, and only served by the app's own
+#                   private API. ytmusicapi speaks that API; album pages carry the
+#                   plays per track, so one artist costs one search (cached in
+#                   artists.ytmusic_id), one artist page and one page per album.
+# The Data API then prices the exact views for the video ids YouTube Music picked,
+# at 1 quota unit per 50 videos, if YOUTUBE_API_KEY is set.
+#
+# ponytail: ytmusicapi is an unofficial client of a private API. It is paced to
+# about one request a second and backs off on refusal; when YouTube Music keeps
+# refusing, the run carries on without it and a later run fills in what is NULL.
 
-def seed_youtube(cur, yt, tracks, cap):
-    global YT_THROTTLED
-    ids, misses = {}, 0
-    for tid, artist, title, _ in pick(cur, tracks, "youtube_video_id", cap):
-        if YT_THROTTLED: break
+YTM_DOWN = [False]
+_ytm_last = [0.0]
+
+class YTMusicDown(Exception): pass
+
+def ytm(fn, *args, **kw):
+    """One YouTube Music request, paced and retried; YTMusicDown once it gives up."""
+    for attempt in range(4):
+        gap = time.monotonic() - _ytm_last[0]
+        if gap < 0.8: time.sleep(0.8 - gap)
+        _ytm_last[0] = time.monotonic()
         try:
-            hit = yt.search(f"{artist} {title}", filter="songs", limit=1)
-            if hit: ids[tid] = hit[0]["videoId"]
-        except Exception:      # ytmusicapi raises a JSON decode error on the throttle HTML page
-            misses += 1
-            if misses > 20:
-                YT_THROTTLED = True
-                print("  ! YouTube Music is throttling; skipping YouTube for the rest of this run. "
-                      "Re-run later to fill in the missing video ids.", flush=True)
-                break
-            time.sleep(min(2 * misses, 10))
-    for tid, vid in ids.items():
-        cur.execute("UPDATE tracks SET youtube_video_id=%s WHERE id=%s", (vid, tid))
+            return fn(*args, **kw)
+        except Exception as e:      # throttling arrives as an HTML page the JSON parser rejects
+            err = e
+            time.sleep(5 * 3 ** attempt)      # 5, 15, 45 s
+    raise YTMusicDown(err)
 
-    key = os.environ.get("YOUTUBE_API_KEY")
-    if not key: return
-    vids = list(ids.items())
+def plays_to_int(text):
+    """'3B plays' -> 3000000000, '58.9M' -> 58900000, '1,234 plays' -> 1234, None -> None."""
+    m = re.match(r"\s*([\d.,]+)\s*([KMB])?", text or "")
+    if not m: return None
+    n = float(m.group(1).replace(",", ""))
+    return int(round(n * {"K": 1e3, "M": 1e6, "B": 1e9}.get(m.group(2), 1)))
+
+def ytm_artist(cur, yt, aid, name):
+    """YouTube Music's page id for the artist, cached. '-' = searched, none found."""
+    cur.execute("SELECT ytmusic_id FROM artists WHERE id=%s", (aid,))
+    got = cur.fetchone()[0]
+    if got: return None if got == "-" else got
+    hits = ytm(yt.search, name, filter="artists", limit=5)
+    # tribute acts share the name; YouTube Music ranks the real one first among exact matches
+    hit = next((h for h in hits if (h.get("artist") or "").lower() == name.lower()), hits[0] if hits else None)
+    bid = hit["browseId"] if hit else "-"
+    cur.execute("UPDATE artists SET ytmusic_id=%s WHERE id=%s", (bid, aid))
+    return None if bid == "-" else bid
+
+def ytm_section(yt, page, key):
+    """Every entry of an artist page's albums / singles shelf, not just the ten shown."""
+    s = page.get(key) or {}
+    if s.get("browseId") and s.get("params"):
+        return ytm(yt.get_artist_albums, s["browseId"], s["params"], limit=None)
+    return s.get("results") or []
+
+def song_table(album_tracks):
+    """Album-page tracks -> {norm_title: (plays, video_id)}.
+
+    A song sits on the album, the deluxe edition and its single; the same
+    recording shows the same plays everywhere, a remaster or a live cut shows
+    its own. Keep the most-played copy: the studio recording, and the same
+    answer on every run whatever order the albums came in.
+    """
+    best = {}
+    for t in album_tracks:
+        plays, vid = plays_to_int(t.get("views")), t.get("videoId")
+        if plays is None or not vid or not is_original(t.get("title") or "", remaster_ok=True): continue
+        nt = norm_title(t["title"])
+        if plays > best.get(nt, (-1,))[0]: best[nt] = (plays, vid)
+    return best
+
+def seed_youtube(cur, yt, aid, tracks, album_cap, refresh=False):
+    if YTM_DOWN[0] or not tracks: return
+    ids = [t[0] for t in tracks]
+    if not refresh:     # a full re-run should move on to artists that have nothing yet
+        cur.execute("SELECT 1 FROM tracks WHERE id = ANY(%s) AND ytmusic_plays IS NOT NULL LIMIT 1", (ids,))
+        if cur.fetchone(): return
+    cur.execute("SELECT name FROM artists WHERE id=%s", (aid,))
+    name = cur.fetchone()[0]
+    try:
+        bid = ytm_artist(cur, yt, aid, name)
+        if not bid: return
+        page = ytm(yt.get_artist, bid)
+        cur.execute("UPDATE artists SET ytmusic_listeners=%s WHERE id=%s",
+                    (plays_to_int(page.get("monthlyListeners")), aid))
+        albums = [a for a in ytm_section(yt, page, "albums") + ytm_section(yt, page, "singles")
+                  if is_original(a.get("title") or "", remaster_ok=True)][:album_cap]
+        found = []
+        for al in albums:
+            found += ytm(yt.get_album, al["browseId"]).get("tracks") or []
+    except YTMusicDown as e:
+        YTM_DOWN[0] = True
+        print(f"  ! YouTube Music keeps refusing ({e}); skipping it for the rest of this run. "
+              f"Re-run later, it fills in what is NULL.", flush=True)
+        return
+    songs = song_table(found)
+    vids = {}
+    for tid, _, title, _ in tracks:
+        hit = songs.get(norm_title(title))
+        if not hit: continue
+        cur.execute("UPDATE tracks SET ytmusic_plays=%s, youtube_video_id=%s WHERE id=%s", (hit[0], hit[1], tid))
+        vids[hit[1]] = tid
+
+    # exact views for the videos YouTube Music chose, from the official API
+    if not os.environ.get("YOUTUBE_API_KEY") or not vids: return
     for i in range(0, len(vids), 50):
-        chunk = vids[i:i+50]
-        try:
-            r = HTTP.get("https://www.googleapis.com/youtube/v3/videos", timeout=30, params=dict(
-                part="statistics,snippet", id=",".join(v for _, v in chunk), key=key)).json()
-        except Exception as e:
-            print(f"  ! youtube api: {e}"); continue
-        info = {it["id"]: it for it in r.get("items", [])}
-        for tid, vid in chunk:
-            it = info.get(vid)
-            if not it: continue
-            s = it.get("statistics", {})
+        chunk = list(vids)[i:i+50]
+        r = yt_api("videos", part="statistics,snippet", id=",".join(chunk))
+        for it in r.get("items", []):
+            s = it.get("statistics") or {}
             cur.execute("UPDATE tracks SET youtube_views=%s, youtube_likes=%s, youtube_published_at=%s WHERE id=%s",
                         (s.get("viewCount"), s.get("likeCount"),
-                         (it.get("snippet", {}).get("publishedAt") or "")[:10] or None, tid))
+                         ((it.get("snippet") or {}).get("publishedAt") or "")[:10] or None, vids[it["id"]]))
+
+YT_BUDGET = [10000]      # Data API units this run may spend; the daily allowance
+
+def yt_api(path, **params):
+    """One Data API call, retried on transport errors. {} once the quota is gone."""
+    if YT_BUDGET[0] <= 0: return {}
+    YT_BUDGET[0] -= 1
+    for attempt in range(4):
+        try:
+            r = HTTP.get(f"https://www.googleapis.com/youtube/v3/{path}", timeout=30,
+                         params=dict(key=os.environ["YOUTUBE_API_KEY"], **params))
+        except Exception:
+            time.sleep(2 ** attempt); continue      # transport hiccup, not a refusal
+        if r.ok: return r.json()
+        try:    reason = (r.json()["error"]["errors"] or [{}])[0].get("reason", "")
+        except Exception: reason = r.text[:80]
+        if reason in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+            YT_BUDGET[0] = 0
+            print("  ! youtube data api quota spent; views wait for tomorrow's run", flush=True)
+            return {}
+        if r.status_code < 500:
+            print(f"  ! youtube {path}: {r.status_code} {reason}", flush=True); return {}
+        time.sleep(2 ** attempt)        # 5xx: Google's side, back off and retry
+    return {}
 
 def seed_lastfm_tracks(cur, tracks, cap):
     for tid, artist, title, _ in pick(cur, tracks, "lastfm_playcount", cap):
@@ -296,6 +408,25 @@ def seed_lastfm_tracks(cur, tracks, cap):
 
 # ---------------------------------------------------------------- main
 
+def selftest():
+    """The branchy bits are reading a rounded count and picking one copy per song."""
+    assert plays_to_int("3B plays") == 3_000_000_000
+    assert plays_to_int("58.9M") == 58_900_000 and plays_to_int("1,234 plays") == 1234
+    assert plays_to_int("12K plays") == 12_000 and plays_to_int(None) is None and plays_to_int("") is None
+    t = song_table([
+        {"title": "Creep", "views": "1B plays", "videoId": "a"},
+        {"title": "Creep (Deluxe)", "views": "1.2B plays", "videoId": "b"},      # another edition, same song
+        {"title": "Creep (2009 Remaster)", "views": "1.5B plays", "videoId": "r"},  # same recording, often the only copy
+        {"title": "Creep (Live)", "views": "9B plays", "videoId": "c"},           # live cut, not the song
+        {"title": "Just", "views": None, "videoId": "d"},                          # no count shown
+        {"title": "Karma Police", "views": "300M plays", "videoId": None}])       # unavailable
+    assert t == {"creep": (1_500_000_000, "r")}, t
+    assert is_original("In Utero (20th Anniversary Remaster)", remaster_ok=True)
+    assert not is_original("In Utero (20th Anniversary Remaster)")            # the catalog side is unchanged
+    assert not is_original("Creep (Remastered Live)", remaster_ok=True)
+    assert song_table([]) == {}
+    print("ok")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=500)
@@ -304,16 +435,21 @@ def main():
     ap.add_argument("--no-youtube", action="store_true")
     ap.add_argument("--no-spotify", action="store_true")
     ap.add_argument("--detail-cap", type=int, default=120, help="tracks per artist to fetch ISRC/BPM for")
-    ap.add_argument("--youtube-cap", type=int, default=30, help="tracks per artist to look up on YouTube")
+    ap.add_argument("--yt-albums", type=int, default=60, help="albums + singles per artist read on YouTube Music")
+    ap.add_argument("--yt-refresh", action="store_true", help="re-read play counts already stored")
     ap.add_argument("--lastfm-cap", type=int, default=30, help="tracks per artist to fetch Last.fm listens for")
+    ap.add_argument("--selftest", action="store_true", help="run the pure-logic checks and exit")
     args = ap.parse_args()
+    if args.selftest: return selftest()
 
     mb = musicbrainz()
     sp = None if args.no_spotify else spotify()
     yt = None
     if not args.no_youtube:
         from ytmusicapi import YTMusic
-        yt = YTMusic()
+        yt = YTMusic(language="en")       # "3B plays", whatever the machine's locale
+        if not os.environ.get("YOUTUBE_API_KEY"):
+            print("! YOUTUBE_API_KEY is not set; play counts still come, exact views do not", flush=True)
 
     names = args.artists or top_artists(args.limit)
     ranked = not args.artists      # only a chart run knows the global ranking
@@ -330,7 +466,7 @@ def main():
                     conn.commit(); continue
                 aid, dzid = got
                 tracks = seed_albums(cur, aid, dzid, args.detail_cap)
-                if yt: seed_youtube(cur, yt, tracks, args.youtube_cap)
+                if yt: seed_youtube(cur, yt, aid, tracks, args.yt_albums, args.yt_refresh)
                 seed_lastfm_tracks(cur, tracks, args.lastfm_cap)
                 conn.commit()          # per artist, so --start resumes cleanly
                 print(f"      {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)

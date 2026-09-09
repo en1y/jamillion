@@ -13,7 +13,11 @@ Builds the artist / album / track catalog in Postgres.
 - Deezer is the source of truth: artist, every album and track, 30 s preview URL.
   `deezer_id` is the upsert key, so re-running refreshes rather than duplicates.
 - MusicBrainz adds mbid, type, country, gender, active years. Spotify adds only
-  the id. YouTube Music adds a video id, plus views/likes if `YOUTUBE_API_KEY` is set.
+  the id. YouTube Music (`ytmusicapi`, unofficial, paced) adds the song play
+  count the app shows, the video id it plays, and the artist's monthly
+  listeners: the artist's albums and singles pages are read once and matched to
+  tracks by `norm_title`, most-played copy wins. The YouTube Data API then adds
+  exact views and likes for those videos if `YOUTUBE_API_KEY` is set.
 - Only originals are kept: `is_original` drops live / remix / demo / acoustic
   titles, `norm_title` collapses remaster and deluxe duplicates into one row.
 - One commit per artist, a failure rolls back that artist and the run continues.
@@ -30,8 +34,9 @@ tail -f data/seed.log                      # watch progress
 pkill -f seed_music.py                     # stop it
 ```
 
-Flags: `--start`, `--artists`, `--detail-cap`, `--youtube-cap`, `--lastfm-cap`,
-`--no-youtube`, `--no-spotify`. Caps apply to the most popular tracks first.
+Flags: `--start`, `--artists`, `--detail-cap`, `--lastfm-cap`, `--yt-albums`,
+`--yt-refresh`, `--no-youtube`, `--no-spotify`. Caps apply to the
+most popular tracks first. `--selftest` runs the pure-logic checks and exits.
 `--artists` runs leave `global_rank` untouched; only a chart run knows the ranking.
 
 ## fetch_audio.py
