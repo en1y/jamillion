@@ -7,7 +7,6 @@ It owns today's quiz, so it refuses to run when one already exists. Run it after
 quiz_play.py, which owns the same day and deletes its quiz on the way out.
 """
 import os
-import urllib.parse
 import urllib.error
 import urllib.request
 import uuid
@@ -291,15 +290,74 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert fetch_clip('/api/tracks/99999999/audio', TOKEN)[0] == 404
         assert fetch_clip(f'/api/tracks/{track[0]}/audio')[0] == 401
 
+        # The catalog, asked the way the editor asks it. /api/catalog/fields is the
+        # allowlist the whole builder is drawn from, so a column the UI offers and
+        # the backend does not accept cannot happen.
+        status, fields, _ = api('/api/catalog/fields', token=TOKEN)
+        assert status == 200, (status, fields)
+        assert {'tracks', 'albums', 'artists'} == {one['name'] for one in fields['entities']}
+        assert 'contains' in fields['operators']['text'] and 'gte' in fields['operators']['number']
+        assert {'artist.name', 'track.lastfm_listeners', 'track.ytmusic_plays',
+                'artist.ytmusic_listeners'} <= {one['key'] for one in fields['fields']}
+
         # An album question, authored end to end without an admin route. This is
         # the v0.7.0 gap: POST /api/quizzes needs an album_id and nothing a
         # moderator could reach handed one out.
-        status, albums, _ = api('/api/albums?limit=1', token=TOKEN)
-        assert status == 200 and albums, (status, albums)
-        album = albums[0]
+        status, page, _ = api('/api/catalog', {'entity': 'albums', 'limit': 1}, token=TOKEN)
+        assert status == 200 and page['rows'], (status, page)
+        album = {'id': page['rows'][0]['id'], 'title': page['rows'][0]['album.title'],
+                 'artist': page['rows'][0]['artist.name'],
+                 'cover_url': page['rows'][0]['album.cover_url']}
         assert isinstance(album['id'], int) and album['title'] and album['artist']
-        assert api('/api/albums?q=' + urllib.parse.quote(album['title']), token=TOKEN)[1], album
-        assert len(api('/api/albums?limit=1', token=TOKEN)[1]) == 1
+        assert page['total'] >= len(page['rows']) == 1
+
+        # Filters stack and sorts stack, which is the whole point: "every song by
+        # this artist over N listens, biggest first" is one request. The artist and
+        # the floor come out of the catalog so this holds on any seed.
+        status, top, _ = api('/api/catalog', {
+            'entity': 'tracks', 'sorts': [{'field': 'track.lastfm_listeners', 'dir': 'desc'}],
+            'limit': 1}, token=TOKEN)
+        assert status == 200 and top['rows'], (status, top)
+        who = top['rows'][0]['artist.name']
+        floor = (top['rows'][0]['track.lastfm_listeners'] or 0) // 2
+        status, page, _ = api('/api/catalog', {
+            'entity': 'tracks',
+            'filters': [{'field': 'artist.name', 'op': 'eq', 'value': who},
+                        {'field': 'track.lastfm_listeners', 'op': 'gte', 'value': floor}],
+            'sorts': [{'field': 'track.lastfm_listeners', 'dir': 'desc'}], 'limit': 5}, token=TOKEN)
+        assert status == 200 and page['rows'], (status, page)
+        listens = [row['track.lastfm_listeners'] for row in page['rows']]
+        assert all(row['artist.name'] == who for row in page['rows']), page['rows']
+        assert all(count >= floor for count in listens), listens
+        assert listens == sorted(listens, reverse=True), listens
+
+        # The same shape on the YouTube Music play count, the number the editor's
+        # results table shows by default; NULLS LAST, so a seed with no YouTube
+        # run yet still answers rather than sorting the blanks to the top
+        status, page, _ = api('/api/catalog', {
+            'entity': 'tracks', 'filters': [{'field': 'track.ytmusic_plays', 'op': 'notnull', 'value': ''}],
+            'sorts': [{'field': 'track.ytmusic_plays', 'dir': 'desc'}], 'limit': 5}, token=TOKEN)
+        assert status == 200, (status, page)
+        plays = [row['track.ytmusic_plays'] for row in page['rows']]
+        assert plays == sorted(plays, reverse=True) and None not in plays, plays
+        status, artists, _ = api('/api/catalog', {
+            'entity': 'artists', 'sorts': [{'field': 'artist.ytmusic_listeners', 'dir': 'desc'}], 'limit': 3},
+            token=TOKEN)
+        assert status == 200 and artists['rows'], (status, artists)
+        assert 'artist.ytmusic_listeners' in artists['rows'][0], artists['rows'][0]
+
+        # The allowlist is the security boundary: no table, column or operator
+        # reaches the SQL from the request, only a key that matched a row in it.
+        for bad in ({'entity': 'profiles'},
+                    {'entity': 'tracks', 'filters': [
+                        {'field': 'id FROM profiles --', 'op': 'eq', 'value': '1'}]},
+                    {'entity': 'tracks', 'filters': [
+                        {'field': 'artist.name', 'op': 'gte', 'value': 'x'}]},
+                    {'entity': 'tracks', 'filters': [
+                        {'field': 'artist.name', 'op': 'eq', 'value': ''}]},
+                    {'entity': 'tracks', 'sorts': [{'field': 'profiles.role', 'dir': 'asc'}]}):
+            assert api('/api/catalog', bad, token=TOKEN)[0] == 400, bad
+        assert api('/api/catalog', {'entity': 'tracks'})[0] == 401
 
         spare_date = db.execute("SELECT (game_today() + 90)::text").fetchone()[0]
         payload = build_quiz(track[0])

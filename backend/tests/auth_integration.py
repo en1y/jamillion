@@ -20,7 +20,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         guest, cookie = me()
         assert not guest['authenticated'] and guest['profile'] is None
         assert me(cookie=cookie)[0]['player_id'] == guest['player_id']
-        assert request(BASE + '/api/tracks')[0] == 401
+        assert request(BASE + '/api/catalog/fields')[0] == 401
         assert request(BASE + '/api/me', method='POST')[0] == 405
         for value in ('broken', '', 'a.b.c'):
             me(value, cookie, expected=401)
@@ -46,7 +46,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         for role, status in [('user', 403), ('moderator', 200), ('admin', 200), ('user', 403)]:
             db.execute('UPDATE profiles SET role = %s WHERE id = %s', (role, uid))
             assert me(token, linked_cookie)[0]['role'] == role
-            assert request(BASE + '/api/tracks?limit=1', headers={'Authorization': 'Bearer ' + token})[0] == status
+            assert request(BASE + '/api/catalog/fields',
+                           headers={'Authorization': 'Bearer ' + token})[0] == status
         claims = {'sub': uid, 'iss': os.environ.get('SUPABASE_JWT_ISSUER') or AUTH + '/auth/v1',
                   'aud': 'authenticated', 'role': 'authenticated', 'exp': int(time.time()) + 3600}
         for changes in ({'exp': 1}, {'nbf': int(time.time()) + 3600}, {'aud': 'anon'},
