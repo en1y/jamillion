@@ -58,6 +58,56 @@ export function formatDate(iso: string): string {
   return match ? `${match[3]}.${match[2]}.${match[1]}` : iso
 }
 
+/** The inverse: dd.mm.yyyy in, ISO out, '' if that is not a real day. The round
+ *  trip is what rejects 31.02.2026 without a calendar table. */
+export function parseDate(typed: string): string {
+  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(typed.trim())
+  if (!match) return ''
+  const iso = `${match[3]}-${match[2]}-${match[1]}`
+  const stamp = Date.parse(iso + 'T00:00:00Z')
+  return !Number.isNaN(stamp) && new Date(stamp).toISOString().slice(0, 10) === iso ? iso : ''
+}
+
+/** Month arithmetic for the flight deck's calendar. UTC throughout: a local-time
+ *  Date west of Greenwich rolls a midnight ISO string back to the day before. */
+const pad = (n: number) => String(n).padStart(2, '0')
+const utc = (iso: string) => new Date(iso + 'T00:00:00Z')
+const isoOf = (d: Date) => d.toISOString().slice(0, 10)
+
+/** Monday-first, so Sunday's 0 becomes 6. */
+export const weekday = (iso: string) => (utc(iso).getUTCDay() + 6) % 7
+
+export function shiftDay(iso: string, days: number): string {
+  const d = utc(iso)
+  d.setUTCDate(d.getUTCDate() + days)
+  return isoOf(d)
+}
+
+/** Clamped, so a month back from the 31st lands on the 30th, not on the 1st. */
+export function shiftMonth(iso: string, months: number): string {
+  const d = utc(iso)
+  const day = d.getUTCDate()
+  d.setUTCDate(1)
+  d.setUTCMonth(d.getUTCMonth() + months)
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()
+  d.setUTCDate(Math.min(day, last))
+  return isoOf(d)
+}
+
+/** One month of cells, Monday-first: leading blanks, then every day as ISO. */
+export function monthGrid(iso: string): (string | null)[] {
+  const d = utc(iso)
+  const year = d.getUTCFullYear(), month = d.getUTCMonth()
+  const first = `${year}-${pad(month + 1)}-01`
+  const length = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+  return [...Array<null>(weekday(first)).fill(null),
+          ...Array.from({ length }, (_, i) => `${year}-${pad(month + 1)}-${pad(i + 1)}`)]
+}
+
+/** en-GB so the heading reads the same everywhere, like the dd.mm.yyyy below it. */
+export const monthLabel = (iso: string) =>
+  utc(iso).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+
 export function shareText(flight: number, points: number, answers: OwnAnswer[],
                           tiers: Tier[]): string {
   const grid = answers.map(answer => emojiFor(answer, tiers)).join('')

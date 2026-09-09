@@ -246,6 +246,7 @@ function Snippet({ question }: { question: Question }) {
 /** The server owns the clock; this only reads its deadline. Its 3 s grace absorbs
  *  the round trip and any clock skew. */
 function remaining(question: Question) {
+  if (!question.deadline) return Infinity
   const left = Date.parse(question.deadline) - Date.now()
   return Math.max(0, Math.min(left, question.time_limit_sec * 1000))
 }
@@ -255,14 +256,20 @@ function Countdown({ question, onExpire }: { question: Question; onExpire: () =>
   const expire = useRef(onExpire)
   useEffect(() => { expire.current = onExpire })
 
+  // No deadline is an untimed question: nothing to count, and nothing to submit
+  // on the player's behalf. The hooks above still run, so the ring can come and
+  // go between questions without changing how many hooks this renders.
+  const untimed = !question.deadline
   useEffect(() => {
+    if (untimed) return
     const timer = setInterval(() => {
       const next = remaining(question)
       setLeft(next)
       if (next === 0) { clearInterval(timer); expire.current() }
     }, 250)
     return () => clearInterval(timer)
-  }, [question])
+  }, [question, untimed])
+  if (untimed) return null
 
   const seconds = Math.ceil(left / 1000)
   const style = { '--p': left / (question.time_limit_sec * 1000) } as CSSProperties
@@ -279,6 +286,10 @@ function fieldsFor(question: Question): Field[] {
   if (question.ask_title !== false) fields.push(question.qtype === 'song'
     ? { key: 'title', kind: 'title', label: 'song title' }
     : { key: 'title', kind: 'album', label: 'album title' })
+  // Song only: which record it came from. Order matters -- the answer is these
+  // fields joined, and the moderator's key was seeded in the same order.
+  if (question.qtype === 'song' && question.ask_album)
+    fields.push({ key: 'album', kind: 'album', label: 'album' })
   return fields
 }
 
@@ -299,18 +310,67 @@ function useSuggest(kind: SuggestKind | null, value: string) {
   return kind && q.length >= 2 ? options : []
 }
 
+/** One field, with the catalog's completions under it. A <datalist> was doing
+ *  this job, but browsers draw that one their own way or not at all, and on a
+ *  three-field song question the player needs to see what is on offer. The list
+ *  opens *upward*: these inputs live in the HUD along the bottom of the screen. */
 function Input({ field, value, onChange, autoFocus, invalid }: {
   field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
 }) {
   const options = useSuggest(field.kind, value)
-  const list = field.kind ? `${field.key}-options` : undefined
-  return (<>
-    <input name={field.key} list={list} value={value} onChange={event => onChange(event.target.value)}
-           autoFocus={autoFocus} autoComplete="off" autoCapitalize="off" spellCheck={false}
-           enterKeyHint="send" maxLength={100} aria-label={field.label} placeholder={field.label}
-           aria-invalid={invalid || undefined} />
-    {list && <datalist id={list}>{options.map(option => <option key={option} value={option} />)}</datalist>}
-  </>)
+  const [open, setOpen] = useState(true)
+  const [cursor, setCursor] = useState(-1)
+
+  // Nothing left to offer once the field already says what an option says.
+  const shown = open && !options.includes(value.trim()) ? options.slice(0, 6) : []
+  // Typing resets the highlight; this only catches completions that arrive from
+  // the debounce while one is up, and keeps it inside the list that is drawn.
+  const at = Math.min(cursor, shown.length - 1)
+
+  function pick(option: string) {
+    onChange(option)
+    setOpen(false)
+  }
+
+  function keys(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (shown.length === 0) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      setCursor(at => Math.min(Math.max(at + step, -1), shown.length - 1))
+      event.preventDefault()
+    } else if (event.key === 'Enter' && at >= 0) {
+      pick(shown[at])
+      event.preventDefault()      // taking a suggestion must not also send the guess
+    } else if (event.key === 'Escape' && open) {
+      setOpen(false)
+      event.stopPropagation()
+    }
+  }
+
+  return (
+    <div className="field">
+      <input name={field.key} value={value} role="combobox" aria-expanded={shown.length > 0}
+             aria-controls={`${field.key}-picks`} aria-autocomplete="list"
+             aria-activedescendant={at >= 0 ? `${field.key}-pick-${at}` : undefined}
+             onChange={event => { setOpen(true); setCursor(-1); onChange(event.target.value) }}
+             onKeyDown={keys}
+             autoFocus={autoFocus} autoComplete="off" autoCapitalize="off" spellCheck={false}
+             enterKeyHint="send" maxLength={100} aria-label={field.label} placeholder={field.label}
+             aria-invalid={invalid || undefined} />
+      {shown.length > 0 && (
+        <ul className="picks" id={`${field.key}-picks`} role="listbox" aria-label={`${field.label} from the catalog`}>
+          {shown.map((option, index) => (
+            // mousedown is swallowed so the input keeps focus and the click lands
+            // on a list that is still open.
+            <li key={option} id={`${field.key}-pick-${index}`} role="option" aria-selected={index === at}
+                className={index === at ? 'on' : undefined}
+                onMouseDown={event => event.preventDefault()}
+                onClick={() => pick(option)}>{option}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 function Dots({ answered }: { answered: number }) {

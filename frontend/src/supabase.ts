@@ -21,7 +21,10 @@ export function getPlayer(token: string | undefined, signal: AbortSignal): Promi
       cache: 'no-store',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
-    const body = await response.json()
+    // Guarded like api.ts's call(): a backend that is down or restarting answers
+    // through the proxy with an empty body, and a bare .json() puts the browser's
+    // own "unexpected end of data" in front of the player.
+    const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(body.error || 'Unable to load your player. Please retry.')
     return body as Player
   })

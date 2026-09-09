@@ -40,11 +40,12 @@ export interface Question {
   position: number
   qtype: Qtype
   prompt: string
-  time_limit_sec: number
+  time_limit_sec: number        // 0 = no clock, and then deadline is null
   started_at: string
-  deadline: string
+  deadline: string | null
   ask_artist?: boolean          // song and album: which fields the moderator asks for
   ask_title?: boolean
+  ask_album?: boolean           // song only: which record is it from
   snippet_start_sec?: number    // song
   snippet_len_sec?: number
   audio?: string

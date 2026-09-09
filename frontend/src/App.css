@@ -109,6 +109,15 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 @keyframes rise { from { opacity: 0; transform: translateY(30px); } }
 .hud form { max-width: 900px; margin: auto; display: flex; gap: 10px; align-items: center; }
 .fields { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.field { position: relative; flex: 1; min-width: 0; }
+/* the HUD sits on the bottom edge, so the catalog's completions open upward */
+.picks { position: absolute; bottom: 100%; left: 0; right: 0; z-index: 3; margin: 0 0 6px;
+  padding: 0; list-style: none; max-height: 15rem; overflow-y: auto;
+  background: #0b1526f2; border: 2px solid #2c6d8cd7; box-shadow: 0 0 0 3px var(--void); }
+.picks li { padding: 8px 12px 6px; font-size: 19px; color: var(--ink); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picks li + li { border-top: 1px solid var(--line); }
+.picks li:hover, .picks li.on { background: #16294a; color: var(--flare); }
 .fields input { margin: 0; min-width: 0; font-size: 22px; padding: 12px 14px 10px; background: #0b1526e6; border: 2px solid #2c6d8cd7; transition: border-color .25s; }
 .fields input:focus { outline: 0; border-color: var(--ion); }
 .fields input[aria-invalid] { border-color: var(--pink); }
@@ -243,14 +252,42 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .deck-open { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 12px 0 20px; }
 .deck-open label { flex: 1; min-width: 200px; margin: 0; }
 .deck-open .cta { white-space: nowrap; }
+.cta.off { border-color: var(--line); color: var(--mute); box-shadow: none; cursor: default; }
+.cal-wrap { position: relative; }
+.cal-open { line-height: 0; padding: 9px 11px; }
+.ico { display: block; width: 14px; height: 14px; fill: none; stroke: currentColor;
+       stroke-width: 1.3; stroke-linecap: round; }
+.cal { position: absolute; z-index: 5; top: calc(100% + 6px); right: 0; padding: 10px;
+       background: var(--deck); border: 1px solid var(--line);
+       box-shadow: 0 10px 30px #0008; }
+.cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cal-head b { flex: 1; text-align: center; font-weight: 400; font-size: 14px;
+              letter-spacing: .08em; white-space: nowrap; }
+.cal-head .chip { padding: 4px 8px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 30px); gap: 2px; }
+.cal-dow { font-size: 11px; letter-spacing: .06em; color: var(--mute); text-align: center;
+           padding-bottom: 4px; }
+.cal-grid button { padding: 6px 0; background: none; border: 1px solid transparent;
+                   color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
+.cal-grid button:hover { background: #16294a; }
+.cal-grid button.now { color: var(--flare); }
+.cal-grid button.on { border-color: var(--flare); color: var(--flare); }
+.cal-grid button:focus-visible { outline: 2px solid var(--flare); outline-offset: -2px; }
 .days { list-style: none; padding: 0; margin: 0; }
-.days li { border-bottom: 1px solid var(--line); }
+.days li { display: flex; align-items: flex-start; border-bottom: 1px solid var(--line); }
 .days a { display: flex; align-items: flex-start; gap: 10px; padding: 10px 4px 8px; }
 .days a:hover { background: #16294a66; }
 .days .said { flex: 1; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
 .days .said small { display: block; font-size: 13px; letter-spacing: .06em; color: var(--mute); }
 .days b { flex: none; font-weight: 400; font-size: 14px; letter-spacing: .14em; color: var(--mute); }
 .days b.live { color: var(--flare); }
+.days li a { flex: 1; min-width: 0; }
+/* Admin only, so it stays quiet until it is hovered. */
+.scrub { align-self: center; margin-left: 10px; padding: 4px 8px; background: none;
+         border: 1px solid var(--line); color: var(--mute);
+         font: inherit; font-size: 12px; letter-spacing: .14em; cursor: pointer; }
+.scrub:hover:not(:disabled) { border-color: #d4573f; color: #d4573f; }
+.scrub:disabled { cursor: default; }
 
 /* one question, opened by <details> like the flight log */
 .qcard { border: 1px solid var(--line); background: var(--panel); margin: 10px 0; }
@@ -269,30 +306,74 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .qbody .switch { margin: 12px 0 4px; }
 .asks { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
 
-/* catalog search */
-.picker-fields { display: flex; gap: 10px; flex-wrap: wrap; }
-.picker-fields label { flex: 1; min-width: 160px; }
-.hits { list-style: none; padding: 0; margin: 8px 0 0; max-height: 15rem; overflow-y: auto; }
-.hits button { display: flex; width: 100%; padding: 7px 6px; background: none; border: 0; text-align: left; }
-.hits button:hover:not(:disabled) { background: #16294a99; }
-.hits button:disabled { opacity: .45; }
+/* the catalog query builder: stacked filters, stacked sorts, the rows they find */
+.query { margin: 10px 0; }
+.query .fathom { margin: 16px 0 6px; }
+.qquery { border: 1px solid var(--line); background: #0b152680; margin: 4px 0 14px; padding: 6px 10px; }
+.qquery > summary { padding: 4px 0; }
+.qquery .query { margin-top: 0; }
+.rule { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.rule select { flex: 1; min-width: 0; }
+.rule select:first-child { flex: 1.4; }
+.rule input { flex: 1; min-width: 0; margin: 0; }
+.rule .meta { flex: 1; font-size: 15px; }
+.rule .chip { flex: none; }
+.query-head { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  flex-wrap: wrap; margin: 14px 0 6px; }
+.query-head .meta { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.cap { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+.cap select { padding: 4px 6px 2px; font-size: 15px; }
+
+.rows-scroll { max-height: 21rem; overflow: auto; border: 1px solid var(--line); background: #0b1526; }
+.rows { width: 100%; border-collapse: collapse; font-size: 16px; }
+.rows th, .rows td { padding: 5px 8px; text-align: left; white-space: nowrap; }
+.rows thead th { position: sticky; top: 0; z-index: 1; background: var(--deck);
+  border-bottom: 1px solid var(--line); padding: 0; }
+.rows thead th button { display: block; width: 100%; padding: 6px 8px; text-align: left;
+  background: none; border: 0; color: var(--mute); font-size: 14px; letter-spacing: .1em;
+  text-transform: uppercase; }
+.rows thead th button:hover { color: var(--ink); }
+.rows thead th b { color: var(--flare); font-weight: 400; margin-left: 5px; }
+.rows tbody tr:nth-child(even) { background: #16294a4d; }
+.rows tbody tr:hover { background: #16294a99; }
+.rows td:not(:first-child) { color: var(--ink); max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
+.rows td .chip { padding: 3px 8px 1px; font-size: 13px; }
+.rows input[type="checkbox"] { display: inline-block; width: 18px; height: 18px; margin: 0; padding: 0;
+  accent-color: var(--flare); }
+.collect { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 4px; }
+.collect label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+.answers .scrub { margin-left: 8px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .chosen { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
 .chosen img { flex: none; width: 56px; height: 56px; object-fit: cover; border: 1px solid var(--line); }
 
 /* the snippet window over a decoded waveform */
 .snip { margin: 12px 0; }
-.wave { position: relative; height: 84px; background: #0b1526; border: 1px solid var(--line); }
-.wave canvas { display: block; width: 100%; height: 100%; }
-.wave .meta { position: absolute; inset: 0; display: grid; place-items: center; }
+/* snip-wave, not wave: the launchpad's <h1 class="glitch wave"> is the title's
+   letters waving, and this box's background, border and height were landing on it. */
+.snip-wave { position: relative; height: 84px; background: #0b1526; border: 1px solid var(--line);
+  cursor: crosshair; touch-action: none; }   /* touch-action: a drag sizes the window, it does not scroll */
+.snip-wave canvas { display: block; width: 100%; height: 100%; }
+.snip-wave .meta { position: absolute; inset: 0; display: grid; place-items: center; }
 .snip-row { display: flex; align-items: center; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
 .snip-row label { flex: 1; min-width: 150px; margin: 0; display: flex; align-items: center; gap: 8px; }
 .snip-row label b { color: var(--ion); font-weight: 400; font-variant-numeric: tabular-nums; }
 .snip-row .play { width: 40px; height: 40px; font-size: 15px; }
+.snip-hint { margin: 6px 0 0; font-size: 14px; letter-spacing: .06em; }
+
+/* the clock, beside the prompt */
+.limit select { width: 100%; margin-top: 6px; }
 
 /* accepted answers and the review queue */
 .answers { margin-top: 16px; }
 .answer-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .answer-row input { flex: 1; min-width: 0; margin: 0; }
+/* what everything right is worth: a row, but a statement rather than a field */
+.answer-row.full { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.answer-row.full .said { flex: 1; font-size: 15px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--flare); }
+.answer-row.full b { flex: none; min-width: 4.5em; text-align: right; font-weight: 400;
+  color: var(--ion); font-variant-numeric: tabular-nums; }
 select { padding: 9px 8px 7px; background: #0b1526; color: var(--ink); border: 1px solid var(--line);
   font: inherit; font-size: 16px; }
 select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
@@ -316,4 +397,6 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
   .snip-row label { flex-basis: 100%; }
   .answer-row { flex-wrap: wrap; }
   .answer-row input { flex-basis: 100%; }
+  .rule { flex-wrap: wrap; }
+  .rule select:first-child { flex-basis: 100%; }
 }

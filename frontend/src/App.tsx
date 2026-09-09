@@ -138,7 +138,7 @@ function App() {
       </header>
 
       {onEditor ? (
-        <Editor date={arg} token={token} />
+        <Editor date={arg} token={token} admin={player?.role === 'admin'} />
       ) : onFlights ? (
         <Flights token={token} signedIn={Boolean(session)} tiers={today?.tiers} />
       ) : onAccount ? (
@@ -183,7 +183,8 @@ function App() {
                 <span key={i} style={{ animationDelay: `${0.18 * i}s` }}>{letter}</span>)}
             </h1>
             <p className="tagline">THE DAILY FLIGHT</p>
-            <p className="meta">7 questions · 20 seconds each · rarer answers fly further</p>
+            {/* not "20 seconds each" any more: a song or album question runs untimed */}
+            <p className="meta">7 questions a day · rarer answers fly further</p>
 
             <div className="spacer" />
 
