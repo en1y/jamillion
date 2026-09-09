@@ -119,6 +119,26 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api('/api/users?role=bogus', token=ADMIN)[0] == 400
         assert len(api('/api/users?limit=1', token=ADMIN)[1]) == 1
 
+        # sorts: the listing comes back ordered, the reverse is the mirror image,
+        # and role sorts on the enum so admins land at the top of a descending page
+        # asc and desc are checked against each other, not against Python's sort:
+        # Postgres orders text by the database collation, which is not codepoint order
+        _, by_name, _ = api('/api/users?sort=username', token=ADMIN)
+        names = [u['username'] for u in by_name]
+        _, desc, _ = api('/api/users?sort=username&dir=desc', token=ADMIN)
+        assert [u['username'] for u in desc] == names[::-1], names
+        _, by_role_sort, _ = api('/api/users?sort=role&dir=desc', token=ADMIN)
+        assert by_role_sort[0]['role'] == 'admin', by_role_sort[0]
+        _, by_attempts, _ = api('/api/users?sort=attempts&dir=desc', token=ADMIN)
+        counts = [u['attempts'] for u in by_attempts]
+        assert counts == sorted(counts, reverse=True), counts
+        assert api('/api/users?sort=p.id', token=ADMIN)[0] == 400, 'sort is allowlisted'
+        assert api('/api/users?sort=created_at&dir=sideways', token=ADMIN)[0] == 400
+        # a unique tiebreaker, so paging cannot show one user twice and skip another
+        paged = [u['id'] for n in range(0, len(names))
+                 for u in api(f'/api/users?sort=role&limit=1&offset={n}', token=ADMIN)[1]]
+        assert len(paged) == len(set(paged)) == len(names), paged
+
         assert api('/api/users', token=PLAIN)[0] == 403
         assert api('/api/users')[0] == 401
         assert api('/api/users', token=MOD)[0] == 403, 'a moderator is not an admin'
@@ -221,6 +241,24 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert db.execute('SELECT created_by FROM quizzes WHERE id = %s', (quiz_id,)).fetchone()[0] is None
         assert api(f'/api/quizzes/{QUIZ_DATE}/stats', token=ADMIN)[1]['heights'][1]['players'] == 2
 
+        # -------------------------------------------------- deleting a day
+        assert api(f'/api/quizzes/{QUIZ_DATE}', token=PLAIN, method='DELETE')[0] == 403
+        assert api(f'/api/users/{plain_uid}', {'role': 'moderator'}, token=ADMIN, method='PATCH')[0] == 200
+        assert api(f'/api/quizzes/{QUIZ_DATE}', token=PLAIN, method='DELETE')[0] == 403, \
+            'a moderator writes a day but only an admin deletes one'
+        assert api(f'/api/users/{plain_uid}', {'role': 'user'}, token=ADMIN, method='PATCH')[0] == 200
+        assert api(f'/api/quizzes/{QUIZ_DATE}', method='DELETE')[0] == 401
+        assert api('/api/quizzes/nope', token=ADMIN, method='DELETE')[0] == 400
+        assert api('/api/quizzes/1999-01-01', token=ADMIN, method='DELETE')[0] == 404
+        status, dropped, _ = api(f'/api/quizzes/{QUIZ_DATE}', token=ADMIN, method='DELETE')
+        assert status == 200 and dropped['deleted'] is True, (status, dropped)
+        assert api(f'/api/quizzes/{QUIZ_DATE}', token=ADMIN, method='DELETE')[0] == 404
+        # The cascade takes the questions, the answer key and the flights with it.
+        for table in ('questions', 'attempts'):
+            assert db.execute(f'SELECT count(*) FROM {table} WHERE quiz_id = %s',
+                              (quiz_id,)).fetchone()[0] == 0, table
+        assert not db.execute('SELECT 1 FROM question_answers WHERE id = %s', (okc,)).fetchone()
+
         # -------------------------------------------------- PostgREST stays shut
         rest = os.environ['SUPABASE_URL'].rstrip('/')
         request(f'{rest}/rest/v1/rarity_tiers?id=eq.1', {'points': 99},
@@ -235,7 +273,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         print('PASS: user listing with filters, role changes taking effect at once, the last admin'
               ' protected from demotion and deletion, per-question stats with the height histogram,'
               ' the allowlisted table dump, tier editing that leaves awarded points alone,'
-              ' account deletion keeping the flights and releasing the quiz')
+              ' account deletion keeping the flights and releasing the quiz,'
+              ' and an admin-only day deletion that cascades')
     finally:
         if demoted:
             db.execute("UPDATE profiles SET role = 'admin' WHERE id = ANY(%s::uuid[])", (demoted,))

@@ -27,6 +27,15 @@ bool isRole(const std::string &r) {
     return r == "user" || r == "moderator" || r == "admin";
 }
 
+// What ?sort= may name on the user list, and the SQL it becomes. Same trade as
+// kTables: the value is interpolated, so a fixed map is the security boundary.
+// `browsers` and `attempts` are output aliases, which ORDER BY may reference.
+// `role` sorts on the enum, not its text, so it reads user -> moderator -> admin.
+const std::map<std::string, const char *> kUserSorts{
+    {"username", "p.username"},     {"email", "u.email"},
+    {"role", "p.role"},             {"created_at", "p.created_at"},
+    {"browsers", "browsers"},       {"attempts", "attempts"}};
+
 int clampParam(const HttpRequestPtr &req, const char *key, int def, int lo, int hi) {
     const auto s = req->getParameter(key);
     return std::clamp(s.empty() ? def : std::atoi(s.c_str()), lo, hi);
@@ -39,11 +48,24 @@ HttpResponsePtr unavailable(const orm::DrogonDbException &e) {
 
 // ---------------------------------------------------------------- users
 
-// GET /api/users?q=&role=&limit=&offset=
+// GET /api/users?q=&role=&sort=&dir=&limit=&offset=
 Task<HttpResponsePtr> listUsers(HttpRequestPtr req) {
     const auto role = req->getParameter("role");
     if (!role.empty() && !isRole(role))
         co_return auth::error(k400BadRequest, "role must be user, moderator or admin");
+
+    const auto sort = req->getParameter("sort");
+    const auto column = sort.empty() ? kUserSorts.find("created_at") : kUserSorts.find(sort);
+    if (column == kUserSorts.end())
+        co_return auth::error(k400BadRequest,
+                              "sort must be username, email, role, created_at, browsers or attempts");
+    const auto dir = req->getParameter("dir");
+    if (!dir.empty() && dir != "asc" && dir != "desc")
+        co_return auth::error(k400BadRequest, "dir must be asc or desc");
+    // p.id last: without a unique tiebreaker two equal rows can swap between
+    // pages and the same user shows up twice while another never does.
+    const std::string order = std::string(column->second) + (dir == "desc" ? " DESC" : " ASC") +
+                              " NULLS LAST, p.id";
     try {
         Json::Value out(Json::arrayValue);
         for (const auto &row : co_await app().getDbClient()->execSqlCoro(
@@ -55,7 +77,7 @@ Task<HttpResponsePtr> listUsers(HttpRequestPtr req) {
                  "FROM profiles p JOIN auth.users u ON u.id = p.id "
                  "WHERE ($1 = '' OR p.username ILIKE '%' || $1 || '%' OR u.email ILIKE '%' || $1 || '%') "
                  "  AND ($2 = '' OR p.role::text = $2) "
-                 "ORDER BY p.created_at, p.id LIMIT $3::int OFFSET $4::int",
+                 "ORDER BY " + order + " LIMIT $3::int OFFSET $4::int",
                  req->getParameter("q"), role, clampParam(req, "limit", 50, 1, 200),
                  clampParam(req, "offset", 0, 0, 1000000))) {
             Json::Value user;
@@ -333,12 +355,35 @@ Task<HttpResponsePtr> patchTier(HttpRequestPtr req, int tierId) {
     }
 }
 
+// ---------------------------------------------------------------- delete a day
+
+// DELETE /api/quizzes/{date}. Admin only: the foreign keys cascade, so this also
+// takes the questions, the answer key and every flight flown that day. A frozen
+// day is not protected here the way PATCH protects it -- deleting a played day is
+// the whole point of the button.
+Task<HttpResponsePtr> deleteQuiz(HttpRequestPtr, std::string date) {
+    if (!isIsoDate(date)) co_return auth::error(k400BadRequest, "quiz_date must be YYYY-MM-DD");
+    try {
+        const auto rows = co_await app().getDbClient()->execSqlCoro(
+            "DELETE FROM quizzes WHERE quiz_date::text = $1 RETURNING quiz_date::text AS quiz_date",
+            date);
+        if (rows.empty()) co_return auth::error(k404NotFound, "No quiz on that date");
+        Json::Value out;
+        out["quiz_date"] = rows[0]["quiz_date"].as<std::string>();
+        out["deleted"] = true;
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        co_return unavailable(e);
+    }
+}
+
 }   // namespace
 
 void registerRoutes() {
     app().registerHandler("/api/users", &listUsers, {Get, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/users/{1}", &patchUser, {Patch, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/users/{1}", &deleteUser, {Delete, "auth::Optional", "auth::Admin"});
+    app().registerHandler("/api/quizzes/{1}", &deleteQuiz, {Delete, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/quizzes/{1}/stats", &quizStats, {Get, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/tables", &listTables, {Get, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/tables/{1}", &readTable, {Get, "auth::Optional", "auth::Admin"});
