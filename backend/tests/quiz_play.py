@@ -45,10 +45,16 @@ def build_quiz(track_id, album_id=None):
         })
     if album_id:   # the album behind the track: its title is the only field asked for
         questions[5].update(qtype='album', prompt='Whose album is this?', album_id=album_id, ask_artist=False)
+    # time_limit_sec 0 is "no clock", and ask_album is the song question's third
+    # field: which record is this from.
     questions.append({
         'position': 7, 'qtype': 'song', 'prompt': 'Artist and title?', 'track_id': track_id,
-        'snippet_start_sec': 12, 'snippet_len_sec': 10,
-        'answers': [{'display': 'Radiohead Creep', 'tier_id': 6}, {'display': 'Radiohead', 'tier_id': 2}],
+        'snippet_start_sec': 12, 'snippet_len_sec': 10, 'time_limit_sec': 0, 'ask_album': True,
+        # points overrides the tier's own value: the artist is worth its tier, and
+        # both fields together are worth the two added up plus a bonus, which is
+        # not a number any single tier names.
+        'answers': [{'display': 'Radiohead Creep', 'tier_id': 6, 'points': 45},
+                    {'display': 'Radiohead', 'tier_id': 2}],
     })
     return {'quiz_date': QUIZ_DATE, 'published': True, 'questions': questions}
 
@@ -116,8 +122,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                        lambda q: q['questions'][0].update(answers=[]),
                        lambda q: q['questions'][0].update(prompt=''),
                        lambda q: q['questions'][0].update(time_limit_sec=600),
+                       lambda q: q['questions'][0].update(time_limit_sec=3),      # 0 or 5..60
+                       lambda q: q['questions'][0].update(answers=[{'display': 'x', 'points': 701}]),
                        lambda q: q['questions'][1].update(position=1),
-                       lambda q: q['questions'][6].update(ask_artist=False, ask_title=False),
+                       lambda q: q['questions'][6].update(ask_artist=False, ask_title=False,
+                                                          ask_album=False),
                        lambda q: q['questions'][5].update(qtype='album')):        # no album_id
             broken = build_quiz(track_id)
             mutate(broken)
@@ -125,6 +134,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         bad_snippet = build_quiz(track_id)
         bad_snippet['questions'][6].update(snippet_start_sec=25, snippet_len_sec=10)
         assert api('/api/quizzes', bad_snippet, token=TOKEN)[0] == 400   # CHECK snippet_in_clip
+        # ask_album on an album question would be a second flag for the field
+        # ask_title already covers, so it is refused rather than quietly ignored.
+        album_asks_album = build_quiz(track_id, album_id)
+        album_asks_album['questions'][5]['ask_album'] = True
+        assert api('/api/quizzes', album_asks_album, token=TOKEN)[0] == 400
 
         # -------------------------------------------------- create the quiz
         status, created, _ = api('/api/quizzes', build_quiz(track_id, album_id), token=TOKEN)
@@ -217,17 +231,22 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['audio'] == f'/api/audio/{song_id}'
         assert served['question']['snippet_start_sec'] == 12 and served['question']['snippet_len_sec'] == 10
         assert served['question']['ask_artist'] is True and served['question']['ask_title'] is True
+        # no clock: no deadline to count down to, and the answer below is never late
+        assert served['question']['ask_album'] is True, served['question']
+        assert served['question']['time_limit_sec'] == 0, served['question']
+        assert served['question']['deadline'] is None, served['question']
         status, body = answer(cookie, attempt_id, song_id, 'radiohead creep')  # moderator override wins
-        assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Supernova', 'points': 100}, body['result']
-        assert body['finished'] is True and body['total_points'] == 150 and body['question'] is None
+        # the tier still names the star; points is what the moderator added up
+        assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Supernova', 'points': 45}, body['result']
+        assert body['finished'] is True and body['total_points'] == 95 and body['question'] is None
         assert db.execute('SELECT finished_at IS NOT NULL, total_points FROM attempts WHERE id = %s',
-                          (attempt_id,)).fetchone() == (True, 150)
+                          (attempt_id,)).fetchone() == (True, 95)
         assert answer(cookie, attempt_id, song_id, 'again')[0] == 409
 
         status, today, _ = api('/api/quiz/today', cookie=cookie)
         landed = today['attempt']
         assert {k: landed[k] for k in ('id', 'total_points', 'answered', 'finished')} == \
-               {'id': attempt_id, 'total_points': 150, 'answered': 7, 'finished': True}, landed
+               {'id': attempt_id, 'total_points': 95, 'answered': 7, 'finished': True}, landed
         assert today['players_finished'] >= 1
         # The flight's own answers come back with it, so a refresh still shows the tiers.
         own = landed['answers']
@@ -235,7 +254,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert own[0] == {'position': 1, 'raw_text': '  KID-a! ', 'correct': True,
                           'tier': 'Main Sequence', 'points': 30}, own[0]
         assert own[2] == {'position': 3, 'raw_text': '', 'correct': False, 'tier': None, 'points': 0}, own[2]
-        assert own[6]['tier'] == 'Supernova' and own[6]['points'] == 100, own[6]
+        assert own[6]['tier'] == 'Supernova' and own[6]['points'] == 45, own[6]
         assert 'normalized' not in str(own) and 'OK Computer' not in str(own)
 
         # -------------------------------------------------- the haul, after landing

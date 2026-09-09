@@ -90,10 +90,11 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = a.id) AS answered, "
             "  q.id AS question_id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
             "  q.snippet_start_sec::float8 AS snippet_start_sec, q.snippet_len_sec::float8 AS snippet_len_sec, "
-            "  q.ask_artist, q.ask_title, al.cover_url, "
+            "  q.ask_artist, q.ask_title, q.ask_album, al.cover_url, "
             "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
-            "  to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
-            "          'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS deadline",
+            "  CASE WHEN q.time_limit_sec = 0 THEN NULL ELSE "
+            "    to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
+            "            'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') END AS deadline",
             attemptId);
         if (!served.empty()) {
             const auto &row = served[0];
@@ -114,6 +115,7 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             if (question["qtype"] != "rarest") {
                 question["ask_artist"] = row["ask_artist"].as<bool>();
                 question["ask_title"] = row["ask_title"].as<bool>();
+                question["ask_album"] = row["ask_album"].as<bool>();
             }
             // An album question shows the cover. The Deezer URL is a content hash: it
             // names neither the album nor the artist.
@@ -163,18 +165,26 @@ const char *validate(const Json::Value &body) {
         if (type != "rarest" && type != "song" && type != "album") return "qtype must be rarest, song or album";
         if (!q["prompt"].isString() || q["prompt"].asString().empty() ||
             q["prompt"].asString().size() > 500) return "prompt must be 1 to 500 characters";
+        // 0 is "no clock", which is what a song question wants; anything else is a
+        // real timer and stays inside the range the ring can draw.
         if (q.isMember("time_limit_sec") &&
-            (!q["time_limit_sec"].isIntegral() || q["time_limit_sec"].asInt() < 5 ||
-             q["time_limit_sec"].asInt() > 60)) return "time_limit_sec must be between 5 and 60";
+            (!q["time_limit_sec"].isIntegral() ||
+             (q["time_limit_sec"].asInt() != 0 &&
+              (q["time_limit_sec"].asInt() < 5 || q["time_limit_sec"].asInt() > 60))))
+            return "time_limit_sec must be 0 (no clock) or between 5 and 60";
         if (type == "song" && (!q["track_id"].isIntegral() || !q["snippet_start_sec"].isNumeric() ||
                                !q["snippet_len_sec"].isNumeric()))
             return "song questions need track_id, snippet_start_sec and snippet_len_sec";
         if (type == "album" && !q["album_id"].isIntegral()) return "album questions need album_id";
         if (type != "rarest") {
-            for (const char *flag : {"ask_artist", "ask_title"})
-                if (q.isMember(flag) && !q[flag].isBool()) return "ask_artist and ask_title must be booleans";
-            if (!q.get("ask_artist", true).asBool() && !q.get("ask_title", true).asBool())
-                return "A song or album question must ask for the artist, the title or both";
+            for (const char *flag : {"ask_artist", "ask_title", "ask_album"})
+                if (q.isMember(flag) && !q[flag].isBool())
+                    return "ask_artist, ask_title and ask_album must be booleans";
+            const bool album = q.get("ask_album", false).asBool();
+            if (!q.get("ask_artist", true).asBool() && !q.get("ask_title", true).asBool() && !album)
+                return "A song or album question must ask for at least one field";
+            // On an album question the album title is what ask_title already means.
+            if (type == "album" && album) return "ask_album is for song questions";
         }
         const auto &answers = q["answers"];
         if (!answers.isArray() || answers.empty()) return "Each question needs at least one answer";
@@ -182,6 +192,11 @@ const char *validate(const Json::Value &body) {
             if (!a.isObject() || !a["display"].isString() || a["display"].asString().empty() ||
                 a["display"].asString().size() > 100) return "Each answer needs a display of 1 to 100 characters";
             if (a.isMember("tier_id") && !a["tier_id"].isIntegral()) return "tier_id must be a number";
+            // What a combination of fields adds up to, when that is not any one
+            // tier's own number. 700 is a perfect run, so nothing above it.
+            if (a.isMember("points") && (!a["points"].isIntegral() || a["points"].asInt() < 0 ||
+                                         a["points"].asInt() > 700))
+                return "answer points must be between 0 and 700";
         }
     }
     return nullptr;
@@ -224,20 +239,21 @@ Task<HttpResponsePtr> createQuiz(HttpRequestPtr req) {
             "  VALUES ($1::date, $2::bool, $3::uuid) RETURNING id), "
             "qs AS ("
             "  INSERT INTO questions (quiz_id, position, qtype, prompt, time_limit_sec, "
-            "                         track_id, snippet_start_sec, snippet_len_sec, album_id, ask_artist, ask_title) "
+            "                         track_id, snippet_start_sec, snippet_len_sec, album_id, "
+            "                         ask_artist, ask_title, ask_album) "
             "  SELECT qz.id, q.position, q.qtype::question_type, q.prompt, coalesce(q.time_limit_sec, 20), "
             "         q.track_id, q.snippet_start_sec, q.snippet_len_sec, q.album_id, "
-            "         coalesce(q.ask_artist, true), coalesce(q.ask_title, true) "
+            "         coalesce(q.ask_artist, true), coalesce(q.ask_title, true), coalesce(q.ask_album, false) "
             "  FROM qz, jsonb_to_recordset($4::jsonb) AS q(position int, qtype text, prompt text, "
             "       time_limit_sec int, track_id bigint, snippet_start_sec numeric, snippet_len_sec numeric, "
-            "       album_id bigint, ask_artist bool, ask_title bool) "
+            "       album_id bigint, ask_artist bool, ask_title bool, ask_album bool) "
             "  RETURNING id, position), "
             "ans AS ("
-            "  INSERT INTO question_answers (question_id, normalized, display, is_correct, tier_id) "
-            "  SELECT qs.id, normalize_answer(a.display), a.display, true, a.tier_id "
+            "  INSERT INTO question_answers (question_id, normalized, display, is_correct, tier_id, points) "
+            "  SELECT qs.id, normalize_answer(a.display), a.display, true, a.tier_id, a.points "
             "  FROM qs JOIN jsonb_to_recordset($4::jsonb) AS q(position int, answers jsonb) "
             "         ON q.position = qs.position, "
-            "       jsonb_to_recordset(q.answers) AS a(display text, tier_id smallint)) "
+            "       jsonb_to_recordset(q.answers) AS a(display text, tier_id smallint, points smallint)) "
             "SELECT id FROM qz",
             date, published, who.id, compact((*body)["questions"]));
         Json::Value out;
@@ -486,7 +502,8 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
     try {
         const auto checks = co_await db->execSqlCoro(
             "SELECT a.question_started_at IS NULL AS unserved, "
-            "  now() > a.question_started_at + ((q.time_limit_sec + 3) * interval '1 second') AS late "
+            "  q.time_limit_sec > 0 "
+            "    AND now() > a.question_started_at + ((q.time_limit_sec + 3) * interval '1 second') AS late "
             "FROM attempts a JOIN players p ON p.id = a.player_id "
             "JOIN questions q ON q.quiz_id = a.quiz_id AND q.id = $4::bigint "
             "WHERE a.id = $1::bigint AND a.finished_at IS NULL AND " + std::string(kOwned) +
@@ -652,41 +669,46 @@ Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
 
     const bool hasPrompt = body->isMember("prompt"), hasLimit = body->isMember("time_limit_sec"),
                hasStart = body->isMember("snippet_start_sec"), hasLen = body->isMember("snippet_len_sec"),
-               hasArtist = body->isMember("ask_artist"), hasTitle = body->isMember("ask_title");
+               hasArtist = body->isMember("ask_artist"), hasTitle = body->isMember("ask_title"),
+               hasAlbumAsk = body->isMember("ask_album");
     if (!hasPrompt && !hasLimit && !hasStart && !hasLen && !hasArtist && !hasTitle)
         co_return auth::error(k400BadRequest, "Nothing to change");
     // The same wording validate() uses, so the editor renders one vocabulary.
     if (hasPrompt && (!(*body)["prompt"].isString() || (*body)["prompt"].asString().empty()
                       || (*body)["prompt"].asString().size() > 500))
         co_return auth::error(k400BadRequest, "prompt must be 1 to 500 characters");
-    if (hasLimit && (!(*body)["time_limit_sec"].isIntegral() || (*body)["time_limit_sec"].asInt() < 5
-                     || (*body)["time_limit_sec"].asInt() > 60))
-        co_return auth::error(k400BadRequest, "time_limit_sec must be between 5 and 60");
+    if (hasLimit && (!(*body)["time_limit_sec"].isIntegral() ||
+                     ((*body)["time_limit_sec"].asInt() != 0 &&
+                      ((*body)["time_limit_sec"].asInt() < 5 || (*body)["time_limit_sec"].asInt() > 60))))
+        co_return auth::error(k400BadRequest, "time_limit_sec must be 0 (no clock) or between 5 and 60");
     if ((hasStart && !(*body)["snippet_start_sec"].isNumeric())
         || (hasLen && !(*body)["snippet_len_sec"].isNumeric()))
         co_return auth::error(k400BadRequest, "The snippet must fit inside the 30 second clip");
-    for (const char *flag : {"ask_artist", "ask_title"})
+    for (const char *flag : {"ask_artist", "ask_title", "ask_album"})
         if (body->isMember(flag) && !(*body)[flag].isBool())
-            co_return auth::error(k400BadRequest, "ask_artist and ask_title must be booleans");
+            co_return auth::error(k400BadRequest, "ask_artist, ask_title and ask_album must be booleans");
 
     auto db = app().getDbClient();
     try {
         // The row and whether the day has been played, in one round trip: Drogon's
         // PG driver reports every failure untyped, so this is decided up front.
         const auto rows = co_await db->execSqlCoro(
-            "SELECT q.qtype::text AS qtype, q.ask_artist, q.ask_title, "
+            "SELECT q.qtype::text AS qtype, q.ask_artist, q.ask_title, q.ask_album, "
             "  q.snippet_start_sec::float8 AS start_sec, q.snippet_len_sec::float8 AS len_sec, "
             "  EXISTS (SELECT 1 FROM attempts a WHERE a.quiz_id = q.quiz_id) AS played "
             "FROM questions q WHERE q.id = $1::bigint", questionId);
         if (rows.empty()) co_return auth::error(k404NotFound, "No such question");
         const auto qtype = rows[0]["qtype"].as<std::string>();
 
-        if (rows[0]["played"].as<bool>() && (hasLimit || hasStart || hasLen || hasArtist || hasTitle))
+        if (rows[0]["played"].as<bool>() &&
+            (hasLimit || hasStart || hasLen || hasArtist || hasTitle || hasAlbumAsk))
             co_return auth::error(k409Conflict, "Only the prompt can change once the day has been played");
         if ((hasStart || hasLen) && qtype != "song")
             co_return auth::error(k400BadRequest, "Only song questions have a snippet");
-        if ((hasArtist || hasTitle) && qtype == "rarest")
+        if ((hasArtist || hasTitle || hasAlbumAsk) && qtype == "rarest")
             co_return auth::error(k400BadRequest, "Only song and album questions ask for fields");
+        if (hasAlbumAsk && qtype == "album")
+            co_return auth::error(k400BadRequest, "ask_album is for song questions");
 
         // Checked here rather than left to the DB CHECKs, so a moderator never
         // reads Postgres's own words back out of the editor.
@@ -696,12 +718,13 @@ Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
             if (start < 0 || len < 1 || start + len > 30)
                 co_return auth::error(k400BadRequest, "The snippet must fit inside the 30 second clip");
         }
-        if (hasArtist || hasTitle) {
+        if (hasArtist || hasTitle || hasAlbumAsk) {
             const bool artist = hasArtist ? (*body)["ask_artist"].asBool() : rows[0]["ask_artist"].as<bool>();
             const bool title = hasTitle ? (*body)["ask_title"].asBool() : rows[0]["ask_title"].as<bool>();
-            if (!artist && !title)
+            const bool albumAsk = hasAlbumAsk ? (*body)["ask_album"].asBool() : rows[0]["ask_album"].as<bool>();
+            if (!artist && !title && !albumAsk)
                 co_return auth::error(k400BadRequest,
-                                      "A song or album question must ask for the artist, the title or both");
+                                      "A song or album question must ask for at least one field");
         }
 
         // An absent key keeps its column: '' stands in for "not given", the same
@@ -720,16 +743,18 @@ Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
             "  snippet_start_sec = coalesce(nullif($4, '')::numeric, snippet_start_sec), "
             "  snippet_len_sec = coalesce(nullif($5, '')::numeric, snippet_len_sec), "
             "  ask_artist = coalesce(nullif($6, '')::bool, ask_artist), "
-            "  ask_title = coalesce(nullif($7, '')::bool, ask_title) "
+            "  ask_title = coalesce(nullif($7, '')::bool, ask_title), "
+            "  ask_album = coalesce(nullif($8, '')::bool, ask_album) "
             "WHERE id = $1::bigint "
             "RETURNING id, position, qtype::text AS qtype, prompt, time_limit_sec, "
             "  snippet_start_sec::float8 AS snippet_start_sec, snippet_len_sec::float8 AS snippet_len_sec, "
-            "  ask_artist, ask_title, "
+            "  ask_artist, ask_title, ask_album, "
             "  (SELECT quiz_date::text FROM quizzes z WHERE z.id = quiz_id) AS quiz_date",
             questionId, text("prompt", hasPrompt), number("time_limit_sec", hasLimit),
             number("snippet_start_sec", hasStart), number("snippet_len_sec", hasLen),
             hasArtist ? ((*body)["ask_artist"].asBool() ? "true" : "false") : "",
-            hasTitle ? ((*body)["ask_title"].asBool() ? "true" : "false") : "");
+            hasTitle ? ((*body)["ask_title"].asBool() ? "true" : "false") : "",
+            hasAlbumAsk ? ((*body)["ask_album"].asBool() ? "true" : "false") : "");
         if (updated.empty()) co_return auth::error(k404NotFound, "No such question");
 
         const auto &row = updated[0];
@@ -747,6 +772,7 @@ Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
         if (out["qtype"] != "rarest") {          // omitted for rarest, as getQuiz does
             out["ask_artist"] = row["ask_artist"].as<bool>();
             out["ask_title"] = row["ask_title"].as<bool>();
+            out["ask_album"] = row["ask_album"].as<bool>();
         }
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {
@@ -787,8 +813,8 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                  "SELECT q.id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
                  "  q.snippet_start_sec::float8 AS snippet_start_sec, "
                  "  q.snippet_len_sec::float8 AS snippet_len_sec, "
-                 "  t.id AS track_id, t.title AS track_title, ar.name AS artist, "
-                 "  q.ask_artist, q.ask_title, q.album_id, d.title AS album_title, dar.name AS album_artist, "
+                 "  t.id AS track_id, t.title AS track_title, ar.name AS artist, al.title AS track_album, "
+                 "  q.ask_artist, q.ask_title, q.ask_album, q.album_id, d.title AS album_title, dar.name AS album_artist, "
                  "  d.cover_url AS album_cover "
                  "FROM questions q LEFT JOIN tracks t ON t.id = q.track_id "
                  "LEFT JOIN albums al ON al.id = t.album_id LEFT JOIN artists ar ON ar.id = al.artist_id "
@@ -816,6 +842,9 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                 track["id"] = row["track_id"].as<Json::Int64>();
                 track["title"] = row["track_title"].as<std::string>();
                 track["artist"] = nullable(row["artist"]);
+                // The editor seeds the answer key from this, so ask_album on a
+                // reopened day has the album name without a second request.
+                track["album"] = nullable(row["track_album"]);
                 question["track"] = track;
                 question["audio"] = "/api/audio/" + row["id"].as<std::string>();
             }
@@ -832,6 +861,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
             if (question["qtype"] != "rarest") {
                 question["ask_artist"] = row["ask_artist"].as<bool>();
                 question["ask_title"] = row["ask_title"].as<bool>();
+                question["ask_album"] = row["ask_album"].as<bool>();
             }
             question["answers"] = Json::Value(Json::arrayValue);
             index[id] = questions.size();
@@ -839,7 +869,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
         }
 
         for (const auto &row : co_await db->execSqlCoro(
-                 "SELECT id, question_id, display, normalized, is_correct, tier_id, guess_count "
+                 "SELECT id, question_id, display, normalized, is_correct, tier_id, points, guess_count "
                  "FROM question_answers WHERE question_id IN "
                  "  (SELECT id FROM questions WHERE quiz_id = $1::bigint) "
                  "ORDER BY question_id, guess_count DESC, id",
@@ -852,6 +882,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
             answer["normalized"] = row["normalized"].as<std::string>();
             answer["is_correct"] = nullableBool(row["is_correct"]);
             answer["tier_id"] = nullableInt(row["tier_id"]);
+            answer["points"] = nullableInt(row["points"]);
             answer["guess_count"] = row["guess_count"].as<int>();
             questions[slot->second]["answers"].append(answer);
         }
@@ -887,7 +918,7 @@ Task<HttpResponsePtr> patchQuiz(HttpRequestPtr req, std::string date) {
 
 Task<Json::Value> answerRow(long long answerId) {
     const auto rows = co_await app().getDbClient()->execSqlCoro(
-        "SELECT id, question_id, display, normalized, is_correct, tier_id, guess_count "
+        "SELECT id, question_id, display, normalized, is_correct, tier_id, points, guess_count "
         "FROM question_answers WHERE id = $1::bigint",
         answerId);
     Json::Value out;
@@ -898,6 +929,7 @@ Task<Json::Value> answerRow(long long answerId) {
     out["normalized"] = rows[0]["normalized"].as<std::string>();
     out["is_correct"] = nullableBool(rows[0]["is_correct"]);
     out["tier_id"] = nullableInt(rows[0]["tier_id"]);
+    out["points"] = nullableInt(rows[0]["points"]);
     out["guess_count"] = rows[0]["guess_count"].as<int>();
     co_return out;
 }
@@ -910,19 +942,26 @@ Task<Json::Value> answerRow(long long answerId) {
 Task<HttpResponsePtr> patchAnswer(HttpRequestPtr req, long long answerId) {
     const auto body = req->getJsonObject();
     if (!body) co_return auth::error(k400BadRequest, "Body must be JSON");
-    const bool hasCorrect = body->isMember("is_correct"), hasTier = body->isMember("tier_id");
-    if (!hasCorrect && !hasTier) co_return auth::error(k400BadRequest, "is_correct or tier_id is required");
+    const bool hasCorrect = body->isMember("is_correct"), hasTier = body->isMember("tier_id"),
+               hasPoints = body->isMember("points");
+    if (!hasCorrect && !hasTier && !hasPoints)
+        co_return auth::error(k400BadRequest, "is_correct, tier_id or points is required");
     if (hasCorrect && !(*body)["is_correct"].isBool() && !(*body)["is_correct"].isNull())
         co_return auth::error(k400BadRequest, "is_correct must be true, false or null");
     if (hasTier && !(*body)["tier_id"].isIntegral() && !(*body)["tier_id"].isNull())
         co_return auth::error(k400BadRequest, "tier_id must be a number or null");
+    // null puts the answer back on its tier; 0 is "accepted, worth nothing".
+    if (hasPoints && !(*body)["points"].isNull() &&
+        (!(*body)["points"].isIntegral() || (*body)["points"].asInt() < 0 ||
+         (*body)["points"].asInt() > 700))
+        co_return auth::error(k400BadRequest, "points must be between 0 and 700, or null");
 
     auto db = app().getDbClient();
     try {
         // The tier is checked here too: a foreign key violation would come back as an
         // untyped Failure, indistinguishable from the database being down.
         const auto current = co_await db->execSqlCoro(
-            "SELECT qa.is_correct, qa.tier_id, "
+            "SELECT qa.is_correct, qa.tier_id, qa.points, "
             "  ($2 = '' OR EXISTS (SELECT 1 FROM rarity_tiers rt WHERE rt.id::text = $2)) AS tier_ok "
             "FROM question_answers qa WHERE qa.id = $1::bigint",
             answerId, hasTier && !(*body)["tier_id"].isNull() ? std::to_string((*body)["tier_id"].asInt())
@@ -938,9 +977,20 @@ Task<HttpResponsePtr> patchAnswer(HttpRequestPtr req, long long answerId) {
         if (hasTier)
             tier = (*body)["tier_id"].isNull() ? std::string{} : std::to_string((*body)["tier_id"].asInt());
 
+        // An explicit points wins. Failing that, a hand-set tier clears whatever a
+        // generated combination had carried, so the tier the moderator picked is
+        // the one that takes effect rather than being silently overridden.
+        std::string points = current[0]["points"].isNull() ? std::string{}
+                                                           : current[0]["points"].as<std::string>();
+        if (hasPoints)
+            points = (*body)["points"].isNull() ? std::string{} : std::to_string((*body)["points"].asInt());
+        else if (hasTier)
+            points.clear();
+
         const auto scored = co_await db->execSqlCoro(
-            "SELECT review_answer($1::bigint, nullif($2, '')::bool, nullif($3, '')::smallint) AS rescored",
-            answerId, correct, tier);
+            "SELECT review_answer($1::bigint, nullif($2, '')::bool, nullif($3, '')::smallint, "
+            "                     nullif($4, '')::smallint) AS rescored",
+            answerId, correct, tier, points);
         auto out = co_await answerRow(answerId);
         if (out.empty()) co_return auth::error(k404NotFound, "No such answer");
         out["rescored"] = scored[0]["rescored"].isNull() ? 0 : scored[0]["rescored"].as<int>();

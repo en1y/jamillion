@@ -209,7 +209,25 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert body['is_correct'] is None and body['tier_id'] is None
         assert totals(bends_players) == [0, 0, 0]
 
+        # "accepted, and worth nothing" is a verdict of its own, and it survives a
+        # verdict change; setting a tier by hand puts the answer back on the ladder.
+        status, body, _ = api(f"/api/answers/{bends['id']}",
+                              {'is_correct': True, 'points': 0}, token=TOKEN, method='PATCH')
+        assert status == 200 and body['points'] == 0, (status, body)
+        assert totals(bends_players) == [0, 0, 0], 'a scored answer worth nothing'
+        status, body, _ = api(f"/api/answers/{bends['id']}", {'is_correct': True}, token=TOKEN, method='PATCH')
+        assert body['points'] == 0, 'an absent key keeps it, like every other field'
+        status, body, _ = api(f"/api/answers/{bends['id']}", {'tier_id': 4}, token=TOKEN, method='PATCH')
+        assert body['points'] is None, 'a hand-set tier takes the override away'
+        assert totals(bends_players) == [60, 60, 60]
+        status, body, _ = api(f"/api/answers/{bends['id']}",
+                              {'points': None, 'is_correct': None, 'tier_id': None},
+                              token=TOKEN, method='PATCH')
+        assert body['points'] is None and totals(bends_players) == [0, 0, 0]
+
         assert api(f"/api/answers/{bends['id']}", {}, token=TOKEN, method='PATCH')[0] == 400
+        assert api(f"/api/answers/{bends['id']}", {'points': 701}, token=TOKEN, method='PATCH')[0] == 400
+        assert api(f"/api/answers/{bends['id']}", {'points': -1}, token=TOKEN, method='PATCH')[0] == 400
         assert api(f"/api/answers/{bends['id']}", {'tier_id': 99}, token=TOKEN, method='PATCH')[0] == 400
         assert api(f"/api/answers/{bends['id']}", {'tier_id': 'red'}, token=TOKEN, method='PATCH')[0] == 400
         assert api('/api/answers/999999999', {'is_correct': True}, token=TOKEN, method='PATCH')[0] == 404
