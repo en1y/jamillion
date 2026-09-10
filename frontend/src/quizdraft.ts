@@ -140,6 +140,11 @@ export function fromQuiz(quiz: ModQuiz): Draft {
   return draft
 }
 
+/** The draft, re-filed under another date. toPayload writes `draft.quiz_date`
+ *  and not the route's, so a move that changes only the URL saves the day
+ *  straight back where it came from. */
+export const onDate = (draft: Draft, quiz_date: string): Draft => ({ ...draft, quiz_date })
+
 /** The POST /api/quizzes body. Each qtype carries only its own fields; extra keys
  *  would be ignored by jsonb_to_recordset anyway, but a rarest question that
  *  smuggled a track_id would still store it. */

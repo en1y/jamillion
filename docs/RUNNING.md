@@ -174,6 +174,8 @@ Picking a track or album seeds the accepted answers: *Radiohead — Creep* start
 
 Anything still stopping the save is listed above the button, question by question, in the same words the backend would use. Work in progress is kept in `localStorage` under `jamillion-draft-<date>`, because `POST /api/quizzes` takes seven questions or nothing and a half-written day has nowhere on the server to live; a successful save clears it.
 
+The calendar beside the day's heading **moves the draft to another date** — seven questions written against the wrong day are otherwise a retype. It re-files the draft under the new key and follows it there; it does not touch the server, so a day already saved on the old date stays exactly as it was, and the note says so. The target date is read first: if it already holds a day, or a draft of its own, the confirmation says what saving would replace. Frozen days have no calendar — their questions are fixed where people flew them.
+
 **Once a day has been flown it freezes.** Points were fixed at answer time, so the questions go read-only and only the prompt can still be corrected, through `PATCH /api/questions/{id}`. What does stay live is the review queue under each question: every guess with its count, its verdict (accepted, rejected or awaiting) and its tier, plus merging one spelling into another. Each action reports how many flights it moved. This is the v0.4.0 moderation API with a face on it. An admin also gets a collapsed **▪ THE NUMBERS** block on a flown day, the same one described below.
 
 **Ground control.** An admin sees a second chip in the dock, **ground control**, which opens `/admin` — four tabs, each its own path (`/admin/users`, `stats`, `tiers`, `tables`).

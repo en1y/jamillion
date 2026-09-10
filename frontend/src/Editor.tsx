@@ -18,7 +18,8 @@ import type {
 } from './catalog'
 import {
   CLIP_SEC, asksOf, clampSnippet, clearDraft, defaultTimeLimit, draftProblems, emptyDraft,
-  fromQuiz, fullAnswerPoints, loadDraft, normalizeAnswer, reseedAnswers, saveDraft, toPayload,
+  fromQuiz, fullAnswerPoints, loadDraft, normalizeAnswer, onDate, reseedAnswers, saveDraft,
+  toPayload,
 } from './quizdraft'
 import type { Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
@@ -74,7 +75,8 @@ const DOW = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
  *  locale for its format and cannot be talked out of it, so the popup is ours and
  *  reads dd.mm.yyyy everywhere. The button is the only tabbable thing until it
  *  opens; inside, focus rides the cursor and the arrows move it. */
-function DatePicker({ value, onPick }: { value: string; onPick: (iso: string) => void }) {
+function DatePicker({ value, onPick, label = 'Open the calendar' }:
+  { value: string; onPick: (iso: string) => void; label?: string }) {
   const [open, setOpen] = useState(false)
   const [cursor, setCursor] = useState(value || today())
   const wrap = useRef<HTMLDivElement>(null)
@@ -124,7 +126,7 @@ function DatePicker({ value, onPick }: { value: string; onPick: (iso: string) =>
   return (
     <div className="cal-wrap" ref={wrap}>
       <button type="button" ref={toggle} className="chip cal-open" onClick={show}
-              aria-expanded={open} aria-label="Open the calendar">
+              aria-expanded={open} aria-label={label}>
         {/* Drawn rather than an emoji: currentColor keeps it in the deck's palette. */}
         <svg className="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <rect x="2" y="3" width="12" height="11" rx="1" />
@@ -1023,6 +1025,39 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
     } finally { setBusy(false) }
   }
 
+  /** Re-file the whole draft under another date: seven questions written against
+   *  the wrong day are a retype otherwise. It moves the *draft*, never the server:
+   *  a day already saved on the old date stays exactly as it is, which is why the
+   *  note says so rather than leaving the moderator to find out.
+   *
+   *  The target is read first because saving replaces whatever sits on that date,
+   *  and a silent overwrite of somebody else's day is the one outcome worth a
+   *  round trip. 404 there means the date is free. */
+  async function moveTo(iso: string) {
+    if (!draft || iso === date || busy) return
+    setBusy(true); setNote('')
+    try {
+      let taken = ''
+      try {
+        const there = await getQuiz(iso, token)
+        taken = `${formatDate(iso)} already holds a ${there.published ? 'published' : 'draft'} day: ` +
+                `${there.questions.length} questions, ${there.attempts_started} flights.`
+      } catch (cause) {
+        if (!(cause instanceof ApiError && cause.status === 404)) throw cause
+        if (loadDraft(iso)) taken = `${formatDate(iso)} has an unsaved draft of its own.`
+      }
+      if (taken && !confirm(`${taken}\n\nSaving here would replace it. Move anyway?`)) return
+      saveDraft(iso, onDate(draft, iso))
+      clearDraft(date)
+      setNote(quiz
+        ? `Now writing ${formatDate(iso)}. ${formatDate(date)} is still saved as it was.`
+        : `Moved to ${formatDate(iso)}. Save to write it there.`)
+      navigate(`/editor/${iso}`)
+    } catch (cause) {
+      setNote(cause instanceof Error ? cause.message : 'That date could not be read')
+    } finally { setBusy(false) }
+  }
+
   async function publish(next: boolean) {
     setBusy(true)
     try {
@@ -1037,7 +1072,12 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
   return (
     <section className="editor" aria-labelledby="day-heading">
       <p className="eyebrow"><a className="chip" href="/editor">◀ all days</a></p>
-      <h2 id="day-heading">{formatDate(date)}</h2>
+      <div className="day-head">
+        <h2 id="day-heading">{formatDate(date)}</h2>
+        {/* Frozen days are not moved: the questions are fixed where people flew them. */}
+        {!frozen && <DatePicker value={date} label="Write this day on another date"
+                                onPick={iso => void moveTo(iso)} />}
+      </div>
       <p className="meta">{quiz
         ? `${quiz.published ? 'published' : 'draft'} · ${quiz.attempts_started} flights started`
         : 'nothing written for this day yet'}</p>

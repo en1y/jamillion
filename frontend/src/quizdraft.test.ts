@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   CLIP_SEC, asksOf, clampSnippet, defaultTimeLimit, draftProblems, emptyDraft, expandAnswers,
-  fromQuiz, fullAnswerPoints, normalizeAnswer, prefillAnswers, reseedAnswers, toPayload,
+  fromQuiz, fullAnswerPoints, normalizeAnswer, onDate, prefillAnswers, reseedAnswers, toPayload,
 } from './quizdraft.ts'
 import type { Draft, DraftQuestion } from './quizdraft.ts'
 import type { ModQuiz } from './moderator.ts'
@@ -11,6 +11,14 @@ import type { ModQuiz } from './moderator.ts'
 /** points only: enough to rank two tiers against each other. */
 const TIERS = [{ id: 1, points: 10 }, { id: 2, points: 15 }, { id: 3, points: 30 },
                { id: 4, points: 60 }, { id: 5, points: 85 }, { id: 6, points: 100 }]
+
+test('a moved draft saves to the new date, questions untouched', () => {
+  const draft = fillable()
+  const moved = onDate(draft, '2026-12-25')
+  assert.equal(toPayload(moved).quiz_date, '2026-12-25')
+  assert.deepEqual(toPayload(moved).questions, toPayload(draft).questions)
+  assert.equal(draft.quiz_date, '2026-09-10', 'the original is left alone')
+})
 
 /** A day that would save: seven rarest questions, one answer each. */
 function fillable(): Draft {

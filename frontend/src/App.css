@@ -307,6 +307,16 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .asks { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
 
 /* the catalog query builder: stacked filters, stacked sorts, the rows they find */
+.day-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 14px; }
+.day-head h2 { margin: 0; }
+/* The deck's other calendar hangs off a control at the right edge, so it opens
+   leftward from it. This one sits mid-row after the heading, where opening either
+   way runs off a phone, so it drops under the whole row instead: the row is the
+   anchor, and the wrap goes static to hand that over. */
+.day-head { position: relative; }
+.day-head .cal-wrap { position: static; }
+.day-head .cal { right: auto; left: 0; }
+
 .query { margin: 10px 0; }
 .query .fathom { margin: 16px 0 6px; }
 .qquery { border: 1px solid var(--line); background: #0b152680; margin: 4px 0 14px; padding: 6px 10px; }
