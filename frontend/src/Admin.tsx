@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { ApiError } from './api'
 import { cell } from './catalog'
 import { formatDate, parseDate } from './flight'
+import { navigate } from './routing'
 import { getTiers } from './moderator'
 import type { Tier } from './moderator'
 import {
@@ -456,7 +457,7 @@ export function Admin({ tab, token, me }: { tab: string; token?: string; me?: st
       <div className="switch" aria-label="Admin section">
         {TABS.map(one => (
           <button className="chip" type="button" key={one} aria-pressed={on === one}
-                  onClick={() => { location.hash = `#/admin/${one}` }}>{one}</button>
+                  onClick={() => navigate(`/admin/${one}`)}>{one}</button>
         ))}
       </div>
 

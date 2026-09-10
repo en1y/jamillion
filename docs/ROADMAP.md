@@ -127,10 +127,10 @@ Decisions worth carrying forward:
 
 ## v0.8.0 — Frontend: flight history
 
-Login and register already shipped with v0.2.0's `#/account` panel, so the unbuilt half of "accounts" was history. The quiz editor is its own tag below, because a minor bump should work end to end.
+Login and register already shipped with v0.2.0's `/account` panel, so the unbuilt half of "accounts" was history. The quiz editor is its own tag below, because a minor bump should work end to end.
 
 - [x] `GET /api/me/flights` — every flight this passport has flown, newest first, with the tier and points of each answer. Guests included: the passport is the `jam_player` cookie.
-- [x] `#/flights`, behind the dock's flight log button: flights, streak, best and average altitude, one expandable row per flight with its tier grid.
+- [x] `/flights`, behind the dock's flight log button: flights, streak, best and average altitude, one expandable row per flight with its tier grid.
 - [x] The logbook on the results screen is derived from those flights; the localStorage one is gone.
 
 Decisions worth carrying forward:
@@ -177,7 +177,7 @@ Decisions worth carrying forward:
 
 Every quiz until now was written with curl or `scripts/demo_quiz.sql`. The moderator role has existed since v0.0.2 and its backend since v0.4.0; this is the face.
 
-- [x] `#/editor` day list and `#/editor/{date}`, behind a **flight deck** chip only moderators and admins see.
+- [x] `/editor` day list and `/editor/{date}`, behind a **flight deck** chip only moderators and admins see.
 - [x] Seven question cards: type, prompt, catalog search for song and album questions, accepted answers with tier overrides.
 - [x] The snippet picker is a real decoded waveform with the window highlighted and clamped to the clip.
 - [x] Picking a track seeds the accepted answers, including the artist-only row that gives partial credit.
@@ -250,7 +250,7 @@ Decisions worth carrying forward:
 
 The admin backend shipped in v0.5.0 and has had no face since. Roles, the day's numbers, the rarity ladder and the raw tables were four things an admin had to leave the app and pick up curl for. This is a frontend tag: the only backend change is two lines, because the tier editor cannot show a threshold the route does not report.
 
-- [x] `#/admin/{tab}`, behind a **ground control** chip only admins see: users, stats, tiers, tables.
+- [x] `/admin/{tab}`, behind a **ground control** chip only admins see: users, stats, tiers, tables.
 - [x] Users: search across username and email, a role filter, six sortable columns, a role select per row and a delete, with the last-admin 409s read back as they are written.
 - [x] Per-question stats in two places: its own tab with a typed date, and an admin-only **▪ THE NUMBERS** block on the editor's day screen once the day has flights.
 - [x] The rarity ladder edited in place — name, points and the share that still reaches the tier — one row at a time, with the backend's own checks mirrored beside the field.

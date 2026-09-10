@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from './api'
 import { QuizStats } from './Admin'
+import { navigate } from './routing'
 import {
   deleteQuiz, getFields, getQuiz, getTiers, listQuizzes, mergeAnswer, patchQuestion,
   reviewAnswer, runQuery, saveQuiz, setPublished, trackAudio,
@@ -206,7 +207,7 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
                  placeholder="dd.mm.yyyy" maxLength={10} aria-invalid={date ? undefined : true} /></label>
         <DatePicker value={date} onPick={iso => setTyped(formatDate(iso))} />
         {date
-          ? <a className="cta" href={`#/editor/${date}`}>OPEN ▶</a>
+          ? <a className="cta" href={`/editor/${date}`}>OPEN ▶</a>
           : <span className="cta off" role="status">dd.mm.yyyy</span>}
       </div>
 
@@ -216,7 +217,7 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
         <ul className="days">
           {days.map(day => (
             <li key={day.quiz_date}>
-              <a href={`#/editor/${day.quiz_date}`}>
+              <a href={`/editor/${day.quiz_date}`}>
                 <span className="said">
                   {formatDate(day.quiz_date)}
                   <small>{day.questions} questions · {day.attempts_started} flights
@@ -999,7 +1000,7 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
   const change = useCallback((next: Draft) => { setDraft(next); saveDraft(date, next) }, [date])
 
   if (error) return <section className="editor"><p className="notice" role="alert">{error}</p>
-    <p><a className="chip" href="#/editor">◀ all days</a></p></section>
+    <p><a className="chip" href="/editor">◀ all days</a></p></section>
   if (!draft) return <section className="editor"><p role="status">Opening {formatDate(date)}…</p></section>
 
   const frozen = (quiz?.attempts_started ?? 0) > 0
@@ -1035,7 +1036,7 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
 
   return (
     <section className="editor" aria-labelledby="day-heading">
-      <p className="eyebrow"><a className="chip" href="#/editor">◀ all days</a></p>
+      <p className="eyebrow"><a className="chip" href="/editor">◀ all days</a></p>
       <h2 id="day-heading">{formatDate(date)}</h2>
       <p className="meta">{quiz
         ? `${quiz.published ? 'published' : 'draft'} · ${quiz.attempts_started} flights started`

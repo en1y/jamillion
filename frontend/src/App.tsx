@@ -10,19 +10,8 @@ import { Flights } from './Flights'
 import { Editor } from './Editor'
 import { Admin } from './Admin'
 import { altitudeAu, passed } from './flight'
+import { navigate, useRoute } from './routing'
 import './App.css'
-
-// ponytail: hash routing, no router dependency. Five screens and one path segment
-// is still cheaper than a router; revisit when a screen needs two.
-function useHash() {
-  const [hash, setHash] = useState(() => location.hash)
-  useEffect(() => {
-    const onChange = () => setHash(location.hash)
-    addEventListener('hashchange', onChange)
-    return () => removeEventListener('hashchange', onChange)
-  }, [])
-  return hash
-}
 
 function App() {
   const [session, setSession] = useState<Session | null | undefined>(supabase ? undefined : null)
@@ -37,8 +26,7 @@ function App() {
   // What the scene behind the page shows: the flight's running total while flying,
   // else the day's attempt. Keyed to the identity so a sign-out does not keep it.
   const [flown, setFlown] = useState<{ who: string; points: number } | null>(null)
-  const hash = useHash()
-  const [, screen = '', arg = ''] = hash.split('/')      // '#/editor/2026-09-10'
+  const [screen, arg] = useRoute()
   const onAccount = screen === 'account'
   const onFlights = screen === 'flights'
   const onEditor = screen === 'editor'
@@ -100,7 +88,7 @@ function App() {
         : await supabase.auth.signInWithPassword(credentials)
       if (result.error) throw result.error
       form.reset()
-      if (result.data.session) location.hash = '#/'
+      if (result.data.session) navigate('/')
       else if (mode === 'signup') setMessage('Check your email to confirm your account, then sign in.')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Sign-in failed. Please try again.')
@@ -127,7 +115,7 @@ function App() {
     <Scene au={au} />
     <main className={flying ? 'flying' : undefined}>
       <header>
-        <a className="brand" href="#/">✦ JAMILLION</a>
+        <a className="brand" href="/">✦ JAMILLION</a>
         {today && !away && (
           <span className="stats" role="status" aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
             <span className="stat"><small>ALT</small>{au.toFixed(1)} AU</span>
@@ -135,8 +123,8 @@ function App() {
           </span>
         )}
         {away
-          ? <a className="chip" href="#/">◀ launchpad</a>
-          : <a className="chip" href="#/account">{passport}</a>}
+          ? <a className="chip" href="/">◀ launchpad</a>
+          : <a className="chip" href="/account">{passport}</a>}
       </header>
 
       {onEditor ? (
@@ -216,12 +204,12 @@ function App() {
             <nav className="dock">
               <span className="flight">{today ? `FLIGHT #${today.flight_no}` : 'FLIGHT —'}</span>
               <span>
-                <a className="chip" href="#/account">passport</a>
-                <a className="chip" href="#/flights">flight log</a>
+                <a className="chip" href="/account">passport</a>
+                <a className="chip" href="/flights">flight log</a>
                 {(player?.role === 'moderator' || player?.role === 'admin') &&
-                  <a className="chip" href="#/editor">flight deck</a>}
+                  <a className="chip" href="/editor">flight deck</a>}
                 {player?.role === 'admin' &&
-                  <a className="chip" href="#/admin">ground control</a>}
+                  <a className="chip" href="/admin">ground control</a>}
                 <button className="chip" type="button" disabled>archive</button>
               </span>
             </nav>
