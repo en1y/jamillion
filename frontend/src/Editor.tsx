@@ -282,14 +282,12 @@ const SHAPES: { value: AnswerShape; label: string }[] = [
  *  the database -- "every Coldplay song over a million listens" is a query, not
  *  twenty lines of typing. The whole UI is built from /api/catalog/fields, so a
  *  column added to the allowlist appears here without a line changing. */
-function CatalogQuery({ schema, entities, ladder = [], token, onPick, onCollect, blocked }: {
+function CatalogQuery({ schema, entities, token, onPick, onCollect, blocked }: {
   schema: CatalogSchema
   entities: Entity[]
-  /** Tier ids, commonest first, for spreading over the results. */
-  ladder?: number[]
   token?: string
   onPick?: (row: Row, entity: Entity) => void
-  onCollect?: (rows: { display: string; tier_id: number | null }[]) => void
+  onCollect?: (texts: string[]) => void
   blocked?: (row: Row) => string | null
 }) {
   const [entity, setEntity] = useState<Entity>(entities[0])
@@ -301,7 +299,6 @@ function CatalogQuery({ schema, entities, ladder = [], token, onPick, onCollect,
   const [error, setError] = useState('')
   const [ticked, setTicked] = useState<number[]>([])
   const [shape, setShape] = useState<AnswerShape>('title')
-  const [spread, setSpread] = useState(true)
 
   const fields = fieldsFor(schema, entity)
   const asked = usable(filters)
@@ -346,15 +343,9 @@ function CatalogQuery({ schema, entities, ladder = [], token, onPick, onCollect,
 
   const rows = page?.rows ?? []
   const columns = columnsFor(entity, asked, sorts)
-  const collect = (picked: Row[]) => {
-    // The order on screen is the order the tiers are handed out in, so the sort
-    // the moderator chose is what decides which answers are the rare ones.
-    const tiers = spread ? spreadTiers(picked.length, ladder) : []
-    onCollect?.(picked.map((row, index) => ({
-      display: answerText(row, entity, shape),
-      tier_id: tiers[index] ?? null,
-    })))
-  }
+  // Tiers are not decided here: they are handed out over the accepted answers
+  // once they are all in, which is where the moderator can see the list.
+  const collect = (picked: Row[]) => onCollect?.(picked.map(row => answerText(row, entity, shape)))
 
   return (
     <div className="query">
@@ -492,19 +483,6 @@ function CatalogQuery({ schema, entities, ladder = [], token, onPick, onCollect,
             <label>each answer is
               <select value={shape} onChange={event => setShape(event.target.value as AnswerShape)}>
                 {SHAPES.map(one => <option key={one.value} value={one.value}>{one.label}</option>)}
-              </select>
-            </label>
-          )}
-          {/* A select rather than a toggle chip: "spread the tiers" reads as an
-              instruction, so the one press that felt like switching it on was in
-              fact switching it off, and the answers came out on rarity. What is
-              on is now simply written in the control. */}
-          {ladder.length > 0 && (
-            <label>tiers
-              <select value={spread ? 'spread' : 'rarity'} aria-label="How the added answers are tiered"
-                      onChange={event => setSpread(event.target.value === 'spread')}>
-                <option value="spread">spread down the sort</option>
-                <option value="rarity">by rarity</option>
               </select>
             </label>
           )}
@@ -785,16 +763,29 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
   /** Answers out of the catalog land beside whatever was typed by hand, and a
    *  name already in the table is not added twice -- normalised the way the
    *  UNIQUE (question_id, normalized) index will read it. */
-  function collect(added: { display: string; tier_id: number | null }[]) {
+  function collect(texts: string[]) {
     const rows = question.answers.filter(answer => answer.display.trim())
     const seen = new Set(rows.map(answer => normalizeAnswer(answer.display)))
-    for (const row of added) {
-      const key = normalizeAnswer(row.display)
+    for (const text of texts) {
+      const key = normalizeAnswer(text)
       if (!key || seen.has(key)) continue
       seen.add(key)
-      rows.push({ display: row.display, tier_id: row.tier_id })
+      rows.push({ display: text, tier_id: null })
     }
     set({ answers: rows })
+  }
+
+  /** Hand the ladder out down the answer list exactly as it stands: the top row
+   *  is the answer everyone will give, the bottom is the deep cut, the rest stack
+   *  evenly between. An action rather than a setting -- it is applied to the list
+   *  on screen, whenever the moderator says so, and however it was assembled. */
+  function spreadOverAnswers() {
+    const ladder = spreadTiers(question.answers.length, tiers.map(tier => tier.id))
+    set({ answers: question.answers.map((row, index) => {
+      const next = { ...row, tier_id: ladder[index] ?? null }
+      delete next.points          // a spread decides the score; an override would outrank it
+      return next
+    }) })
   }
 
   /** Anything that decides what a song or album question's answers should be goes
@@ -905,7 +896,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
             <details className="qquery">
               <summary>ask the catalog</summary>
               <CatalogQuery schema={schema} entities={['tracks', 'albums', 'artists']}
-                            ladder={tiers.map(tier => tier.id)} token={token} onCollect={collect} />
+                            token={token} onCollect={collect} />
             </details>
           )}
           {question.answers.map((answer, index) => (
@@ -943,6 +934,15 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
                   onClick={() => set({ answers: [...question.answers, { display: '', tier_id: null }] })}>
             + answer
           </button>
+          {/* Down the list as it reads: Nebula at the top, Supernova at the bottom.
+              Only where a ladder means anything -- a song question's fields are
+              three different questions, not one list from common to obscure. */}
+          {question.qtype === 'rarest' && question.answers.length > 1 && tiers.length > 0 && (
+            <button className="chip" type="button" onClick={spreadOverAnswers}
+                    title="Nebula at the top of the list, Supernova at the bottom, the rest evenly between">
+              spread the tiers
+            </button>
+          )}
           {/* Twenty-five rows out of one query is one press; taking them back out
               should be too. The seeded field rows are not "added", so they stay. */}
           {loose > 0 && (
