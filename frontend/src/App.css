@@ -393,6 +393,28 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
 .deck-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 18px; }
 .deck-actions .cta { flex: 1; min-width: 220px; }
 
+/* --- ground control: the admin screen ------------------------------------- */
+/* .rule was written for bare selects; here each control wears its own label. */
+.rule label { flex: 1; min-width: 0; margin: 0; }
+.rule label.grow { flex: 2; }
+.rule label select { width: 100%; margin-top: 6px; }
+.answer-row input.narrow { flex: .5; }
+.tier-row { padding: 10px 12px; }
+.tier-row .fathom { margin-bottom: 4px; }
+/* .rows headings are normally sort buttons and the th carries no padding of its
+   own. Nothing in a table dump is sortable, so its headings supply theirs. */
+.rows thead th.plain { padding: 6px 8px; color: var(--mute); font-size: 14px;
+  letter-spacing: .1em; text-transform: uppercase; font-weight: 400; }
+/* The day's scores: one row per score somebody finished on, bar scaled to the
+   busiest. .days cannot carry these -- its padding lives on .days a. */
+.heights { list-style: none; padding: 0; margin: 12px 0; }
+.heights li { display: flex; align-items: center; gap: 10px; padding: 4px 2px;
+  border-bottom: 1px solid var(--line); font-size: 16px; }
+.heights .said { flex: none; width: 11em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.heights .bar { flex: 1; min-width: 0; }
+.heights .bar i { display: block; height: 9px; background: var(--ion); }
+.heights b { flex: none; width: 3em; text-align: right; font-weight: 400; color: var(--flare); }
+
 @media (max-width: 640px) {
   .qbody { padding: 4px 8px 14px; }
   .snip-row label { flex-basis: 100%; }

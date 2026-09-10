@@ -601,17 +601,20 @@ Task<HttpResponsePtr> trackAudio(HttpRequestPtr, long long trackId) {
 
 // GET /api/tiers   the rarity tiers with their ids, which an answer's tier_id
 // override needs. /api/quiz/today serves names and points only, and 404s on a day
-// with no quiz, so the editor cannot read them there.
+// with no quiz, so the editor cannot read them there. max_share rides along for
+// the admin's tier editor, as text: 0.0020 through a JSON float comes back 0.002.
 Task<HttpResponsePtr> tiers(HttpRequestPtr) {
     try {
         Json::Value out(Json::arrayValue);
         for (const auto &row : co_await app().getDbClient()->execSqlCoro(
-                 "SELECT id, name, points, sort_order FROM rarity_tiers ORDER BY sort_order")) {
+                 "SELECT id, name, points, sort_order, max_share::text AS max_share "
+                 "FROM rarity_tiers ORDER BY sort_order")) {
             Json::Value tier;
             tier["id"] = row["id"].as<int>();
             tier["name"] = row["name"].as<std::string>();
             tier["points"] = row["points"].as<int>();
             tier["sort_order"] = row["sort_order"].as<int>();
+            tier["max_share"] = row["max_share"].as<std::string>();
             out.append(tier);
         }
         co_return json(out);

@@ -1,10 +1,14 @@
 // The moderator routes: everything the quiz editor talks to. The play routes are
 // in api.ts and identity in supabase.ts -- one file per surface.
-import { call } from './api'
+import { call, query } from './api'
 import type { Qtype } from './api'
 import type { CatalogSchema, Page, Query } from './catalog'
 
-export interface Tier { id: number; name: string; points: number; sort_order: number }
+/** `max_share` is text, not a number: the ladder's top step is 0.0020 and a JSON
+ *  float would hand it back as 0.002. The admin's tier editor writes it back as
+ *  typed, so it never goes through a float at all. */
+export interface Tier { id: number; name: string; points: number; sort_order: number
+                        max_share: string }
 
 export interface QuizDay {
   quiz_date: string
@@ -47,15 +51,6 @@ export interface ModQuiz {
 }
 
 export interface Reviewed extends ModAnswer { question_id: number; rescored: number }
-
-/** Only the params that were actually given reach the query string. */
-const query = (params: object) => {
-  const search = new URLSearchParams()
-  for (const [key, value] of Object.entries(params))
-    if (value !== undefined && value !== '') search.set(key, String(value))
-  const text = search.toString()
-  return text ? `?${text}` : ''
-}
 
 export const getTiers = (token?: string) => call<Tier[]>('/api/tiers', token)
 

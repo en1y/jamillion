@@ -90,6 +90,8 @@ test('big numbers group, years do not, and nothing is blank', () => {
   assert.equal(cell('track.year', 2000), '2000')
   assert.equal(cell('track.has_preview', false), 'no')
   assert.equal(cell('artist.country', null), '—')
+  // a raw table dump can carry a json column; String() would flatten it
+  assert.equal(cell('genres', ['pop', 'rock']), '["pop","rock"]')
 })
 
 test('tiers spread down the ladder in the order the results are shown', () => {

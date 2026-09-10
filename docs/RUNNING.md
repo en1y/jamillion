@@ -172,7 +172,17 @@ Picking a track or album seeds the accepted answers: *Radiohead — Creep* start
 
 Anything still stopping the save is listed above the button, question by question, in the same words the backend would use. Work in progress is kept in `localStorage` under `jamillion-draft-<date>`, because `POST /api/quizzes` takes seven questions or nothing and a half-written day has nowhere on the server to live; a successful save clears it.
 
-**Once a day has been flown it freezes.** Points were fixed at answer time, so the questions go read-only and only the prompt can still be corrected, through `PATCH /api/questions/{id}`. What does stay live is the review queue under each question: every guess with its count, its verdict (accepted, rejected or awaiting) and its tier, plus merging one spelling into another. Each action reports how many flights it moved. This is the v0.4.0 moderation API with a face on it.
+**Once a day has been flown it freezes.** Points were fixed at answer time, so the questions go read-only and only the prompt can still be corrected, through `PATCH /api/questions/{id}`. What does stay live is the review queue under each question: every guess with its count, its verdict (accepted, rejected or awaiting) and its tier, plus merging one spelling into another. Each action reports how many flights it moved. This is the v0.4.0 moderation API with a face on it. An admin also gets a collapsed **▪ THE NUMBERS** block on a flown day, the same one described below.
+
+**Ground control.** An admin sees a second chip in the dock, **ground control**, which opens `/#/admin` — four tabs, each its own hash (`/#/admin/users`, `stats`, `tiers`, `tables`).
+
+*users* lists everyone aboard: search runs across username and email, a filter narrows to one role, and all six columns are sortable headings. Each row carries a role select and a DELETE. A role change takes effect on the promoted account's very next request. The last admin cannot be demoted or deleted, and the backend's own sentence for that appears above the table. Changing **your own** role away from admin asks first and then reloads the page, because the role is read from `profiles` on every request and the dock would otherwise still be showing you a door you no longer have a key to. Deleting your own account is refused in the row; deleting anyone else's keeps their flights, without a name on them.
+
+*stats* takes a date as `dd.mm.yyyy` and reads `GET /api/quizzes/{date}/stats`: how many finished, the day's scores as one bar per score somebody landed on, and each question with its answered / skipped / correct counts and its ten most-guessed answers with their verdicts and shares. The same block is the one on the editor's day screen, which appears only once the day has flights — before that every number in it is zero.
+
+*tiers* edits the rarity ladder in place: name, points, and the largest share of players that still reaches the tier. One row saves at a time; a value the backend would refuse is refused beside the field first, and a duplicate name comes back as a 409 on that row. **An edit never re-scores** — points are frozen at answer time, so it decides what a future answer falls into and nothing that has already flown. The six steps cannot be added to, removed or reordered.
+
+*tables* is the allowlisted dump of section 10: pick one of the sixteen tables and a page size. Neither list route returns a total, so the paging says only what is on screen (*rows 51–100*) and **next** stops at a short page; an empty page carries no column names either, so it says which table is empty instead of drawing an invented header.
 
 ## 5. First admin
 
@@ -215,7 +225,7 @@ npm run lint
 
 All three scripts share their fixtures through `backend/tests/common.py`. Run them from the repository root, so a relative `AUDIO_DIR` resolves the same way it does for the backend. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer. Since v0.6.0 it also checks that answering never serves the next question (the attempt's `question_started_at` is null until the next `POST /api/attempts`) and that `/api/quiz/today` reports the flight's own answers with their tiers. Since v0.7.0 its quiz has an album question asking for the title only, and it checks the served fields, that no album or track id leaks, and `/api/suggest`. Since v0.8.1 it also checks `/api/known`: a real artist under any casing or punctuation, a made-up one, an empty query, a bad `kind`, and that an accepted answer which is not a catalog name still reads as unknown.
 
-`npm test` in `frontend/` runs `flight.test.ts` on `node --test`: the altitude conversion, the linear track, the landmark order, the landmark you have passed and the share text. It needs neither a browser nor the backend.
+`npm test` in `frontend/` runs every `src/*.test.ts` on `node --test`, against the pure modules only — no component is tested, and none needs a browser or the backend. `flight.test.ts` covers the altitude conversion, the linear track, the landmark order, the landmark you have passed, the share text and the calendar arithmetic; `quizdraft.test.ts` the draft, its payload and its problem list; `catalog.test.ts` the field keys, the cell formatter and the tier spread; and `admin.test.ts` the row-range label that stands in for a total the routes do not send, and the tier patch that mirrors the backend's checks. Note that a *value* import inside a module a test loads has to carry its `.ts` extension — Node resolves imports its own way, not Vite's.
 
 `moderation.py` owns the current game day in the same way and must run after `quiz_play.py`, which deletes its own quiz on the way out. It covers the quiz preview with its answer list, publish and unpublish, a moderator fetching audio for an unpublished quiz, verdicts and tier overrides re-scoring only the players who gave that answer, merging a duplicate, player detail across the browsers of one account, and that the moderation functions are not callable through PostgREST. Since v0.8.0 it also covers `GET /api/me/flights`: the 401 without a passport, a guest seeing only its own flights, both browsers of an account reporting the same list with the tier and never the matched answer, a day owned twice collapsing to its best flight, and `limit` being clamped rather than rejected.
 
@@ -458,10 +468,10 @@ A row carries every column its entity has, keyed exactly as the field is, plus `
 
 **The allowlist is the security boundary.** No table name, column name or operator ever reaches the SQL from the request — only a key that matched a row in `kColumns` or `kOps`. Values are always bound parameters. An unknown field, or an operator the field's datatype does not offer, is 400 rather than a silently ignored clause.
 
-`GET /api/tiers` is the tier list **with ids**, which an answer's `tier_id` override needs. `/api/quiz/today` carries names and points only, and 404s on a day with no quiz, so the editor cannot read them there. `rarity_tiers` is world readable anyway; the guard only keeps the editor's surface in one place.
+`GET /api/tiers` is the tier list **with ids**, which an answer's `tier_id` override needs, and since v0.9.0 with `max_share` as well — as text, because the top step is `0.0020` and a JSON float hands that back as `0.002`. It is the one route the admin's tier editor reads. `/api/quiz/today` carries names and points only, and 404s on a day with no quiz, so the editor cannot read them there. `rarity_tiers` is world readable anyway; the guard only keeps the editor's surface in one place.
 
 ```json
-[{"id": 1, "name": "Nebula", "points": 10, "sort_order": 1}]
+[{"id": 1, "name": "Nebula", "points": 10, "sort_order": 1, "max_share": "1.0000"}]
 ```
 
 `GET /api/quizzes?from=&to=` lists which days already have a quiz, so the editor can show a calendar rather than guess dates. Both bounds are optional and default to `game_today() - 30` … `game_today() + 60`; a malformed one is 400. `attempts_started` above zero is what marks a day frozen, before a save tries and collects a 409.
@@ -505,6 +515,8 @@ An empty `raw_text` is a skip or a timeout; the schema does not tell the two apa
 **Audio while previewing.** `GET /api/audio/{question_id}` normally serves only published quizzes dated today or earlier. A moderator's token lifts both conditions, so tomorrow's song question can be checked before anyone can play it. Without a token the route behaves exactly as it does for players.
 
 ## 10. Admin
+
+The screen for all of this is **ground control** in section 4; what follows is the API it talks to.
 
 Everything here needs an **admin** access token. Anonymous requests get 401, plain users and moderators get 403. The first account ever created is the admin (section 5).
 

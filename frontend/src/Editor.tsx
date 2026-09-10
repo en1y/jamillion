@@ -2,6 +2,7 @@
 // moderator.ts; everything it decides without a DOM is in quizdraft.ts.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from './api'
+import { QuizStats } from './Admin'
 import {
   deleteQuiz, getFields, getQuiz, getTiers, listQuizzes, mergeAnswer, patchQuestion,
   reviewAnswer, runQuery, saveQuiz, setPublished, trackAudio,
@@ -963,7 +964,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
 
 // --- one day ---------------------------------------------------------------
 
-function Day({ date, token }: { date: string; token?: string }) {
+function Day({ date, token, admin }: { date: string; token?: string; admin?: boolean }) {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [quiz, setQuiz] = useState<ModQuiz | null>(null)
   const [tiers, setTiers] = useState<Tier[]>([])
@@ -1042,6 +1043,10 @@ function Day({ date, token }: { date: string; token?: string }) {
       {frozen && <p className="notice">People have flown this day, so the questions are frozen —
         points were fixed at answer time. The prompt can still be corrected, and the guesses below
         are yours to review.</p>}
+      {/* Admin only, and only once somebody has flown: every number in it is zero
+          until then, and on an unwritten day the route 404s. */}
+      {admin && frozen && <details><summary>▪ THE NUMBERS</summary>
+        <QuizStats date={date} token={token} /></details>}
 
       {draft.questions.map((question, slot) => (
         <QuestionCard key={slot} slot={slot} question={question} tiers={tiers} schema={schema}
@@ -1077,5 +1082,5 @@ function Day({ date, token }: { date: string; token?: string }) {
 }
 
 export function Editor({ date, token, admin }: { date: string; token?: string; admin?: boolean }) {
-  return date ? <Day date={date} token={token} /> : <DayList token={token} admin={admin} />
+  return date ? <Day date={date} token={token} admin={admin} /> : <DayList token={token} admin={admin} />
 }

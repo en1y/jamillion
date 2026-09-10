@@ -8,10 +8,11 @@ import type { Today } from './api'
 import { Play, Results, Scene } from './Play'
 import { Flights } from './Flights'
 import { Editor } from './Editor'
+import { Admin } from './Admin'
 import { altitudeAu, passed } from './flight'
 import './App.css'
 
-// ponytail: hash routing, no router dependency. Four screens and one path segment
+// ponytail: hash routing, no router dependency. Five screens and one path segment
 // is still cheaper than a router; revisit when a screen needs two.
 function useHash() {
   const [hash, setHash] = useState(() => location.hash)
@@ -41,7 +42,8 @@ function App() {
   const onAccount = screen === 'account'
   const onFlights = screen === 'flights'
   const onEditor = screen === 'editor'
-  const away = onAccount || onFlights || onEditor
+  const onAdmin = screen === 'admin'
+  const away = onAccount || onFlights || onEditor || onAdmin
 
   useEffect(() => {
     if (!supabase) return
@@ -139,6 +141,8 @@ function App() {
 
       {onEditor ? (
         <Editor date={arg} token={token} admin={player?.role === 'admin'} />
+      ) : onAdmin ? (
+        <Admin tab={arg} token={token} me={player?.profile?.id} />
       ) : onFlights ? (
         <Flights token={token} signedIn={Boolean(session)} tiers={today?.tiers} />
       ) : onAccount ? (
@@ -216,6 +220,8 @@ function App() {
                 <a className="chip" href="#/flights">flight log</a>
                 {(player?.role === 'moderator' || player?.role === 'admin') &&
                   <a className="chip" href="#/editor">flight deck</a>}
+                {player?.role === 'admin' &&
+                  <a className="chip" href="#/admin">ground control</a>}
                 <button className="chip" type="button" disabled>archive</button>
               </span>
             </nav>

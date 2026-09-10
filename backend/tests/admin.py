@@ -108,6 +108,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         mine = find_user(listing, admin_uid)
         assert mine and mine['role'] == 'admin' and '@' in mine['email']
         assert mine['username'].startswith('admin-test-') and mine['created_at']
+        # Postgres text, a space rather than a T: the UI slices the date off it
+        # instead of handing it to new Date(), so pin the shape.
+        assert 'T' not in mine['created_at'] and mine['created_at'][4] == '-', mine['created_at']
         moderator = find_user(listing, mod_uid)
         assert moderator['role'] == 'moderator' and moderator['browsers'] == 1
         assert moderator['attempts'] == 1, moderator
@@ -214,6 +217,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert [p[0] for p in frozen] == [30, 30], 'a tier edit must not re-score what was already awarded'
         status, share, _ = api('/api/tiers/1', {'max_share': 0.9}, token=ADMIN, method='PATCH')
         assert status == 200 and share['max_share'] == '0.9000' and share['points'] == 11, share
+        # The share is on GET /api/tiers too since v0.9.0: it is the only route the
+        # admin's tier editor reads, and text so 0.0020 never goes through a float.
+        _, ladder, _ = api('/api/tiers', token=MOD)
+        assert [t['sort_order'] for t in ladder] == [1, 2, 3, 4, 5, 6], ladder
+        assert ladder[0]['max_share'] == '0.9000', ladder[0]
         assert api('/api/tiers/1', {'name': 'Protostar'}, token=ADMIN, method='PATCH')[0] == 409
         assert api('/api/tiers/1', {'name': 'Nebula'}, token=ADMIN, method='PATCH')[0] == 200
         assert api('/api/tiers/1', {'max_share': 1.5}, token=ADMIN, method='PATCH')[0] == 400

@@ -143,11 +143,14 @@ export function columnsFor(entity: Entity, filters: Filter[], sorts: Sort[]): st
 
 /** Thousands separators on the big numbers, none on a year: 1,000,000 listens
  *  reads, "2,000" as a release year does not. */
-export function cell(key: string, value: Row[string]): string {
+export function cell(key: string, value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'yes' : 'no'
   if (typeof value === 'number')
     return key.endsWith('year') ? String(value) : value.toLocaleString('en-US')
+  // A raw table row can carry an array or a json column, which String() flattens
+  // to [object Object]. The catalog's own rows never reach this line.
+  if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
 

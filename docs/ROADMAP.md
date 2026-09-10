@@ -246,9 +246,28 @@ Decisions worth carrying forward:
 - **The window is edited where it is drawn.** Dragging it around as a whole was half the job: a snippet is chosen by ear, one end at a time. A press is classified by where it lands — within 0.75 s of an edge trims that end, inside slides the window, outside draws a new one — and the cursor (`col-resize` / `grab` / `crosshair`) is written straight to the node rather than through a render, since it changes on every mouse move. The grab zone is in seconds, not pixels, so it does not shift with the width of the deck.
 - **30 seconds is the clip, not a choice.** Deezer and the iTunes fallback serve a 30 s preview and CLAUDE.md rules out full tracks, so there is no more song to select from. The waveform is that clip end to end, and `snippet_in_clip` says the same thing in the schema.
 
-## v0.9.0 — Frontend: admin
+## v0.9.0 — Ground control
 
-- Users, stats, tier editor, table view.
+The admin backend shipped in v0.5.0 and has had no face since. Roles, the day's numbers, the rarity ladder and the raw tables were four things an admin had to leave the app and pick up curl for. This is a frontend tag: the only backend change is two lines, because the tier editor cannot show a threshold the route does not report.
+
+- [x] `#/admin/{tab}`, behind a **ground control** chip only admins see: users, stats, tiers, tables.
+- [x] Users: search across username and email, a role filter, six sortable columns, a role select per row and a delete, with the last-admin 409s read back as they are written.
+- [x] Per-question stats in two places: its own tab with a typed date, and an admin-only **▪ THE NUMBERS** block on the editor's day screen once the day has flights.
+- [x] The rarity ladder edited in place — name, points and the share that still reaches the tier — one row at a time, with the backend's own checks mirrored beside the field.
+- [x] The allowlisted table dump: sixteen tables, a page size, and paging that is honest about not knowing the total.
+- [x] `max_share` on `GET /api/tiers`, as text.
+
+Decisions worth carrying forward:
+
+- **No total, so the page says only what it can see.** Neither `/api/users` nor `/api/tables/{name}` counts its rows, and counting on every keystroke is a second query for a number nobody acts on. `rowRange` names the window that is on screen — *rows 51–100* — and Next dies on a short page. A last page that happens to be exactly full costs one request to an empty one that says *past the end*. That is a page cheaper than knowing, and it never lies.
+- **A sparse list of scores is a bar chart, not a curve.** `quiz_heights` is already a histogram: one row per distinct score with a count. `curveGeom` wants a dense 36-bin array and marks where *you* landed, and there is no "you" on an admin screen — reusing it would have meant a binning function, the `.curve` SVG copied out of `Play.tsx`, the marker suppressed, and a confident Gaussian smoothed over the twelve people who actually flew.
+- **One stats block, two homes, one direction of import.** It lives in `Admin.tsx`, because the route is admin-only, and `Editor.tsx` imports it. The reverse would have dragged an admin route into the moderator file. Importing `DatePicker` back the other way would have made the two files circle each other, which is why the stats tab types its date instead of picking it.
+- **The editor's copy waits for flights.** `frozen` — `attempts_started > 0` — was already the boolean for it. Every number in the block is zero until somebody flies, and on an unwritten day the route 404s.
+- **`max_share` came out of the moderator route, not a new one.** Two lines on `GET /api/tiers`, cast to text like every other numeric on the wire: the top step is `0.0020` and a JSON float hands that back as `0.002`. The admin table dump would have served the whole row for free and rounded it, and would have leaned on `id` order matching `sort_order`.
+- **Demoting yourself reloads the page.** Permissions are read from `profiles` on every request, so the instant the PATCH lands the chip in the dock and the guard on the route disagree. A `confirm()` that says exactly what is about to happen, then `location.reload()`, is one line and cannot go stale. Deleting your own account is refused in the row rather than in the backend, which allows it while another admin exists: a table row is not where a sign-out flow belongs.
+- **A tier edit warns where the edit is made.** Points are frozen at answer time, so the change is silent about everything already flown and only decides what a *future* answer falls into. That sentence sits above the ladder, not only in the docs.
+- **The dump shows what came back and nothing else.** An empty page carries no column names, so the screen says which table is empty instead of inventing a header row, and its headings are plain text rather than buttons, because there is no sort parameter to give them. The same trade the allowlist makes: the route is deliberately dumb, and the screen does not pretend otherwise.
+- **`node --test` resolves imports the way Node does.** `admin.ts` is the first module a test loads that has a *value* import of another source file, and extensionless `./api` is a Vite convenience Node does not share. The `.ts` goes on that one import; type-only imports are erased and need none.
 
 ## v0.10.0 — Hardening
 

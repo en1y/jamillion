@@ -86,6 +86,17 @@ export async function call<T>(path: string, token?: string, init?: RequestInit):
   return body as T
 }
 
+/** Only the params that were actually given reach the query string. Exported for
+ *  the same reason `call` is: moderator.ts and admin.ts share it rather than each
+ *  keeping a copy of the same six lines. */
+export const query = (params: object) => {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params))
+    if (value !== undefined && value !== '') search.set(key, String(value))
+  const text = search.toString()
+  return text ? `?${text}` : ''
+}
+
 /** null when no quiz is published for today, which is a normal state, not an error. */
 export async function getToday(token?: string): Promise<Today | null> {
   try {
