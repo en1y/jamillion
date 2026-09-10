@@ -2,9 +2,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  answerText, cell, columnsFor, defaultOp, fieldLabel, splitField, spreadTiers, toPick, usable,
+  answerText, cell, columnsFor, defaultOp, fieldGroups, fieldLabel, firstInGroup, groupOf,
+  splitField, spreadTiers, toPick, usable,
 } from './catalog.ts'
-import type { Row } from './catalog.ts'
+import type { CatalogField, Row } from './catalog.ts'
+
+const FIELDS: CatalogField[] = [
+  { key: 'track.title', type: 'text', entities: ['tracks'] },
+  { key: 'track.ytmusic_plays', type: 'number', entities: ['tracks'] },
+  { key: 'album.title', type: 'text', entities: ['tracks', 'albums'] },
+  { key: 'artist.name', type: 'text', entities: ['tracks', 'albums', 'artists'] },
+  { key: 'artist.country', type: 'text', entities: ['tracks', 'albums', 'artists'] },
+]
 
 const yellow = {
   id: 5, 'track.title': 'Yellow', 'artist.name': 'Coldplay', 'album.title': 'Parachutes',
@@ -14,6 +23,24 @@ const yellow = {
 test('a field key reads as a group and plain words', () => {
   assert.deepEqual(splitField('artist.lastfm_listeners'), ['artist', 'lastfm listeners'])
   assert.equal(fieldLabel('track.has_preview'), 'track · has preview')
+})
+
+test('fields group by their prefix, in the order the backend sent them', () => {
+  assert.deepEqual(fieldGroups(FIELDS).map(one => [one.group, one.fields.map(f => f.key)]), [
+    ['track', ['track.title', 'track.ytmusic_plays']],
+    ['album', ['album.title']],
+    ['artist', ['artist.name', 'artist.country']],
+  ])
+  assert.deepEqual(fieldGroups([]), [])
+  assert.equal(groupOf('artist.country'), 'artist')
+})
+
+test('choosing a group lands on its first field, never on another group\'s', () => {
+  assert.equal(firstInGroup(FIELDS, 'artist'), 'artist.name')
+  assert.equal(firstInGroup(FIELDS, 'album'), 'album.title')
+  // a group the entity does not have falls back rather than leaving the row empty
+  assert.equal(firstInGroup(FIELDS, 'nothing'), 'track.title')
+  assert.equal(firstInGroup([], 'artist'), '')
 })
 
 test('a text field starts on contains, a number on at least', () => {

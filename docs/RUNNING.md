@@ -447,7 +447,7 @@ A row carries every column its entity has, keyed exactly as the field is, plus `
 
 `total` is the match count before `limit`, so the editor can say *16 matches, top 5*.
 
-`GET /api/catalog/fields` describes the allowlist — every column, its datatype, the entities it belongs to, and the operator list per datatype. The editor's whole filter UI is built from this reply, so a column added to `kColumns` in `backend/src/catalog.cc` appears in the browser without a line of frontend changing.
+`GET /api/catalog/fields` describes the allowlist — every column, its datatype, the entities it belongs to, and the operator list per datatype. The editor's whole filter UI is built from this reply, so a column added to `kColumns` in `backend/src/catalog.cc` appears in the browser without a line of frontend changing. Each rule picks its column in two steps, group then field, and the group list is just the distinct prefixes in that reply — a new prefix makes a new group on its own.
 
 ```json
 {"entities": [{"name": "tracks", "label": "songs"}, "…"],

@@ -314,7 +314,8 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .qquery .query { margin-top: 0; }
 .rule { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .rule select { flex: 1; min-width: 0; }
-.rule select:first-child { flex: 1.4; }
+.rule select.group { flex: .8; }
+.rule select.named { flex: 1.4; }
 .rule input { flex: 1; min-width: 0; margin: 0; }
 .rule .meta { flex: 1; font-size: 15px; }
 .rule .chip { flex: none; }
@@ -398,5 +399,6 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
   .answer-row { flex-wrap: wrap; }
   .answer-row input { flex-basis: 100%; }
   .rule { flex-wrap: wrap; }
-  .rule select:first-child { flex-basis: 100%; }
+  .rule select.group { flex-basis: 34%; }
+  .rule select.named { flex-basis: 62%; }
 }

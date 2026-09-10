@@ -8,8 +8,8 @@ import {
 } from './moderator'
 import type { ModAnswer, ModQuestion, ModQuiz, QuizDay, Tier } from './moderator'
 import {
-  NO_VALUE, OP_LABELS, answerText, cell, columnsFor, defaultOp, dirLabel, fieldLabel,
-  fieldType, fieldsFor, splitField, spreadTiers, toPick, usable,
+  NO_VALUE, OP_LABELS, answerText, cell, columnsFor, defaultOp, dirLabel, fieldGroups,
+  fieldLabel, fieldType, fieldsFor, firstInGroup, groupOf, splitField, spreadTiers, toPick, usable,
 } from './catalog'
 import type {
   AnswerShape, CatalogField, CatalogSchema, Entity, Filter, Page, Query, Row, Sort,
@@ -240,12 +240,34 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
 
 // --- the catalog query builder ---------------------------------------------
 
-/** Every column, named in full: a select shows only the chosen option once it is
- *  closed, and "title" alone does not say whether it is the track's or the
- *  album's. The repeated prefix groups the list well enough on its own. */
-function FieldOptions({ fields }: { fields: CatalogField[] }) {
-  return <>{fields.map(field =>
-    <option key={field.key} value={field.key}>{fieldLabel(field.key)}</option>)}</>
+/** Group first, then field. One select of every column is forty options deep and
+ *  says "track · title" on each of them; picking 'artist' first cuts the second
+ *  select to that prefix's eleven and lets them read as plain words. Choosing a
+ *  group moves the row to that group's first field, so the pair is never
+ *  inconsistent -- which is why both selects go through one `onChange`. */
+function FieldPicker({ fields, value, label, onChange }: {
+  fields: CatalogField[]
+  value: string
+  label: string
+  onChange: (key: string) => void
+}) {
+  const groups = fieldGroups(fields)
+  const group = groupOf(value)
+  const mine = groups.find(one => one.group === group)?.fields ?? []
+  return (
+    <>
+      <select className="group" value={group} aria-label={`${label} group`}
+              onChange={event => onChange(firstInGroup(fields, event.target.value))}>
+        {groups.map(one =>
+          <option key={one.group} value={one.group}>{one.group || 'other'}</option>)}
+      </select>
+      <select className="named" value={value} aria-label={`${label} field`}
+              onChange={event => onChange(event.target.value)}>
+        {mine.map(field =>
+          <option key={field.key} value={field.key}>{splitField(field.key)[1]}</option>)}
+      </select>
+    </>
+  )
 }
 
 const SHAPES: { value: AnswerShape; label: string }[] = [
@@ -353,10 +375,8 @@ function CatalogQuery({ schema, entities, ladder = [], token, onPick, onCollect,
         const label = `Filter ${index + 1}`
         return (
           <div className="rule" key={index}>
-            <select value={filter.field} aria-label={`${label} field`}
-                    onChange={event => retype(index, event.target.value)}>
-              <FieldOptions fields={fields} />
-            </select>
+            <FieldPicker fields={fields} value={filter.field} label={label}
+                         onChange={key => retype(index, key)} />
             <select value={filter.op} aria-label={`${label} test`}
                     onChange={event => patch(index, { op: event.target.value })}>
               {schema.operators[type].map(op => <option key={op} value={op}>{OP_LABELS[op] ?? op}</option>)}
@@ -387,11 +407,9 @@ function CatalogQuery({ schema, entities, ladder = [], token, onPick, onCollect,
       <p className="fathom">sort <span>the first one breaks ties for the rest</span></p>
       {sorts.map((sort, index) => (
         <div className="rule" key={index}>
-          <select value={sort.field} aria-label={`Sort ${index + 1} field`}
-                  onChange={event => setSorts(sorts.map((one, i) =>
-                    i === index ? { ...one, field: event.target.value } : one))}>
-            <FieldOptions fields={fields} />
-          </select>
+          <FieldPicker fields={fields} value={sort.field} label={`Sort ${index + 1}`}
+                       onChange={key => setSorts(sorts.map((one, i) =>
+                         i === index ? { ...one, field: key } : one))} />
           <select value={sort.dir} aria-label={`Sort ${index + 1} direction`}
                   onChange={event => setSorts(sorts.map((one, i) =>
                     i === index ? { ...one, dir: event.target.value as Sort['dir'] } : one))}>

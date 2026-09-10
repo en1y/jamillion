@@ -43,6 +43,28 @@ export function splitField(key: string): [string, string] {
 
 export const fieldLabel = (key: string) => splitField(key).join(' · ')
 
+/** 'artist.country' -> 'artist'. The prefix a field is picked from. */
+export const groupOf = (key: string) => splitField(key)[0]
+
+/** The allowlist split by prefix, each group in the order the backend listed it:
+ *  that order is `kColumns`, which reads track, then album, then artist. Forty
+ *  columns in one select is a scroll; choosing 'artist' first leaves eleven. */
+export function fieldGroups(fields: CatalogField[]): { group: string; fields: CatalogField[] }[] {
+  const out: { group: string; fields: CatalogField[] }[] = []
+  for (const field of fields) {
+    const group = groupOf(field.key)
+    const found = out.find(one => one.group === group)
+    if (found) found.fields.push(field)
+    else out.push({ group, fields: [field] })
+  }
+  return out
+}
+
+/** What choosing a group selects: its first field, so the row is never left
+ *  naming a field the group above it does not contain. */
+export const firstInGroup = (fields: CatalogField[], group: string) =>
+  (fields.find(field => groupOf(field.key) === group) ?? fields[0])?.key ?? ''
+
 export const OP_LABELS: Record<string, string> = {
   contains: 'contains', starts: 'starts with', ends: 'ends with',
   eq: 'is', ne: 'is not', in: 'one of',
