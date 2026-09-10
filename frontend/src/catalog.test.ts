@@ -49,9 +49,13 @@ test('the columns shown are the identity plus whatever was filtered or sorted on
   assert.deepEqual(
     columnsFor('tracks', [{ field: 'artist.name', op: 'eq', value: 'Coldplay' }],
                [{ field: 'track.lastfm_listeners', dir: 'desc' }]),
-    ['artist.name', 'track.title', 'album.title', 'track.ytmusic_plays', 'track.lastfm_listeners'])
-  assert.deepEqual(columnsFor('tracks', [], [{ field: 'track.ytmusic_plays', dir: 'desc' }]),
-    ['artist.name', 'track.title', 'album.title', 'track.ytmusic_plays'], 'a sort on a default column adds nothing')
+    ['artist.name', 'track.title', 'album.title', 'track.genres', 'track.ytmusic_plays',
+     'track.lastfm_listeners'])
+  assert.deepEqual(columnsFor('tracks', [], [{ field: 'track.genres', dir: 'desc' }]),
+    ['artist.name', 'track.title', 'album.title', 'track.genres', 'track.ytmusic_plays'],
+    'a sort on a default column adds nothing')
+  assert.deepEqual(columnsFor('albums', [], [{ field: 'album.ytmusic_plays', dir: 'desc' }]),
+    ['artist.name', 'album.title', 'album.year', 'album.genres', 'album.ytmusic_plays'])
 })
 
 test('big numbers group, years do not, and nothing is blank', () => {

@@ -102,9 +102,10 @@ export const toPick = (row: Row, entity: Entity): DraftPick => ({
 // ponytail: the play count rides along on every track and artist page, because
 // "how big is this song" is the question behind most catalog searches.
 const IDENTITY: Record<Entity, string[]> = {
-  tracks: ['artist.name', 'track.title', 'album.title', 'track.ytmusic_plays'],
-  albums: ['artist.name', 'album.title', 'album.year'],
-  artists: ['artist.name', 'artist.country', 'artist.global_rank', 'artist.ytmusic_listeners'],
+  tracks: ['artist.name', 'track.title', 'album.title', 'track.genres', 'track.ytmusic_plays'],
+  albums: ['artist.name', 'album.title', 'album.year', 'album.genres', 'album.ytmusic_plays'],
+  artists: ['artist.name', 'artist.country', 'artist.genres', 'artist.global_rank',
+            'artist.ytmusic_listeners'],
 }
 
 /** Who the row is, then whatever was filtered or sorted on -- so the listen count

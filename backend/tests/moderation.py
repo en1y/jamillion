@@ -316,7 +316,12 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert {'tracks', 'albums', 'artists'} == {one['name'] for one in fields['entities']}
         assert 'contains' in fields['operators']['text'] and 'gte' in fields['operators']['number']
         assert {'artist.name', 'track.lastfm_listeners', 'track.ytmusic_plays',
-                'artist.ytmusic_listeners'} <= {one['key'] for one in fields['fields']}
+                'album.ytmusic_plays', 'artist.ytmusic_listeners', 'track.genres',
+                'album.genres', 'artist.genres'} <= {one['key'] for one in fields['fields']}
+        genre_on = {one['key']: set(one['entities']) for one in fields['fields']}
+        assert genre_on['track.genres'] == {'tracks'}
+        assert genre_on['album.genres'] == {'tracks', 'albums'}
+        assert genre_on['artist.genres'] == {'tracks', 'albums', 'artists'}
 
         # An album question, authored end to end without an admin route. This is
         # the v0.7.0 gap: POST /api/quizzes needs an album_id and nothing a
@@ -363,6 +368,46 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
             token=TOKEN)
         assert status == 200 and artists['rows'], (status, artists)
         assert 'artist.ytmusic_listeners' in artists['rows'][0], artists['rows'][0]
+
+        # An album has no play count of its own, so album.ytmusic_plays sums its
+        # tracks'. Checked against the tracks it came from rather than a number
+        # typed here, so it holds whatever the seeder has fetched so far.
+        status, records, _ = api('/api/catalog', {
+            'entity': 'albums', 'filters': [{'field': 'album.ytmusic_plays', 'op': 'notnull', 'value': ''}],
+            'sorts': [{'field': 'album.ytmusic_plays', 'dir': 'desc'}], 'limit': 5}, token=TOKEN)
+        assert status == 200 and records['rows'], (status, records)
+        totals = [row['album.ytmusic_plays'] for row in records['rows']]
+        assert totals == sorted(totals, reverse=True) and None not in totals, totals
+        biggest = records['rows'][0]
+        songs = db.execute('SELECT sum(ytmusic_plays) FROM tracks WHERE album_id = %s',
+                           (biggest['id'],)).fetchone()[0]
+        assert int(biggest['album.ytmusic_plays']) == int(songs), (biggest, songs)
+
+        # Genres, which Deezer only tags on the album: a track reads its album's and
+        # an artist the union over theirs, so "Rock" as a substring is how a genre
+        # is asked for and the artist list is always the wider of the two.
+        status, page, _ = api('/api/catalog', {
+            'entity': 'tracks',
+            'filters': [{'field': 'track.genres', 'op': 'contains', 'value': 'Rock'}],
+            'limit': 5}, token=TOKEN)
+        assert status == 200 and page['rows'], (status, page)
+        assert all('rock' in row['track.genres'].lower() for row in page['rows']), page['rows']
+        assert all(set(row['track.genres'].split(', ')) <= set(row['artist.genres'].split(', '))
+                   for row in page['rows']), 'a track genre its artist does not have'
+        status, records, _ = api('/api/catalog', {
+            'entity': 'albums', 'filters': [{'field': 'album.genres', 'op': 'notnull', 'value': ''}],
+            'sorts': [{'field': 'album.genres', 'dir': 'asc'}], 'limit': 3}, token=TOKEN)
+        assert status == 200 and records['rows'], (status, records)
+        assert all(row['album.genres'] for row in records['rows']), records['rows']
+        # per album, not per artist: one artist's records do not all read the same
+        status, spread, _ = api('/api/catalog', {
+            'entity': 'albums', 'filters': [{'field': 'artist.name', 'op': 'eq', 'value': 'Arctic Monkeys'},
+                                            {'field': 'album.genres', 'op': 'notnull', 'value': ''}],
+            'limit': 200}, token=TOKEN)
+        assert status == 200, (status, spread)
+        if len(spread['rows']) > 1:
+            assert len({row['album.genres'] for row in spread['rows']}) > 1, \
+                'every album tagged alike means album_genres was not filled'
 
         # The allowlist is the security boundary: no table, column or operator
         # reaches the SQL from the request, only a key that matched a row in it.

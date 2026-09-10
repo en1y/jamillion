@@ -23,8 +23,9 @@ enum : unsigned { TRACKS = 1, ALBUMS = 2, ARTISTS = 4 };
 // in:   which entities may be asked about this column.
 struct Column { const char *key; const char *sql; char type; unsigned in; };
 
-// ponytail: artist.genres is a correlated subquery per row. Fine for a catalog
-// this size; make it a LATERAL join if a 500-row page ever drags.
+// ponytail: the genre columns and album.ytmusic_plays are correlated subqueries
+// per row. Fine for a catalog this size; make them LATERAL joins if a 500-row
+// page ever drags.
 constexpr Column kColumns[] = {
     {"track.title",             "t.title",                             't', TRACKS},
     {"track.release_date",      "t.release_date",                      'd', TRACKS},
@@ -41,6 +42,12 @@ constexpr Column kColumns[] = {
     {"track.lastfm_playcount",  "t.lastfm_playcount",                  'n', TRACKS},
     {"track.isrc",              "t.isrc",                              't', TRACKS},
     {"track.has_preview",       "(t.preview_url IS NOT NULL)",         'b', TRACKS},
+    // Deezer tags genres on the album, so a track's are its album's. Joined into
+    // one string, which is what makes `contains 'Rock'` the natural "has this
+    // genre" filter and also matches 'Indie Rock'.
+    {"track.genres",            "(SELECT string_agg(g.name, ', ' ORDER BY g.name) "
+                                " FROM album_genres alg JOIN genres g ON g.id = alg.genre_id "
+                                " WHERE alg.album_id = al.id)",        't', TRACKS},
 
     {"album.title",             "al.title",                            't', TRACKS | ALBUMS},
     {"album.album_type",        "al.album_type",                       't', TRACKS | ALBUMS},
@@ -49,7 +56,16 @@ constexpr Column kColumns[] = {
     {"album.total_tracks",      "al.total_tracks",                     'n', TRACKS | ALBUMS},
     {"album.label",             "al.label",                            't', TRACKS | ALBUMS},
     {"album.deezer_fans",       "al.deezer_fans",                      'n', TRACKS | ALBUMS},
+    // YouTube Music has no figure for a record, only for its songs, so this is
+    // their sum: null while the album's tracks have no play counts yet, which is
+    // what NULLS LAST is for. Skips tracks the seeder never matched, so a record
+    // with a missing song reads a little low rather than not at all.
+    {"album.ytmusic_plays",     "(SELECT sum(pt.ytmusic_plays) FROM tracks pt "
+                                " WHERE pt.album_id = al.id)",         'n', TRACKS | ALBUMS},
     {"album.cover_url",         "al.cover_url",                        't', TRACKS | ALBUMS},
+    {"album.genres",            "(SELECT string_agg(g.name, ', ' ORDER BY g.name) "
+                                " FROM album_genres alg JOIN genres g ON g.id = alg.genre_id "
+                                " WHERE alg.album_id = al.id)",        't', TRACKS | ALBUMS},
 
     {"artist.name",             "ar.name",                             't', TRACKS | ALBUMS | ARTISTS},
     {"artist.country",          "ar.country",                          't', TRACKS | ALBUMS | ARTISTS},
@@ -75,6 +91,7 @@ constexpr Column kColumns[] = {
     {"artist.ytmusic_listeners","ar.ytmusic_listeners",                'n', TRACKS | ALBUMS | ARTISTS},
     {"artist.spotify_followers","ar.spotify_followers",                'n', TRACKS | ALBUMS | ARTISTS},
     {"artist.image_url",        "ar.image_url",                        't', TRACKS | ALBUMS | ARTISTS},
+    // the union over everything they released, so it is the widest of the three
     {"artist.genres",           "(SELECT string_agg(g.name, ', ' ORDER BY g.name) "
                                 " FROM artist_genres ag JOIN genres g ON g.id = ag.genre_id "
                                 " WHERE ag.artist_id = ar.id)",        't', TRACKS | ALBUMS | ARTISTS},

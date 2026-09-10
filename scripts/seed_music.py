@@ -10,6 +10,7 @@ Sources, and why:
            artist.getInfo      -> listeners + playcount (a real listen count)
   Deezer   -> the catalog itself: artist fans, every album (upc, label, release date,
               fans, genres) and every track (rank, duration, explicit, 30 s preview).
+              Genres are tagged per album; the artist gets the union, a track its album's.
               Open API, no key. Track detail adds ISRC, BPM, track position.
   MusicBrainz -> mbid, artist type, country, gender, active years, disambiguation
   Spotify  -> ids only. As of 2025 Spotify no longer serves popularity, followers,
@@ -34,6 +35,10 @@ from dotenv import load_dotenv
 load_dotenv()
 DB = os.environ["DATABASE_URL"]
 HTTP = requests.Session()
+# Deezer localises genre names to whoever is asking ("Alternativna glazba"), and
+# the catalog is English. The ids are the same either way, but the names are what
+# a moderator reads.
+HTTP.headers["Accept-Language"] = "en"
 
 # ---------------------------------------------------------------- http
 
@@ -211,11 +216,16 @@ def seed_albums(cur, aid, deezer_artist_id, detail_cap):
             upc=full.get("upc"), deezer_fans=full.get("fans"), duration_sec=full.get("duration"),
             cover_url=full.get("cover_xl")))
 
+        # Deezer only tags genres on the album, so that is where they are kept; the
+        # artist gets the union of theirs, and a track inherits its album's.
         for g in (full.get("genres") or {}).get("data", []):
-            cur.execute("INSERT INTO genres(name) VALUES (%s) ON CONFLICT (name) "
-                        "DO UPDATE SET name=EXCLUDED.name RETURNING id", (g["name"],))
-            cur.execute("INSERT INTO artist_genres VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                        (aid, cur.fetchone()[0]))
+            if g.get("id") in (None, -1) or not g.get("name"): continue   # Deezer's "unknown"
+            cur.execute("INSERT INTO genres(deezer_id, name) VALUES (%s,%s) "
+                        "ON CONFLICT (deezer_id) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                        (g["id"], g["name"]))
+            gid = cur.fetchone()[0]
+            cur.execute("INSERT INTO album_genres VALUES (%s,%s) ON CONFLICT DO NOTHING", (album_id, gid))
+            cur.execute("INSERT INTO artist_genres VALUES (%s,%s) ON CONFLICT DO NOTHING", (aid, gid))
 
         for pos, t in enumerate((full.get("tracks") or {}).get("data", []), 1):
             if not is_original(t["title"], t.get("title_version")): continue

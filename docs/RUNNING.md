@@ -420,11 +420,22 @@ Text compares case-insensitively, and `ne` is `IS DISTINCT FROM`, so a null row 
 | Field | Is |
 |-------|----|
 | `track.ytmusic_plays` | the play count the YouTube Music app shows — plays over every upload of the recording, rounded to a few digits (`3000000000` for Smells Like Teen Spirit). The editor's track results show it by default |
+| `album.ytmusic_plays` | the sum of the album's tracks, since YouTube Music counts songs and not records. Shown by default on album results |
 | `track.youtube_views` | exact views of the one video YouTube Music plays for it |
 | `track.lastfm_listeners` / `lastfm_playcount` | Last.fm scrobblers, a smaller and rockier crowd |
 | `track.deezer_rank` | Deezer's 0–1 000 000 popularity score, the default sort |
 
-`artist.ytmusic_listeners` is the artist's YouTube Music monthly listeners, shown by default on artist results. All of them are `notnull`-filterable, so a seed that has not run YouTube yet can be told apart from a song nobody plays.
+`artist.ytmusic_listeners` is the artist's YouTube Music monthly listeners, shown by default on artist results. An album total is null until its tracks have play counts, and skips the tracks the seeder never matched, so a record missing a song reads a little low rather than not at all. All of them are `notnull`-filterable, so a seed that has not run YouTube yet can be told apart from a song nobody plays.
+
+**Genres.** Deezer tags genres on the album and nowhere else, so that is where they are stored and the other two levels read from it:
+
+| Field | Is |
+|-------|----|
+| `album.genres` | what Deezer tags the record — `Rock`, `Alternative, Indie Rock, Pop, Rock` |
+| `track.genres` | its album's, since a recording has no tag of its own |
+| `artist.genres` | the union over everything they released, so it is always the widest of the three |
+
+All three are text, joined with `, ` and sorted, and all three are shown by default. `contains` is how a genre is asked for — `track.genres contains Rock` also catches `Indie Rock`, which is usually what you want; `eq` matches the whole list and is rarely what you mean. Genre names come back in whatever language Deezer decides, so `genres.deezer_id` is the upsert key (152 is Rock in every locale) and the seeder asks for English.
 
 A row carries every column its entity has, keyed exactly as the field is, plus `id`:
 

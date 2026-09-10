@@ -12,6 +12,9 @@ Builds the artist / album / track catalog in Postgres.
   count to become `global_rank`; `artist.getInfo` gives listens.
 - Deezer is the source of truth: artist, every album and track, 30 s preview URL.
   `deezer_id` is the upsert key, so re-running refreshes rather than duplicates.
+- Genres are Deezer's, tagged per album: `album_genres` holds them, `artist_genres`
+  is the union over an artist's records, and a track reads its album's. Upserted on
+  `genres.deezer_id`, because Deezer localises the names.
 - MusicBrainz adds mbid, type, country, gender, active years. Spotify adds only
   the id. YouTube Music (`ytmusicapi`, unofficial, paced) adds the song play
   count the app shows, the video id it plays, and the artist's monthly
