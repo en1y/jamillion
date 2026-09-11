@@ -85,6 +85,23 @@ def answer(cookie, attempt_id, question_id, text):
     return status, body
 
 
+def answer_boxes(cookie, attempt_id, question_id, boxes):
+    """A song or album question, since v0.9.3: one request per box. Everything before
+    the last is parked -- stored, nothing scored, nothing given away -- and the last
+    one carries settle, which is what brings back the verdict."""
+    serve(cookie)
+    status, body = None, None
+    for i, (field, text) in enumerate(boxes):
+        last = i == len(boxes) - 1
+        status, body, _ = api(f'/api/attempts/{attempt_id}/answers',
+                              {'question_id': question_id, 'field': field, 'text': text,
+                               'settle': last}, cookie=cookie)
+        if not last:
+            assert status == 200 and body['stored'] == field, body
+            assert [b[0] for b in boxes[i + 1:]] == body['remaining'], body
+    return status, body
+
+
 with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
     quiz_id = None
     seeded = []
@@ -223,8 +240,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['qtype'] == 'album' and served['question']['cover'], served['question']
         assert served['question']['ask_artist'] is False and served['question']['ask_title'] is True
         assert 'album_id' not in served['question'] and 'track_id' not in served['question']
-        status, body = answer(cookie, attempt_id, questions[6], 'Answer 6')
+        status, body = answer_boxes(cookie, attempt_id, questions[6], [('title', 'Answer 6')])
         assert body['result']['points'] == 10 and body['total_points'] == 50
+        assert body['result']['fields'] == [{'field': 'title', 'text': 'Answer 6', 'correct': True}], body
         song_id = questions[7]
         status, served = serve(cookie)
         assert served['question']['id'] == song_id and served['question']['qtype'] == 'song'
@@ -235,9 +253,18 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['ask_album'] is True, served['question']
         assert served['question']['time_limit_sec'] == 0, served['question']
         assert served['question']['deadline'] is None, served['question']
-        status, body = answer(cookie, attempt_id, song_id, 'radiohead creep')  # moderator override wins
+        # Artist and title right, album wrong: the boxes that landed still pay, so this
+        # scores the 'Radiohead Creep' rung, not zero, and says which box missed.
+        status, body = answer_boxes(cookie, attempt_id, song_id,
+                                    [('artist', 'radiohead'), ('title', 'creep'), ('album', 'Pablo Honey?')])
         # the tier still names the star; points is what the moderator added up
-        assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Supernova', 'points': 45}, body['result']
+        assert body['result']['points'] == 45 and body['result']['correct'] is True, body['result']
+        assert body['result']['tier'] == 'Supernova' and body['result']['timed_out'] is False, body['result']
+        assert [(b['field'], b['correct']) for b in body['result']['fields']] == \
+               [('artist', True), ('title', True), ('album', False)], body['result']['fields']
+        assert db.execute('SELECT field, correct FROM attempt_fields WHERE attempt_id = %s '
+                          'AND question_id = %s ORDER BY field', (attempt_id, song_id)).fetchall() == \
+               [('album', False), ('artist', True), ('title', True)]
         assert body['finished'] is True and body['total_points'] == 95 and body['question'] is None
         assert db.execute('SELECT finished_at IS NOT NULL, total_points FROM attempts WHERE id = %s',
                           (attempt_id,)).fetchone() == (True, 95)
@@ -274,6 +301,10 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         song = sheet['questions'][6]
         assert [a['display'] for a in song['answers']] == ['Radiohead Creep', 'Radiohead'], song['answers']
         assert song['answers'][0]['tier'] == 'Supernova' and song['answers'][0]['yours'] is True
+        # A song key is a ladder of how much you named, so it reveals what each rung
+        # is worth -- the moderator's 45, not the Supernova tier's 100.
+        assert [a['points'] for a in song['answers']] == [45, 15], song['answers']
+        assert q1['qtype'] == 'rarest' and song['qtype'] == 'song'
         assert 'normalized' not in str(sheet) and 'track_id' not in str(sheet)
         assert len(sheet['dist']) == 36 and sheet['better_than'] >= 0
         st, idea, _ = api('/api/ideas', {'text': 'name a dwarf planet'}, cookie=cookie)

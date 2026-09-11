@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <map>
 #include <string>
+#include <vector>
 
 using namespace drogon;
 namespace quiz {
@@ -24,6 +25,14 @@ constexpr const char *kOwned =
 
 bool isUniqueViolation(const orm::DrogonDbException &e) {
     return dynamic_cast<const orm::UniqueViolation *>(&e.base()) != nullptr;
+}
+
+// A box of spaces is an empty box: what reaches the key is normalised anyway,
+// this only decides whether the player filled the field in at all.
+std::string trimmed(std::string text) {
+    const auto first = text.find_first_not_of(" \t\n\r");
+    if (first == std::string::npos) return {};
+    return text.substr(first, text.find_last_not_of(" \t\n\r") - first + 1);
 }
 
 std::string compact(const Json::Value &value) {
@@ -372,12 +381,14 @@ Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
         Json::Value questions(Json::arrayValue);
         std::map<long long, Json::ArrayIndex> index;
         for (const auto &row : co_await db->execSqlCoro(
-                 "SELECT id, position, prompt FROM questions WHERE quiz_id = $1::bigint ORDER BY position",
+                 "SELECT id, position, prompt, qtype::text AS qtype FROM questions "
+                 "WHERE quiz_id = $1::bigint ORDER BY position",
                  quizId)) {
             const auto id = row["id"].as<long long>();
             Json::Value question;
             question["position"] = row["position"].as<int>();
             question["prompt"] = row["prompt"].as<std::string>();
+            question["qtype"] = row["qtype"].as<std::string>();
             question["answers"] = Json::Value(Json::arrayValue);
             index[id] = questions.size();
             questions.append(question);
@@ -388,7 +399,7 @@ Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
         for (const auto &row : co_await db->execSqlCoro(
                  "SELECT qa.question_id, qa.display, "
                  "  coalesce(ov.name, live.name) AS tier, "
-                 "  coalesce(ov.points, live.points) AS points, "
+                 "  coalesce(qa.points, ov.points, live.points) AS points, "
                  "  coalesce(ov.sort_order, live.sort_order, 0) AS sort_order, "
                  "  (aa.answer_id IS NOT NULL) AS yours "
                  "FROM question_answers qa "
@@ -404,7 +415,7 @@ Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
                  "  AND aa.attempt_id = $2::bigint AND aa.answer_id = qa.id "
                  "WHERE qa.is_correct AND qa.question_id IN "
                  "  (SELECT id FROM questions WHERE quiz_id = $1::bigint) "
-                 "ORDER BY sort_order DESC, qa.display",
+                 "ORDER BY points DESC NULLS LAST, sort_order DESC, qa.display",
                  quizId, attemptId)) {
             const auto slot = index.find(row["question_id"].as<long long>());
             if (slot == index.end()) continue;
@@ -488,11 +499,19 @@ Task<HttpResponsePtr> startAttempt(HttpRequestPtr req) {
     }
 }
 
+// A song or an album question is answered a box at a time, each box its own
+// request. The boxes are parked in attempt_fields; the last one to arrive settles
+// the question, which is still the single attempt_answers row everything reads.
+// A rarest question has no boxes: one text, one request, as before.
 Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
     const auto body = req->getJsonObject();
     if (!body || !(*body)["question_id"].isIntegral()) co_return auth::error(k400BadRequest, "question_id is required");
     const auto text = (*body)["text"].isString() ? (*body)["text"].asString() : std::string{};
     if (text.size() > 200) co_return auth::error(k400BadRequest, "Answer is too long");
+    const auto field = (*body)["field"].isString() ? (*body)["field"].asString() : std::string{};
+    // The player can click back to fix an earlier box, so "all boxes are in" is not
+    // the end of the question -- the last press is. The clock is the other way out.
+    const bool settle = (*body)["settle"].isBool() && (*body)["settle"].asBool();
     const auto questionId = (*body)["question_id"].asInt64();
 
     const auto player = co_await playerFor(req);
@@ -503,7 +522,8 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
         const auto checks = co_await db->execSqlCoro(
             "SELECT a.question_started_at IS NULL AS unserved, "
             "  q.time_limit_sec > 0 "
-            "    AND now() > a.question_started_at + ((q.time_limit_sec + 3) * interval '1 second') AS late "
+            "    AND now() > a.question_started_at + ((q.time_limit_sec + 3) * interval '1 second') AS late, "
+            "  q.qtype::text AS qtype, q.ask_artist, q.ask_title, q.ask_album "
             "FROM attempts a JOIN players p ON p.id = a.player_id "
             "JOIN questions q ON q.quiz_id = a.quiz_id AND q.id = $4::bigint "
             "WHERE a.id = $1::bigint AND a.finished_at IS NULL AND " + std::string(kOwned) +
@@ -511,21 +531,119 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
             attemptId, player, who.id, questionId);
         if (checks.empty()) co_return auth::error(k409Conflict, "Not the current question");
         if (checks[0]["unserved"].as<bool>()) co_return auth::error(k409Conflict, "Question not served yet");
-        // Past the timer, the answer still gets stored, just as a blank: no points,
-        // and the guess does not move anyone's rarity share.
         const bool late = checks[0]["late"].as<bool>();
-        std::string submitted = late ? std::string{} : text;
+        const auto qtype = checks[0]["qtype"].as<std::string>();
 
+        // The boxes this question asks for, in the order the answer key was seeded.
+        std::vector<std::string> asked;
+        if (qtype != "rarest") {
+            if (checks[0]["ask_artist"].as<bool>()) asked.emplace_back("artist");
+            if (checks[0]["ask_title"].as<bool>()) asked.emplace_back("title");
+            if (qtype == "song" && checks[0]["ask_album"].as<bool>()) asked.emplace_back("album");
+        }
+        if (asked.empty() != field.empty())
+            co_return auth::error(k400BadRequest, asked.empty() ? "This question takes no field"
+                                                                : "field is required");
+        if (!field.empty() && std::find(asked.begin(), asked.end(), field) == asked.end())
+            co_return auth::error(k400BadRequest, "Not a field of this question");
+
+        std::map<std::string, std::string> typed;
+        std::string incoming = late ? std::string{} : text;
+        if (!asked.empty()) {
+            // Past the timer the box being typed arrives blank -- the clock takes it,
+            // not the ones already in the envelope. A box can be retyped until the
+            // question settles, so this is an upsert.
+            co_await db->execSqlCoro(
+                "INSERT INTO attempt_fields (attempt_id, question_id, field, raw_text) "
+                "VALUES ($1::bigint, $2::bigint, $3, $4) "
+                "ON CONFLICT (attempt_id, question_id, field) "
+                "DO UPDATE SET raw_text = excluded.raw_text, answered_at = now()",
+                attemptId, questionId, field, incoming);
+            for (const auto &row : co_await db->execSqlCoro(
+                     "SELECT field, raw_text FROM attempt_fields "
+                     "WHERE attempt_id = $1::bigint AND question_id = $2::bigint",
+                     attemptId, questionId))
+                typed[row["field"].as<std::string>()] = row["raw_text"].as<std::string>();
+
+            Json::Value remaining(Json::arrayValue);
+            for (const auto &box : asked)
+                if (!typed.count(box)) remaining.append(box);
+            // Not the last press, and time left: nothing is scored yet, and nothing
+            // is said about the box just stored. The verdict comes once.
+            if (!late && !settle) {
+                Json::Value out;
+                out["stored"] = field;
+                out["remaining"] = remaining;
+                co_return json(out);
+            }
+        }
+
+        // Settle. The boxes go to the scorer as themselves; raw_text is what the
+        // player said, joined the way the key reads, for the moderator's queue.
+        Json::Value parts(Json::arrayValue), boxes(Json::arrayValue);
+        std::string raw;
+        for (const auto &box : asked) {
+            const auto value = trimmed(typed.count(box) ? typed[box] : std::string{});
+            if (value.empty()) continue;
+            if (!raw.empty()) raw += " — ";
+            raw += value;
+            parts.append(value);
+            boxes.append(box);
+        }
+        if (asked.empty()) raw = incoming;
+
+        std::string partsJson = parts.empty() ? std::string{} : compact(parts);
+        std::string boxesJson = compact(boxes);
         const auto scored = co_await db->execSqlCoro(
-            "SELECT points, tier, correct, total_points, finished FROM submit_answer($1::bigint, $2::bigint, $3)",
-            attemptId, questionId, submitted);
+            "WITH s AS (SELECT * FROM submit_answer($1::bigint, $2::bigint, $3, "
+            "  CASE WHEN $4 = '' THEN NULL ELSE ARRAY(SELECT jsonb_array_elements_text($4::jsonb)) END)) "
+            "SELECT s.points, s.tier, s.correct, s.total_points, s.finished, "
+            "  array_to_string(ARRAY(SELECT f FROM unnest(ARRAY(SELECT jsonb_array_elements_text($5::jsonb)), "
+            "                                             s.parts_hit) AS u(f, hit) WHERE hit), ',') AS hits "
+            "FROM s",
+            attemptId, questionId, raw,
+            partsJson, boxesJson);
         const auto &row = scored[0];
+        const auto hits = row["hits"].as<std::string>();
 
         Json::Value result;
         result["timed_out"] = late;
-        result["correct"] = !row["correct"].isNull() && row["correct"].as<bool>();
+        result["correct"] = row["correct"].as<bool>();
         result["tier"] = nullable(row["tier"]);
         result["points"] = row["points"].as<int>();
+
+        if (!asked.empty()) {
+            co_await db->execSqlCoro(
+                "UPDATE attempt_fields SET correct = field = ANY (string_to_array($3, ',')) "
+                "WHERE attempt_id = $1::bigint AND question_id = $2::bigint",
+                attemptId, questionId, hits);
+            // Box by box, so the verdict can say what each one earned rather than one
+            // number: the key row for that field alone, its points and its tier. A box
+            // that only landed as part of a combination has no row of its own and reads 0.
+            Json::Value typedJson(Json::objectValue);
+            for (const auto &box : asked) typedJson[box] = trimmed(typed.count(box) ? typed[box] : std::string{});
+            std::map<std::string, std::pair<int, std::string>> worth;
+            for (const auto &r : co_await db->execSqlCoro(
+                     "SELECT f.field, coalesce(qa.points, rt.points, 0)::int AS points, rt.name AS tier "
+                     "FROM jsonb_each_text($2::jsonb) AS f(field, text) "
+                     "LEFT JOIN question_answers qa ON qa.question_id = $1::bigint AND qa.is_correct "
+                     "  AND qa.normalized = normalize_answer(f.text) "
+                     "LEFT JOIN rarity_tiers rt ON rt.id = qa.tier_id",
+                     questionId, compact(typedJson)))
+                worth[r["field"].as<std::string>()] = {r["points"].as<int>(),
+                                                       r["tier"].isNull() ? std::string{} : r["tier"].as<std::string>()};
+            Json::Value shown(Json::arrayValue);
+            for (const auto &box : asked) {
+                Json::Value one;
+                one["field"] = box;
+                one["text"] = typedJson[box];
+                one["correct"] = (',' + hits + ',').find(',' + box + ',') != std::string::npos;
+                one["points"] = one["correct"].asBool() ? worth[box].first : 0;
+                one["tier"] = one["correct"].asBool() && !worth[box].second.empty() ? Json::Value(worth[box].second) : Json::Value();
+                shown.append(one);
+            }
+            result["fields"] = shown;
+        }
 
         // serve = false: the next question's timer starts when the player asks for
         // it with POST /api/attempts, not while they are reading this result.
