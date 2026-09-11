@@ -3,6 +3,7 @@
 import { call, query } from './api'
 import type { Qtype } from './api'
 import type { CatalogSchema, Page, Query } from './catalog'
+import type { AnswerField } from './quizdraft'
 
 /** `max_share` is text, not a number: the ladder's top step is 0.0020 and a JSON
  *  float would hand it back as 0.002. The admin's tier editor writes it back as
@@ -26,6 +27,9 @@ export interface ModAnswer {
   /** Set, this is what the answer scores instead of its tier's own number: the
    *  sum of a combination of fields, or a 0 meaning accepted but worth nothing. */
   points: number | null
+  /** Which of a song question's fields this row is a name for, when it is one.
+   *  null on the combinations, on answers typed by hand and on players' guesses. */
+  field: AnswerField | null
 }
 
 /** Careful with the two asymmetries the backend has: ask_artist/ask_title are

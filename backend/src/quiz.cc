@@ -206,6 +206,15 @@ const char *validate(const Json::Value &body) {
             if (a.isMember("points") && (!a["points"].isIntegral() || a["points"].asInt() < 0 ||
                                          a["points"].asInt() > 700))
                 return "answer points must be between 0 and 700";
+            // Which field this row is a name for, or "full" for the combination
+            // carrying the bonus. Only a song question has more than one name per
+            // field, so only it may say so.
+            if (a.isMember("field") && !a["field"].isNull()) {
+                const auto field = a["field"].asString();
+                if (field != "artist" && field != "title" && field != "album" && field != "full")
+                    return "answer field must be artist, title, album or full";
+                if (type != "song") return "answer field is for song questions";
+            }
         }
     }
     return nullptr;
@@ -258,11 +267,12 @@ Task<HttpResponsePtr> createQuiz(HttpRequestPtr req) {
             "       album_id bigint, ask_artist bool, ask_title bool, ask_album bool) "
             "  RETURNING id, position), "
             "ans AS ("
-            "  INSERT INTO question_answers (question_id, normalized, display, is_correct, tier_id, points) "
-            "  SELECT qs.id, normalize_answer(a.display), a.display, true, a.tier_id, a.points "
+            "  INSERT INTO question_answers (question_id, normalized, display, is_correct, tier_id, points, field) "
+            "  SELECT qs.id, normalize_answer(a.display), a.display, true, a.tier_id, a.points, a.field "
             "  FROM qs JOIN jsonb_to_recordset($4::jsonb) AS q(position int, answers jsonb) "
             "         ON q.position = qs.position, "
-            "       jsonb_to_recordset(q.answers) AS a(display text, tier_id smallint, points smallint)) "
+            "       jsonb_to_recordset(q.answers) AS a(display text, tier_id smallint, points smallint, "
+            "                                          field text)) "
             "SELECT id FROM qz",
             date, published, who.id, compact((*body)["questions"]));
         Json::Value out;
@@ -990,7 +1000,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
         }
 
         for (const auto &row : co_await db->execSqlCoro(
-                 "SELECT id, question_id, display, normalized, is_correct, tier_id, points, guess_count "
+                 "SELECT id, question_id, display, normalized, is_correct, tier_id, points, guess_count, field "
                  "FROM question_answers WHERE question_id IN "
                  "  (SELECT id FROM questions WHERE quiz_id = $1::bigint) "
                  "ORDER BY question_id, guess_count DESC, id",
@@ -1005,6 +1015,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
             answer["tier_id"] = nullableInt(row["tier_id"]);
             answer["points"] = nullableInt(row["points"]);
             answer["guess_count"] = row["guess_count"].as<int>();
+            answer["field"] = nullable(row["field"]);
             questions[slot->second]["answers"].append(answer);
         }
         out["questions"] = questions;
@@ -1039,7 +1050,7 @@ Task<HttpResponsePtr> patchQuiz(HttpRequestPtr req, std::string date) {
 
 Task<Json::Value> answerRow(long long answerId) {
     const auto rows = co_await app().getDbClient()->execSqlCoro(
-        "SELECT id, question_id, display, normalized, is_correct, tier_id, points, guess_count "
+        "SELECT id, question_id, display, normalized, is_correct, tier_id, points, guess_count, field "
         "FROM question_answers WHERE id = $1::bigint",
         answerId);
     Json::Value out;
@@ -1052,6 +1063,7 @@ Task<Json::Value> answerRow(long long answerId) {
     out["tier_id"] = nullableInt(rows[0]["tier_id"]);
     out["points"] = nullableInt(rows[0]["points"]);
     out["guess_count"] = rows[0]["guess_count"].as<int>();
+    out["field"] = nullable(rows[0]["field"]);
     co_return out;
 }
 

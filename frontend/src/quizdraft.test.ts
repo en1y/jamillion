@@ -214,6 +214,56 @@ test('a combination is worth its fields added up', () => {
   assert.ok(!expandAnswers(withAlias, TIERS).some(row => row.display.includes('Radiohed —')))
 })
 
+test('a song field takes more than one right name, and they all score the same', () => {
+  const song = { ...emptyDraft('2026-09-10').questions[0], qtype: 'song' as const,
+    track: PICK, ask_artist: true, ask_title: true, ask_album: true, full_tier_id: null,
+    answers: [...prefillAnswers(PICK, { artist: true, title: true, album: true }, 2),   // 15 each
+              { display: 'Creep (Acoustic)', tier_id: null, field: 'title' as const },
+              { display: 'The Bends', tier_id: null, field: 'album' as const }] }
+
+  const rows = expandAnswers(song, TIERS)
+  // One name on the artist, two on each of the others: 4 spellings of all three
+  // right, 8 of the pairs, 5 single names.
+  assert.equal(rows.length, 17)
+  assert.equal(rows[0].display, 'Radiohead — Creep — Pablo Honey')
+  for (const display of ['Radiohead — Creep (Acoustic) — The Bends',
+                         'Radiohead — Creep — The Bends', 'Creep (Acoustic) — Pablo Honey'])
+    assert.ok(rows.some(row => row.display === display), display)
+  // An alternative is the field said differently, so it is worth the field.
+  assert.deepEqual(worth(rows.filter(row => !row.display.includes(' — '))),
+    ['Pablo Honey/tier2', 'The Bends/tier2', 'Creep/tier2', 'Creep (Acoustic)/tier2',
+     'Radiohead/tier2'])
+  assert.equal(rows.find(row => row.display === 'Radiohead — Creep (Acoustic)')?.points, 30)
+  assert.equal(fullAnswerPoints(song, TIERS), 45, 'the names do not add to the total')
+
+  // Off the wire the flat key says which field each single name was a name for,
+  // so the day reopens as the fields and their alternatives, not as 17 rows.
+  const stored: ModQuiz = {
+    id: 1, quiz_date: '2026-09-10', published: false, created_by: null,
+    attempts_started: 0, attempts_finished: 0,
+    questions: [{
+      id: 10, position: 1, qtype: 'song', prompt: 'Which one?', time_limit_sec: 0,
+      snippet_start_sec: 3, snippet_len_sec: 9,
+      track: { id: PICK.id, title: PICK.title, artist: PICK.artist, album: PICK.album },
+      audio: '/api/audio/10', album: null, ask_artist: true, ask_title: true, ask_album: true,
+      answers: rows.map((row, i) => ({
+        id: i + 1, display: row.display, normalized: normalizeAnswer(row.display),
+        is_correct: true, tier_id: row.tier_id, points: row.points ?? null,
+        field: row.field ?? null, guess_count: 0,
+      })),
+    }],
+  }
+  const reopened = fromQuiz(stored).questions[0]
+  assert.deepEqual(said(reopened.answers),
+    ['Radiohead/2', 'Creep/2', 'Creep (Acoustic)/null', 'Pablo Honey/2', 'The Bends/null'])
+  assert.deepEqual(expandAnswers(reopened, TIERS), rows, 'and saves back to the same key')
+
+  // A second name lives on the field: drop the field and it goes with it.
+  const noAlbum = reseedAnswers({ ...reopened, ask_album: false }, 2)
+  assert.deepEqual(said(noAlbum), ['Radiohead/2', 'Creep/2', 'Creep (Acoustic)/null'])
+  assert.deepEqual(said(reseedAnswers({ ...reopened, qtype: 'rarest' }, 2)), [])
+})
+
 test('reseeding rewrites its own rows and leaves the moderator\'s alone', () => {
   const question = { ...emptyDraft('2026-09-10').questions[0], qtype: 'song' as const,
     track: { id: 42, title: 'Creep', artist: 'Radiohead', album: 'Pablo Honey' },

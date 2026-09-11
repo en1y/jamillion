@@ -21,9 +21,13 @@ import {
   fromQuiz, fullAnswerPoints, loadDraft, normalizeAnswer, onDate, reseedAnswers, saveDraft,
   toPayload,
 } from './quizdraft'
-import type { Draft, DraftPick, DraftQuestion } from './quizdraft'
+import type { AnswerField, Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
 import { formatDate, monthGrid, monthLabel, parseDate, shiftDay, shiftMonth, weekday } from './flight'
+
+/** The fields a song question will take more than one name for. Not the artist:
+ *  a song has one, and another name for that is a different act. */
+const ALT_FIELDS: AnswerField[] = ['title', 'album']
 
 const QTYPES: Qtype[] = ['rarest', 'song', 'album']
 
@@ -762,7 +766,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
     ? LIMITS : [...LIMITS, question.time_limit_sec].sort((a, b) => a - b)
   const asked = Object.values(asksOf(question)).filter(Boolean).length
   const total = fullAnswerPoints(question, tiers)
-  const loose = question.answers.filter(answer => !answer.seeded).length
+  const loose = question.answers.filter(answer => !answer.seeded && !answer.field).length
 
   /** Answers out of the catalog land beside whatever was typed by hand, and a
    *  name already in the table is not added twice -- normalised the way the
@@ -798,6 +802,16 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
   const setAsked = (patch: Partial<DraftQuestion>) => {
     const next = { ...question, ...patch }
     onChange({ ...next, answers: reseedAnswers(next, tiers[1]?.id ?? null) })
+  }
+
+  /** Another right name for one of the fields: a title spelled a second way, or
+   *  the other record a song sits on. It lands under the names that field already
+   *  has, and scores what the field scores, so it carries no tier of its own. */
+  function addName(field: AnswerField) {
+    const rows = [...question.answers]
+    const last = rows.map(row => row.field === field).lastIndexOf(true)
+    rows.splice(last < 0 ? rows.length : last + 1, 0, { display: '', tier_id: null, field })
+    set({ answers: rows })
   }
 
   const choose = (next: DraftPick) =>
@@ -903,20 +917,28 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
                             token={token} onCollect={collect} />
             </details>
           )}
-          {question.answers.map((answer, index) => (
-            <div className="answer-row" key={index}>
-              <input value={answer.display} maxLength={100} aria-label={`Answer ${index + 1}`}
+          {question.answers.map((answer, index) => {
+            const alt = !answer.seeded && answer.field    // another name for a field
+            return (
+            <div className={alt ? 'answer-row alt' : 'answer-row'} key={index}>
+              {alt && <span className="or">or</span>}
+              <input value={answer.display} maxLength={100}
+                     aria-label={alt ? `Another ${answer.field}` : `Answer ${index + 1}`}
                      onChange={e => set({ answers: question.answers.map((row, i) =>
                        i === index ? { ...row, display: e.target.value } : row) })} />
-              <select value={tierValue(answer)} aria-label={`Tier for answer ${index + 1}`}
-                      onChange={e => set({ answers: question.answers.map((row, i) =>
-                        i === index ? { ...row, ...tierChange(e.target.value) } : row) })}>
-                <TierOptions tiers={tiers} />
-              </select>
+              {/* An alternative is the same answer said differently, so it is worth
+                  what its field is worth and has nothing of its own to set. */}
+              {!alt && (
+                <select value={tierValue(answer)} aria-label={`Tier for answer ${index + 1}`}
+                        onChange={e => set({ answers: question.answers.map((row, i) =>
+                          i === index ? { ...row, ...tierChange(e.target.value) } : row) })}>
+                  <TierOptions tiers={tiers} />
+                </select>
+              )}
               <button className="chip" type="button" aria-label={`Remove answer ${index + 1}`}
                       onClick={() => set({ answers: question.answers.filter((_, i) => i !== index) })}>×</button>
             </div>
-          ))}
+          )})}
           {/* One row instead of a combination per line: the moderator says what
               getting everything right is worth, and expandAnswers writes the rows
               that carry it. Only when there is more than one field -- with one,
@@ -938,6 +960,14 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
                   onClick={() => set({ answers: [...question.answers, { display: '', tier_id: null }] })}>
             + answer
           </button>
+          {/* A song is one recording but not always one name: it can be titled two
+              ways, and it can sit on a single, an album and a compilation. An album
+              question is the record itself, so it has only the one. */}
+          {question.qtype === 'song' && ALT_FIELDS.filter(field => asksOf(question)[field]).map(field => (
+            <button key={field} className="chip" type="button" onClick={() => addName(field)}>
+              + another {field}
+            </button>
+          ))}
           {/* Down the list as it reads: Nebula at the top, Supernova at the bottom.
               Only where a ladder means anything -- a song question's fields are
               three different questions, not one list from common to obscure. */}
@@ -951,7 +981,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
               should be too. The seeded field rows are not "added", so they stay. */}
           {loose > 0 && (
             <button className="chip scrub" type="button"
-                    onClick={() => set({ answers: question.answers.filter(answer => answer.seeded) })}>
+                    onClick={() => set({ answers: question.answers.filter(answer => answer.seeded || answer.field) })}>
               remove all {loose}
             </button>
           )}

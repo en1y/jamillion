@@ -17,8 +17,18 @@ export interface DraftAnswer {
    *  expandAnswers works out for a combination of fields, or a 0 the moderator
    *  chose to say "accepted, but worth nothing". */
   points?: number
+  /** The field this row is a name for, when it is one of them: the row the
+   *  catalog seeded, and every alternative the moderator added beside it. A
+   *  field can have more than one right name -- a title spelled two ways, a song
+   *  that sits on two records -- and they are all worth what the field is worth.
+   *  'full' is the written key's one other tag: the combination carrying the
+   *  bonus, which is the one row whose tier was not worked out from the fields. */
+  field?: AnswerField | 'full'
   seeded?: boolean
 }
+
+/** The fields a song question asks for, in the order Play lays them out. */
+export type AnswerField = 'artist' | 'title' | 'album'
 
 /** A track or an album the moderator picked, flattened to what the card shows.
  *  `album` is the record a *track* came from, which ask_album asks players for. */
@@ -71,35 +81,53 @@ export const emptyDraft = (quiz_date: string): Draft => ({
 function absorb(question: DraftQuestion): DraftQuestion {
   const pick = question.qtype === 'song' ? question.track
              : question.qtype === 'album' ? question.album : null
-  const fields = pick ? prefillAnswers(pick, asksOf(question), null).map(row => row.display) : []
-  if (fields.length <= 1) return question
+  if (!pick) return question
+  const seeds = prefillAnswers(pick, asksOf(question), null)
+  if (seeds.length === 0) return question
 
-  const full = (1 << fields.length) - 1
-  const fullKey = normalizeAnswer(fields.join(' — '))
-  const wanted = new Set(fields.map(normalizeAnswer))
+  const seedKeys = new Set(seeds.map(seed => normalizeAnswer(seed.display)))
+  // A second name for a field says which field it is a name for; it cannot be
+  // told from the catalog, which only knows the first one.
+  const alts = question.answers.filter(answer =>
+    answer.field && answer.display.trim() && !seedKeys.has(normalizeAnswer(answer.display)))
+  const names = seeds.map(seed =>
+    [seed, ...alts.filter(alt => alt.field === seed.field)])
+
+  const full = (1 << seeds.length) - 1
+  const fullKey = normalizeAnswer(seeds.map(seed => seed.display).join(' — '))
   const combos = new Set(Array.from({ length: full }, (_, i) => full - i)
-    .map(mask => fields.filter((_, bit) => mask & (1 << bit)))
-    .filter(parts => parts.length > 1)
-    .map(parts => normalizeAnswer(parts.join(' — '))))
+    .map(mask => names.filter((_, bit) => mask & (1 << bit)))
+    .filter(groups => groups.length > 1)
+    .flatMap(groups => spellings(groups))
+    .map(normalizeAnswer))
 
   const typed: DraftAnswer[] = []
   const stored = new Map<string, DraftAnswer>()
   let fullTier: number | null = null
+  // A bonus says so. Before it did, the only clue was the tier on the row for
+  // every field right -- which is the top field's tier when there is no bonus at
+  // all, so a day written then keeps its bonus only if it names another tier.
+  const tagged = question.answers.some(answer => answer.field === 'full')
+  const fieldTiers = new Set(question.answers
+    .filter(answer => seedKeys.has(normalizeAnswer(answer.display)))
+    .map(answer => answer.tier_id))
   for (const answer of question.answers) {
     const key = normalizeAnswer(answer.display)
-    if (key === fullKey) fullTier = answer.tier_id
-    else if (combos.has(key)) continue
-    else if (wanted.has(key) && !stored.has(key)) stored.set(key, answer)
+    if (key === fullKey && seeds.length > 1) {
+      if (tagged ? answer.field === 'full' : !fieldTiers.has(answer.tier_id)) fullTier = answer.tier_id
+    } else if (combos.has(key)) continue
+    else if (seedKeys.has(key) && !stored.has(key)) stored.set(key, answer)
+    else if (answer.field) continue                  // an alternative, kept below
     else typed.push(answer)
   }
-  const seeded = fields.map(display => {
-    const was = stored.get(normalizeAnswer(display))
-    return {
-      display, tier_id: was?.tier_id ?? null, seeded: true,
+  const rebuilt = names.flatMap(([seed, ...rest]) => {
+    const was = stored.get(normalizeAnswer(seed.display))
+    return [{
+      display: seed.display, tier_id: was?.tier_id ?? null, field: seed.field, seeded: true,
       ...(was?.points === undefined ? {} : { points: was.points }),
-    }
+    }, ...rest.map(alt => ({ display: alt.display, tier_id: null, field: alt.field }))]
   })
-  return { ...question, full_tier_id: fullTier, answers: [...seeded, ...typed] }
+  return { ...question, full_tier_id: fullTier, answers: [...rebuilt, ...typed] }
 }
 
 /** A saved day, opened for editing. Positions are 1..7 and the backend orders by
@@ -134,6 +162,7 @@ export function fromQuiz(quiz: ModQuiz): Draft {
       answers: question.answers.map(answer => ({
         display: answer.display, tier_id: answer.tier_id,
         ...(answer.points === null || answer.points === undefined ? {} : { points: answer.points }),
+        ...(answer.field ? { field: answer.field } : {}),
       })),
     })
   }
@@ -160,10 +189,11 @@ export function toPayload(draft: Draft, tiers: TierPoints[] = []) {
         time_limit_sec: question.time_limit_sec,
         answers: expandAnswers(question, tiers)
           .filter(answer => answer.display.trim())
-          .map(({ display, tier_id, points }) => ({
+          .map(({ display, tier_id, points, field }) => ({
             display: display.trim(),
             ...(tier_id === null ? {} : { tier_id }),
             ...(points === undefined ? {} : { points }),
+            ...(field && question.qtype === 'song' ? { field } : {}),
           })),
       }
       if (question.qtype === 'song') {
@@ -219,13 +249,14 @@ export interface TierPoints { id: number; points: number }
  *  by expandAnswers rather than listed for the moderator to read past. */
 export function prefillAnswers(pick: DraftPick, asks: ReturnType<typeof asksOf>,
                                partialTier: number | null = null): DraftAnswer[] {
-  return [
-    asks.artist ? pick.artist : '',
-    asks.title ? pick.title : '',
-    asks.album ? pick.album ?? '' : '',
-  ].map(part => part.trim())
-   .filter(Boolean)
-   .map(display => ({ display, tier_id: partialTier, seeded: true }))
+  const parts: [AnswerField, string][] = [
+    ['artist', asks.artist ? pick.artist : ''],
+    ['title', asks.title ? pick.title : ''],
+    ['album', asks.album ? pick.album ?? '' : ''],
+  ]
+  return parts.map(([field, part]) => [field, part.trim()] as const)
+              .filter(([, part]) => part)
+              .map(([field, display]) => ({ display, tier_id: partialTier, field, seeded: true }))
 }
 
 /** The question's answers after a pick or an asked-for field changed. Seeded rows
@@ -233,14 +264,34 @@ export function prefillAnswers(pick: DraftPick, asks: ReturnType<typeof asksOf>,
  *  a new seed -- in which case the seed wins rather than the two becoming a clash
  *  that draftProblems has to report. */
 export function reseedAnswers(question: DraftQuestion, partialTier: number | null): DraftAnswer[] {
-  const typed = question.answers.filter(answer => !answer.seeded && answer.display.trim())
+  const kept = question.answers.filter(answer => !answer.seeded && answer.display.trim())
   const pick = question.qtype === 'song' ? question.track
              : question.qtype === 'album' ? question.album : null
-  if (!pick) return typed
+  // An alternative is a second name for a field, so it goes when the field does.
+  if (!pick) return kept.filter(answer => !answer.field)
   const seeds = prefillAnswers(pick, asksOf(question), partialTier)
+  const asked = new Set(seeds.map(seed => seed.field))
+  const alts = question.qtype === 'song'
+    ? kept.filter(answer => answer.field && asked.has(answer.field)) : []
   const taken = new Set(seeds.map(seed => normalizeAnswer(seed.display)))
-  return [...seeds, ...typed.filter(answer => !taken.has(normalizeAnswer(answer.display)))]
+  const free = (answer: DraftAnswer) => !taken.has(normalizeAnswer(answer.display))
+  return [
+    ...seeds.flatMap(seed => [seed, ...alts.filter(alt => alt.field === seed.field && free(alt))]),
+    ...kept.filter(answer => !answer.field && free(answer)),
+  ]
 }
+
+/** Every name one field will accept: the catalog's, then the moderator's
+ *  alternatives. `rows` is the question's answers, already emptied of blanks. */
+const namesOf = (rows: DraftAnswer[], seed: DraftAnswer): DraftAnswer[] =>
+  [seed, ...rows.filter(row => !row.seeded && row.field && row.field === seed.field)]
+
+/** One display per way of naming the chosen fields: the catalog's names, and
+ *  every alternative in place of one of them. */
+const spellings = (groups: DraftAnswer[][]): string[] =>
+  groups.reduce<string[][]>(
+    (so_far, group) => so_far.flatMap(prefix => group.map(name => [...prefix, name.display.trim()])),
+    [[]]).map(parts => parts.join(' — '))
 
 /** What actually goes in the answer key. A player answers a song question field
  *  by field and the fields arrive joined, so every combination of them needs a
@@ -256,10 +307,16 @@ export function reseedAnswers(question: DraftQuestion, partialTier: number | nul
  *  With a single field asked there is no combination: that row is the answer, at
  *  its own tier and with no override. Rows the moderator typed pass through. */
 export function expandAnswers(question: DraftQuestion, tiers: TierPoints[]): DraftAnswer[] {
-  const typed = question.answers.filter(answer => !answer.seeded && answer.display.trim())
-  const fields = question.answers.filter(answer => answer.seeded && answer.display.trim())
+  const rows = question.answers.filter(answer => answer.display.trim())
+  const typed = rows.filter(answer => !answer.seeded && !answer.field)
+  const fields = rows.filter(answer => answer.seeded)
+  // A field is a list of names, not a name: everything it accepts scores the same.
+  const groups = fields.map(seed => namesOf(rows, seed))
+  const bare = (row: DraftAnswer) => ({ display: row.display, tier_id: row.tier_id, points: row.points })
   if (question.qtype === 'rarest' || fields.length <= 1)
-    return [...fields.map(({ display, tier_id, points }) => ({ display, tier_id, points })), ...typed]
+    return [...groups.flatMap(group => group.map(name =>
+              ({ ...bare(group[0]), display: name.display, field: name.field }))),
+            ...typed.map(bare)]
 
   const worth = (row: DraftAnswer) => row.points ?? tiers.find(tier => tier.id === row.tier_id)?.points
   // "by rarity" is null and can reach any tier, so a combination holding one keeps
@@ -270,8 +327,9 @@ export function expandAnswers(question: DraftQuestion, tiers: TierPoints[]): Dra
 
   const full = (1 << fields.length) - 1
   // Counting down puts the whole answer first and the single fields last.
-  const rows = Array.from({ length: full }, (_, i) => full - i).map(mask => {
-    const parts = fields.filter((_, bit) => mask & (1 << bit))
+  const key = Array.from({ length: full }, (_, i) => full - i).flatMap(mask => {
+    const chosen = groups.filter((_, bit) => mask & (1 << bit))
+    const parts = chosen.map(group => group[0])
     const whole = mask === full
     const each = parts.map(worth)
     // A field left "by rarity", or a tier list that has not loaded yet, means
@@ -280,17 +338,24 @@ export function expandAnswers(question: DraftQuestion, tiers: TierPoints[]): Dra
       ? each.reduce((total, points) => total + (points ?? 0), 0) +
         (whole ? tiers.find(tier => tier.id === question.full_tier_id)?.points ?? 0 : 0)
       : undefined
-    const row: DraftAnswer = {
-      display: parts.map(part => part.display.trim()).join(' — '),
-      tier_id: whole && question.full_tier_id !== null ? question.full_tier_id : best(parts),
-    }
-    // A single field is left on its tier so the review queue's select still works
-    // on it -- unless the moderator set its points by hand, which has to survive.
-    if (sum !== undefined && (parts.length > 1 || parts[0].points !== undefined))
-      row.points = Math.min(sum, 700)
-    return row
+    const tier_id = whole && question.full_tier_id !== null ? question.full_tier_id : best(parts)
+    // ponytail: every spelling of every combination, so two names on two fields
+    // is nine rows. The key is written once a day and read by an index.
+    return spellings(chosen).map(display => {
+      const row: DraftAnswer = { display, tier_id }
+      // Which rows say what they are: a single name, and the bonus row, so that
+      // reopening the day does not have to guess either back.
+      if (whole && question.full_tier_id !== null) row.field = 'full'
+      // A single field is left on its tier so the review queue's select still works
+      // on it -- unless the moderator set its points by hand, which has to survive.
+      if (sum !== undefined && (parts.length > 1 || parts[0].points !== undefined))
+        row.points = Math.min(sum, 700)
+      // Only a row that is one field's name is that field's name.
+      if (parts.length === 1) row.field = parts[0].field
+      return row
+    })
   })
-  return [...rows, ...typed]
+  return [...key, ...typed.map(bare)]
 }
 
 /** What a fully correct answer scores, for the editor to print beside the bonus.
