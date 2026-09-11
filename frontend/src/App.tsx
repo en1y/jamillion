@@ -1,15 +1,30 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { getPlayer, supabase } from './supabase'
+import { getCeilings, getPlayer, supabase } from './supabase'
 import type { Player } from './supabase'
 import { getToday } from './api'
 import type { Today } from './api'
 import { Play, Results, Scene } from './Play'
+import type { Mood } from './Play'
+import { useCountUp } from './count'
 import { Flights } from './Flights'
 import { Editor } from './Editor'
 import { Admin } from './Admin'
-import { altitudeAu, passed } from './flight'
+import { altitudeAu, ceilingFor, legs, passed } from './flight'
+import { setPrefs, sfx, usePrefs } from './prefs'
+import { Settings } from './Settings'
+
+/** The body just passed and the one coming up, with the gap in AU and in points. */
+function Legs({ au, max }: { au: number; max: number }) {
+  const { behind, ahead } = legs(au, max)
+  return (
+    <span className="legs">
+      <span className="leg"><i>▼</i> {behind.name} <b>{behind.au.toFixed(1)} AU · {behind.points} pts</b></span>
+      {ahead && <span className="leg ahead"><i>▲</i> {ahead.name} <b>{ahead.au.toFixed(1)} AU · {ahead.points} pts</b></span>}
+    </span>
+  )
+}
 import { navigate, useRoute } from './routing'
 import './App.css'
 
@@ -23,15 +38,44 @@ function App() {
   const [retry, setRetry] = useState(0)
   const [quiz, setQuiz] = useState<{ key: string; today: Today | null } | null>(null)
   const [flying, setFlying] = useState(false)
+  const [settings, setSettings] = useState(false)
+  const { sfx: sound } = usePrefs()
+  // Each day's ceiling in points, from the key, by date. Loaded once.
+  const [ceilings, setCeilings] = useState<Record<string, number>>({})
+  useEffect(() => { getCeilings().then(setCeilings).catch(() => {}) }, [])
   // What the scene behind the page shows: the flight's running total while flying,
   // else the day's attempt. Keyed to the identity so a sign-out does not keep it.
   const [flown, setFlown] = useState<{ who: string; points: number } | null>(null)
+  // The rocket's reaction to the last verdict; it wears off on its own.
+  const [mood, setMood] = useState<Mood>(null)
+  useEffect(() => {
+    if (!mood) return
+    const timer = setTimeout(() => setMood(null), 1500)
+    return () => clearTimeout(timer)
+  }, [mood])
   const [screen, arg] = useRoute()
   const onAccount = screen === 'account'
   const onFlights = screen === 'flights'
   const onEditor = screen === 'editor'
   const onAdmin = screen === 'admin'
   const away = onAccount || onFlights || onEditor || onAdmin
+  // The wheel over bare sky pulls the camera out, on the play page only, and only
+  // when nothing of the page is under the cursor: cards, HUD, buttons and text
+  // keep their scroll. The gauges are pointer-transparent, so they count as sky.
+  const [zoom, setZoom] = useState(1)
+  useEffect(() => {
+    if (away) return
+    const sky = (target: EventTarget | null) => target instanceof Element &&
+      (target.tagName === 'MAIN' || target.tagName === 'HTML' || target.tagName === 'BODY' || target.id === 'root' ||
+       target.classList.contains('launchpad') || target.classList.contains('spacer'))
+    const wheel = (event: WheelEvent) => {
+      if (!sky(event.target)) return
+      event.preventDefault()
+      setZoom(z => Math.min(1, Math.max(0.12, z * (event.deltaY > 0 ? 0.85 : 1.18))))
+    }
+    addEventListener('wheel', wheel, { passive: false })
+    return () => removeEventListener('wheel', wheel)
+  }, [away])
 
   useEffect(() => {
     if (!supabase) return
@@ -60,7 +104,9 @@ function App() {
   const today = quiz?.key === requestKey ? quiz.today : undefined
   const who = token ?? 'guest'
   const points = flown?.who === who ? flown.points : today?.attempt?.total_points ?? 0
-  const au = altitudeAu(points)
+  const max = today ? ceilingFor(today, ceilings) : 0
+  const au = altitudeAu(points, max)
+  const ticking = useCountUp(points)      // the header's counters crank up to the new total
 
   useEffect(() => {
     if (!initialized) return
@@ -112,27 +158,40 @@ function App() {
   const passport = loading ? 'passport ⟳' : session ? (player?.profile?.username ?? 'account') : 'sign in'
 
   return (<>
-    <Scene au={au} />
+    <Scene au={au} mood={mood} zoom={zoom} />
+    {today && !away && (
+      // Krillion's depth and score gauges: pinned to the top corners, over everything.
+      // Keyed on the total so the jolt replays on every new score.
+      <div key={points} className={points ? 'gauges bump' : 'gauges'} role="status"
+           aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
+        <span className="gauge alt"><small>ALTITUDE</small><b>{altitudeAu(ticking, max).toFixed(1)} AU</b></span>
+        <span className="gauge score"><small>SCORE</small><b>{ticking}</b></span>
+        <Legs au={altitudeAu(ticking, max)} max={max} />
+      </div>
+    )}
     <main className={flying ? 'flying' : undefined}>
       <header>
         <a className="brand" href="/">✦ JAMILLION</a>
-        {today && !away && (
-          <span className="stats" role="status" aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
-            <span className="stat"><small>ALT</small>{au.toFixed(1)} AU</span>
-            <span className="stat"><small>SCORE</small>{points}</span>
-          </span>
-        )}
-        {away
-          ? <a className="chip" href="/">◀ launchpad</a>
-          : <a className="chip" href="/account">{passport}</a>}
+        <span className="head-chips">
+          {/* the mute is one press, like Krillion's; the rest is behind the gear */}
+          <button className="chip" type="button" aria-pressed={sound} title="Sound effects"
+                  aria-label={sound ? 'Mute sound effects' : 'Unmute sound effects'}
+                  onClick={() => { setPrefs({ sfx: !sound }); if (!sound) sfx('brief') }}>{sound ? '🔊' : '🔇'}</button>
+          <button className="chip" type="button" aria-label="Settings" title="Settings"
+                  onClick={() => { sfx('click'); setSettings(true) }}>⚙</button>
+          {away
+            ? <a className="chip" href="/">◀ launchpad</a>
+            : <a className="chip" href="/account">{passport}</a>}
+        </span>
       </header>
+      <Settings open={settings} onClose={() => setSettings(false)} />
 
       {onEditor ? (
         <Editor date={arg} token={token} admin={player?.role === 'admin'} />
       ) : onAdmin ? (
         <Admin tab={arg} token={token} me={player?.profile?.id} />
       ) : onFlights ? (
-        <Flights token={token} signedIn={Boolean(session)} tiers={today?.tiers} />
+        <Flights token={token} signedIn={Boolean(session)} tiers={today?.tiers} ceilings={ceilings} />
       ) : onAccount ? (
         <section className="panel" aria-labelledby="account-heading">
           <p className="eyebrow">FLIGHT PASSPORT</p>
@@ -166,9 +225,10 @@ function App() {
       ) : (
         <section className={landed ? 'launchpad landed' : 'launchpad'}>
           {flying ? (
-            <Play today={today!} token={token} onPoints={next => setFlown({ who, points: next })} onDone={() => { setFlying(false); setRetry(n => n + 1) }} />
+            <Play today={today!} max={max} token={token} onDone={() => { setFlying(false); setRetry(n => n + 1) }}
+                  onPoints={(next, reaction) => { setFlown({ who, points: next }); if (reaction) setMood(reaction) }} />
           ) : landed ? (
-            <Results today={today!} token={token} />
+            <Results today={today!} max={max} token={token} />
           ) : (<>
             <h1 className="glitch wave" aria-label="JAMILLION">
               {'JAMILLION'.split('').map((letter, i) =>
@@ -186,10 +246,10 @@ function App() {
               <ol className="tiers">
                 {today?.tiers.map(tier => <li key={tier.name}><span>{tier.name}</span><b>{tier.points}</b></li>)}
               </ol>
-              <p className="meta">700 points ≈ 120 AU: the heliopause, the edge of the Sun's reach.</p>
+              <p className="meta">A perfect day{max ? `, ${max} points,` : ''} lands on Pluto, 39.5 AU out.</p>
             </details>
 
-            <button className="cta big" disabled={!today || loading} onClick={() => setFlying(true)}>
+            <button className="cta big" disabled={!today || loading} onClick={() => { sfx('send'); setFlying(true) }}>
               {today?.attempt ? '▲ RESUME ASCENT ▲' : '▲ BEGIN ASCENT ▲'}
             </button>
             <p className="preflight" role="status">{

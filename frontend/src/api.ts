@@ -61,7 +61,12 @@ export interface Progress {
   question: Question | null
 }
 
-export interface Result { timed_out: boolean; correct: boolean; tier: string | null; points: number }
+/** One box of a song or album question, and whether it landed. */
+export interface FieldResult { field: string; text: string; correct: boolean; points: number; tier: string | null }
+export interface Result { timed_out: boolean; correct: boolean; tier: string | null; points: number
+                          fields?: FieldResult[] }
+/** A box parked at the tower: stored, nothing scored, nothing given away. */
+export interface Stored { stored: string; remaining: string[] }
 export interface Answered extends Progress { result: Result }
 
 export class ApiError extends Error {
@@ -116,6 +121,14 @@ export const submitAnswer = (attemptId: number, question_id: number, text: strin
   call<Answered>(`/api/attempts/${attemptId}/answers`, token,
     { method: 'POST', body: JSON.stringify({ question_id, text }) })
 
+/** One box of a song or album question. The tower keeps it until `settle` -- the
+ *  player's last press -- so a box can be retyped, and nothing is scored or given
+ *  away while there are boxes left to fill. */
+export const submitField = (attemptId: number, question_id: number, field: string, text: string,
+                            settle: boolean, token?: string) =>
+  call<Answered | Stored>(`/api/attempts/${attemptId}/answers`, token,
+    { method: 'POST', body: JSON.stringify({ question_id, field, text, settle }) })
+
 export type SuggestKind = 'artist' | 'title' | 'album'
 
 /** Catalog completions for the artist, song title and album title fields. */
@@ -129,7 +142,7 @@ export const isKnown = (kind: SuggestKind, q: string) =>
   call<{ known: boolean }>(`/api/known?kind=${kind}&q=${encodeURIComponent(q)}`)
 
 export interface RevealedAnswer { display: string; tier: string | null; points: number; yours: boolean }
-export interface RevealedQuestion { position: number; prompt: string; answers: RevealedAnswer[] }
+export interface RevealedQuestion { position: number; prompt: string; qtype: string; answers: RevealedAnswer[] }
 export interface Reveal {
   questions: RevealedQuestion[]
   dist: number[]

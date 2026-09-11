@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { getFlights, getReveal, isKnown, sendIdea, startAttempt, submitAnswer, suggest } from './api'
+import { getFlights, getReveal, isKnown, sendIdea, startAttempt, submitAnswer, submitField, suggest } from './api'
 import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
 import {
-  altitudeAu, bandFor, countdown, curveGeom, emojiFor, emojiForTier, EMPTY_LOG,
-  LANDMARKS, logDepth, MAX_POINTS, nextRollover, passed, SCORE_BANDS, shareText,
-  summarize, TIER_META, trackPx,
+  altitudeAu, bandFor, countdown, curveGeom, EMPTY_LOG,
+  LANDMARKS, logDepth, nextRollover, passed, PLUTO_AU, scoreBands, shareText,
+  slug, summarize, TIER_META, trackPx,
 } from './flight'
+import { useCountUp } from './count'
+import { setPrefs, sfx, usePrefs } from './prefs'
+import { TierIcon } from './Settings'
 
 interface Star { x: number; y: number; r: number; vx: number; vy: number; a: number; tw: number }
 interface Comet { x: number; y: number; vx: number; vy: number; len: number }
@@ -66,9 +69,16 @@ function throwComet(width: number, height: number): Comet {
   }
 }
 
-/** Drifting stars plus a comet whose tail always points opposite its velocity. */
-function Starfield() {
+const WARP_MS = 4200   // how long the stars stream after a climb: the trip, zoom out to zoom in
+
+/** Drifting stars plus a comet whose tail always points opposite its velocity.
+ *  When the altitude changes the stars streak downward past the rocket and
+ *  settle again over WARP_MS: the rocket is flying away, the sky says so. */
+function Starfield({ au }: { au: number }) {
   const canvas = useRef<HTMLCanvasElement>(null)
+  const warpAt = useRef(-Infinity)   // when the last climb began; the rush is read off the clock
+  const was = useRef(au)
+  useEffect(() => { if (au > was.current) warpAt.current = performance.now(); was.current = au }, [au])
   useEffect(() => {
     const node = canvas.current
     if (!node) return
@@ -85,44 +95,93 @@ function Starfield() {
       node!.width = Math.max(1, Math.round(width * dpr))
       node!.height = Math.max(1, Math.round(height * dpr))
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
-      far = sprinkle(90, width, height, 0.18)
-      mid = sprinkle(45, width, height, 0.38)
-      near = sprinkle(18, width, height, 0.7)
+      // Dense enough that a zoomed-out sky still reads as a sky: ~one star per 1500 px².
+      const per = width * height / 1500
+      far = sprinkle(Math.round(per * 0.62), width, height, 0.18)
+      mid = sprinkle(Math.round(per * 0.28), width, height, 0.38)
+      near = sprinkle(Math.round(per * 0.1), width, height, 0.7)
       comet = null
       wait = rand(200, 1200)
-      if (reduce) {
-        ctx!.clearRect(0, 0, width, height)
-        paint(far, 0); paint(mid, 0); paint(near, 0)
-      }
+      if (reduce) { ctx!.clearRect(0, 0, width, height); sky(0, 0) }
     }
 
-    function wrap(star: Star, dt: number) {
+    // Ease-in-out on the rush so the streaks build and fade rather than switch.
+    // Clock-based, not frame-based: a throttled tab still settles on time.
+    const surge = (now: number) => { const r = Math.max(0, 1 - (now - warpAt.current) / WARP_MS); return r * r * (3 - 2 * r) }
+
+    function wrap(star: Star, dt: number, boost: number) {
       star.x += star.vx * dt
-      star.y += star.vy * dt
+      star.y += star.vy * dt * (1 + boost)
       if (star.x < 0) star.x += width; else if (star.x > width) star.x -= width
       if (star.y > height) star.y -= height; else if (star.y < 0) star.y += height
     }
 
-    function paint(stars: Star[], now: number) {
-      for (const star of stars) {
-        const twinkle = 0.65 + 0.35 * Math.sin(now / 700 + star.tw)
-        ctx!.fillStyle = `rgba(232,241,255,${star.a * twinkle})`
-        ctx!.beginPath()
-        ctx!.arc(star.x, star.y, star.r, 0, Math.PI * 2)
-        ctx!.fill()
+    // One fill per brightness bucket instead of one per star: a few hundred stars
+    // cost four path fills a frame. Twinkle rides on the bucket, phase by bucket.
+    const BUCKETS = 4
+    // The sky zooms with the camera: read its live scale (wheel or trip), paint
+    // the field once at that scale into a tile and repeat the tile across the
+    // screen, anchored at the rocket point, so a zoomed-out sky is still full.
+    const cam = node.parentElement?.querySelector<HTMLElement>('.camera')
+    const tile = document.createElement('canvas')
+    const tctx = tile.getContext('2d')!
+    let s = 1, cx = 0, cy = 0
+    function lens() {
+      s = Math.min(1, (cam && parseFloat(getComputedStyle(cam).scale)) || 1)
+      const at = cam?.getBoundingClientRect(), box = node!.getBoundingClientRect()
+      cx = at ? at.left - box.left : width / 2
+      cy = at ? at.top - box.top : height / 2
+    }
+    function paint(g: CanvasRenderingContext2D, stars: Star[], now: number, boost: number) {
+      const floor = 0.4 / s   // a star never paints under 0.4 screen px
+      for (let b = 0; b < BUCKETS; b++) {
+        const twinkle = 0.65 + 0.35 * Math.sin(now / 700 + b * 1.7)
+        g.fillStyle = `rgba(232,241,255,${(0.35 + 0.6 * (b + 0.5) / BUCKETS) * twinkle})`
+        g.beginPath()
+        for (const star of stars) {
+          if (Math.floor((star.a - 0.35) / 0.6 * BUCKETS) % BUCKETS !== b) continue
+          const r = Math.max(floor, star.r)
+          g.moveTo(star.x + r, star.y)
+          g.arc(star.x, star.y, r, 0, Math.PI * 2)
+        }
+        g.fill()
       }
+      if (boost <= 1) return
+      // streaks behind the stars, as long as the distance each just flew
+      g.strokeStyle = 'rgba(232,241,255,0.4)'
+      g.lineWidth = 1 / s
+      g.beginPath()
+      for (const star of stars) {
+        const tail = star.vy * boost * 2
+        if (tail > 2) { g.moveTo(star.x, star.y - tail); g.lineTo(star.x, star.y) }
+      }
+      g.stroke()
+    }
+    // Every layer, through the lens: straight onto the screen at 1:1, else via the tile.
+    function sky(now: number, boost: number) {
+      lens()
+      if (s > 0.999) { paint(ctx!, far, now, boost); paint(ctx!, mid, now, boost); paint(ctx!, near, now, boost); return }
+      const dpr = Math.min(devicePixelRatio || 1, 2)
+      const tw = Math.max(1, Math.round(width * s * dpr)), th = Math.max(1, Math.round(height * s * dpr))
+      if (tile.width !== tw || tile.height !== th) { tile.width = tw; tile.height = th }
+      tctx.setTransform(tw / width, 0, 0, th / height, 0, 0)
+      tctx.clearRect(0, 0, width, height)   // in field units, under the transform, so the whole tile clears
+      paint(tctx, far, now, boost); paint(tctx, mid, now, boost); paint(tctx, near, now, boost)
+      const pattern = ctx!.createPattern(tile, 'repeat')!
+      pattern.setTransform(new DOMMatrix().translate(cx - cx * s, cy - cy * s).scale(1 / dpr))
+      ctx!.fillStyle = pattern
+      ctx!.fillRect(0, 0, width, height)
     }
 
     function frame(now: number) {
       const dt = Math.min(3, (now - last) / 16.67)
       last = now
+      const boost = surge(now) * 70   // near stars fly ~50 px a frame at full rush
       ctx!.clearRect(0, 0, width, height)
-      for (const star of far) wrap(star, dt)
-      for (const star of mid) wrap(star, dt)
-      for (const star of near) wrap(star, dt)
-      paint(far, now)
-      paint(mid, now)
-      paint(near, now)
+      for (const star of far) wrap(star, dt, boost)
+      for (const star of mid) wrap(star, dt, boost)
+      for (const star of near) wrap(star, dt, boost)
+      sky(now, boost)
 
       if (!comet) {
         wait -= dt * 16.67
@@ -133,21 +192,30 @@ function Starfield() {
         const mag = Math.hypot(comet.vx, comet.vy) || 1
         const tx = comet.x - (comet.vx / mag) * comet.len
         const ty = comet.y - (comet.vy / mag) * comet.len
+        // The comet lives in the home field: through the lens it shrinks with the
+        // zoom and flies on across the neighbouring fields until it leaves its own.
+        ctx!.save()
+        ctx!.translate(cx - cx * s, cy - cy * s)
+        ctx!.scale(s, s)
         const tail = ctx!.createLinearGradient(tx, ty, comet.x, comet.y)
         tail.addColorStop(0, '#fff0')
         tail.addColorStop(0.7, '#fff6')
         tail.addColorStop(1, '#ffff')
         ctx!.strokeStyle = tail
-        ctx!.lineWidth = 2
+        ctx!.lineWidth = Math.max(2, 1 / s)   // never thinner than a screen pixel
         ctx!.beginPath()
         ctx!.moveTo(tx, ty)
         ctx!.lineTo(comet.x, comet.y)
         ctx!.stroke()
         ctx!.fillStyle = '#fff'
         ctx!.beginPath()
-        ctx!.arc(comet.x, comet.y, 1.8, 0, Math.PI * 2)
+        ctx!.arc(comet.x, comet.y, Math.max(1.8, 0.6 / s), 0, Math.PI * 2)
         ctx!.fill()
-        if (comet.x < -200 || comet.x > width + 200 || comet.y < -200 || comet.y > height + 200) {
+        ctx!.restore()
+        // gone only once it is off the screen, not off its own field: zoomed out
+        // it keeps flying across the neighbouring tiles
+        const left = cx - cx / s, top = cy - cy / s
+        if (comet.x < left - 200 || comet.x > left + width / s + 200 || comet.y < top - 200 || comet.y > top + height / s + 200) {
           comet = null
           wait = rand(5000, 14000)
         }
@@ -157,7 +225,7 @@ function Starfield() {
 
     resize()
     if (reduce) {
-      paint(far, 0); paint(mid, 0); paint(near, 0)
+      sky(0, 0)
     } else {
       raf = requestAnimationFrame(frame)
     }
@@ -170,32 +238,63 @@ function Starfield() {
 
 /** The solar system, always behind the page. The track slides down as you climb,
  *  so the rocket stays put and the landmarks drift past: the camera follows you. */
-export function Scene({ au }: { au: number }) {
+export type Mood = 'boost' | 'tumble' | null
+
+/** `zoom` is the player's own, from the wheel; a climb plays the trip on top of
+ *  it: the camera pulls out until both planets fit, flies the leg, and pushes
+ *  back in, so the progress between the planets is seen rather than implied. */
+export function Scene({ au, mood, zoom = 1 }: { au: number; mood?: Mood; zoom?: number }) {
+  const skin = usePrefs().planets   // rendered spheres, flat discs, or a bare chart
+  const camera = useRef<HTMLDivElement>(null)
+  const was = useRef(au)
+  useEffect(() => {
+    if (au > was.current && camera.current) {
+      const node = camera.current
+      node.classList.remove('trip')
+      void node.offsetWidth                  // restart the animation on a back-to-back climb
+      node.classList.add('trip')
+    }
+    was.current = au
+  }, [au])
   return (
-    <div className="scene" aria-hidden="true" style={{ '--y': `${trackPx(au)}px` } as CSSProperties}>
-      <Starfield />
-      <div className="track">
+    <div className={`scene planets-${skin} ${mood ?? ''}`} aria-hidden="true" style={{ '--y': `${trackPx(au)}px`, '--zoom': zoom } as CSSProperties}>
+      <Starfield au={au} />
+      <div className="camera" ref={camera}>
+      <div className="track" style={{ height: `${trackPx(PLUTO_AU) + 300}px` }}>
         <span className="sun" />
         {LANDMARKS.map((mark, i) => (
           <span key={mark.name}
-                className={`landmark ${i % 2 ? 'left' : 'right'}${mark.size ? '' : ' tick'}`}
+                className={`landmark ${i % 2 ? 'left' : 'right'}${mark.size ? ` planet-${slug(mark.name)}` : ' tick'}`}
                 style={{ '--px': `${trackPx(mark.au)}px`, '--size': `${mark.size ?? 0}px`,
                          '--color': mark.color ?? 'transparent' } as CSSProperties}>
             <i />{mark.name}
           </span>
         ))}
       </div>
-      <span className="rocket">▲</span>
+      </div>
+      <span className={`rocket ${mood ?? ''}`}>▲</span>
     </div>
   )
 }
 
+const LEAD_IN = 1000        // the page settles before the music starts
+/** Ramp at each edge of the clip, as a share of it: sqrt keeps it proportional but
+ *  ever thinner -- 15% of a 4 s window, 5% of a 30 s one, so a long snippet is not
+ *  spent fading. Capped at 2 s, floored at 0.2 so a degenerate window still ramps. */
+const edgeOf = (len: number) => Math.min(2, Math.max(0.2, 0.3 * Math.sqrt(len)))
+
 function Snippet({ question }: { question: Question }) {
   const audio = useRef<HTMLAudioElement>(null)
+  const fade = useRef(0)
+  const fadeTo = useRef(1)
   const [playing, setPlaying] = useState(false)
+  // Snippet remounts per question, so the level lives in the cabin settings, not
+  // here: it outlives the question, and the gear in the header moves the same knob.
+  const volume = usePrefs().music
   const start = question.snippet_start_sec ?? 0
   const end = start + (question.snippet_len_sec ?? 30)
   const [at, setAt] = useState(start)
+  const edge = edgeOf(end - start)
 
   // Seeking before the metadata lands is silently dropped, so the clip would start
   // at 0 and give away the intro. readyState >= 1 means the duration is known.
@@ -205,23 +304,52 @@ function Snippet({ question }: { question: Question }) {
     if (element.readyState >= 1) then(element)
     else element.addEventListener('loadedmetadata', () => then(element), { once: true })
   }
+  // ponytail: a 50 ms setInterval on element.volume, not a Web Audio gain node --
+  // no AudioContext to unlock, and the step is well under what an ear hears.
+  function ramp(element: HTMLAudioElement, to: number, then?: () => void) {
+    clearInterval(fade.current)
+    fadeTo.current = to
+    const step = (to - element.volume) / (edge * 20)
+    fade.current = setInterval(() => {
+      const next = element.volume + step
+      if (step === 0 || (step > 0 ? next >= to : next <= to)) {
+        element.volume = to
+        clearInterval(fade.current)
+        then?.()
+      } else element.volume = next
+    }, 50) as unknown as number
+  }
   function play(from?: number) {
     ready(element => {
       if (from !== undefined) element.currentTime = from
+      element.volume = 0
       // Browsers may refuse a play() the player did not ask for; the button covers it.
-      element.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
+      element.play().then(() => { setPlaying(true); ramp(element, volume) }).catch(() => setPlaying(false))
     })
   }
+  function stop(element: HTMLAudioElement) {
+    if (fadeTo.current === 0) return   // timeupdate fires four times a second; one ramp is enough
+    ramp(element, 0, () => element.pause())
+  }
   function toggle() {
-    if (playing) audio.current?.pause()
+    if (playing) { const element = audio.current; if (element) stop(element) }
     else play(at >= end - 0.25 ? start : undefined)   // at the end, start over
   }
   function scrub(to: number) {
     setAt(to)
     ready(element => { element.currentTime = to })
   }
-  // One attempt at autoplay when the question arrives.
-  useEffect(() => { play(start); return () => audio.current?.pause() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  function level(to: number) {
+    setPrefs({ music: to })
+    const element = audio.current
+    if (element) { clearInterval(fade.current); fadeTo.current = to; element.volume = to }   // the hand on the knob wins over a ramp
+  }
+  // One attempt at autoplay when the question arrives, a beat after the page lands.
+  useEffect(() => {
+    const element = audio.current
+    const timer = setTimeout(() => play(start), LEAD_IN)
+    return () => { clearTimeout(timer); clearInterval(fade.current); element?.pause() }
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const shown = Math.min(Math.max(at, start), end)
   return (
@@ -231,7 +359,10 @@ function Snippet({ question }: { question: Question }) {
              onTimeUpdate={event => {
                const element = event.currentTarget
                setAt(element.currentTime)
-               if (element.currentTime >= end) element.pause()   // the window, not the whole preview
+               // the window, not the whole preview -- and it dies down into the end of it.
+               // The ramp does the pausing; the hard stop is only there if it never lands.
+               if (element.currentTime >= end - edge) stop(element)
+               if (element.currentTime >= end + 0.5) element.pause()
              }} />
       <button className="play" type="button" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>
         {playing ? '❚❚' : '▶'}
@@ -239,6 +370,11 @@ function Snippet({ question }: { question: Question }) {
       <input type="range" min={start} max={end} step={0.1} value={shown}
              onChange={event => scrub(Number(event.target.value))} aria-label="Position in the snippet" />
       <span className="clock">{(shown - start).toFixed(0)}s / {(end - start).toFixed(0)}s</span>
+      <span className="volume">
+        <span aria-hidden="true">{volume === 0 ? '♪̸' : '♪'}</span>
+        <input type="range" min={0} max={1} step={0.01} value={volume}
+               onChange={event => level(Number(event.target.value))} aria-label="Volume" />
+      </span>
     </div>
   )
 }
@@ -269,11 +405,18 @@ function Countdown({ question, onExpire }: { question: Question; onExpire: () =>
     }, 250)
     return () => clearInterval(timer)
   }, [question, untimed])
-  if (untimed) return null
 
   const seconds = Math.ceil(left / 1000)
+  const late = seconds <= 5
+  // One blip a second over the last five: the clock, heard. Above the early
+  // return, like the rest, so an untimed question renders the same hooks.
+  useEffect(() => { if (!untimed && late && seconds > 0) sfx('tick') }, [seconds, late, untimed])
+  if (untimed) return null
   const style = { '--p': left / (question.time_limit_sec * 1000) } as CSSProperties
-  return <span className={seconds <= 5 ? 'ring late' : 'ring'} role="timer" style={style}><span>{seconds}</span></span>
+  return (<>
+    <span className={late ? 'ring late' : 'ring'} role="timer" style={style}><span>{seconds}</span></span>
+    {late && <i className="edge" aria-hidden="true" />}   {/* the screen's edges throb with the last seconds */}
+  </>)
 }
 
 interface Field { key: string; kind: SuggestKind | null; label: string }
@@ -314,8 +457,9 @@ function useSuggest(kind: SuggestKind | null, value: string) {
  *  this job, but browsers draw that one their own way or not at all, and on a
  *  three-field song question the player needs to see what is on offer. The list
  *  opens *upward*: these inputs live in the HUD along the bottom of the screen. */
-function Input({ field, value, onChange, autoFocus, invalid }: {
+function Input({ field, value, onChange, autoFocus, invalid, hint, onLeave }: {
   field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
+  hint?: 'next' | 'send'; onLeave?: (direction: -1 | 1) => void
 }) {
   const options = useSuggest(field.kind, value)
   const [open, setOpen] = useState(true)
@@ -333,10 +477,30 @@ function Input({ field, value, onChange, autoFocus, invalid }: {
   }
 
   function keys(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (shown.length === 0) return
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      const step = event.key === 'ArrowDown' ? 1 : -1
-      setCursor(at => Math.min(Math.max(at + step, -1), shown.length - 1))
+      // The arrows always mean the list: they bring back one that Escape dismissed,
+      // and they wrap through what was typed instead of stopping dead at either end.
+      const reopen = !open && options.length > 0 && !options.includes(value.trim())
+      if (shown.length === 0 && !reopen) {
+        // Nothing to browse: on a question with several boxes the arrows step
+        // between them instead, which is all up and down mean in a one-line field.
+        if (!onLeave) return                       // one box: the caret keeps the key
+        event.preventDefault()
+        return onLeave(event.key === 'ArrowDown' ? 1 : -1)
+      }
+      event.preventDefault()
+      if (reopen) { setOpen(true); setCursor(-1); return }
+      const to = at + (event.key === 'ArrowDown' ? 1 : -1)
+      return setCursor(to < -1 ? shown.length - 1 : to > shown.length - 1 ? -1 : to)
+    }
+    if (shown.length === 0) return
+    if (event.key === 'Tab') {
+      // Tab walks the list like the arrows do, and only leaves the field once it
+      // runs off the end of it -- the hands stay on the keys the guess is typed with.
+      const step = event.shiftKey ? -1 : 1
+      const to = at + step
+      if (to < -1 || to > shown.length - 1) return   // off the list: Tab does its usual job
+      setCursor(to)
       event.preventDefault()
     } else if (event.key === 'Enter' && at >= 0) {
       pick(shown[at])
@@ -355,7 +519,7 @@ function Input({ field, value, onChange, autoFocus, invalid }: {
              onChange={event => { setOpen(true); setCursor(-1); onChange(event.target.value) }}
              onKeyDown={keys}
              autoFocus={autoFocus} autoComplete="off" autoCapitalize="off" spellCheck={false}
-             enterKeyHint="send" maxLength={100} aria-label={field.label} placeholder={field.label}
+             enterKeyHint={hint ?? 'send'} maxLength={100} aria-label={field.label} placeholder={field.label}
              aria-invalid={invalid || undefined} />
       {shown.length > 0 && (
         <ul className="picks" id={`${field.key}-picks`} role="listbox" aria-label={`${field.label} from the catalog`}>
@@ -388,80 +552,165 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   const fields = fieldsFor(question)
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
-  const [unknown, setUnknown] = useState<Field[]>([])
+  const [unknown, setUnknown] = useState(false)
+  const [leaving, setLeaving] = useState(false)   // the card drifts off and the HUD sinks while the tower answers
   const sent = useRef(false)
   // What was already queried and refused, so pressing ANSWER again sends it.
   const queried = useRef<string | null>(null)
+  // The fields are asked one at a time: three boxes at once was three questions
+  // wearing one coat, and the catalog can only vet the box in front of you.
+  const [step, setStep] = useState(0)
+  const field = fields[Math.min(step, fields.length - 1)]
+  const finale = step >= fields.length - 1
   // Two fields become one answer, "Artist — Title", which normalises to the same
   // key as a moderator's "Artist Title"; a lone field matches the artist-only row.
-  const joined = fields.map(field => (values[field.key] ?? '').trim()).filter(Boolean).join(' — ')
+  const join = (all: Record<string, string>) =>
+    fields.map(field => (all[field.key] ?? '').trim()).filter(Boolean).join(' — ')
+  const joined = join(values)
   const typed = useRef('')
   useEffect(() => { typed.current = joined })      // the timer submits whatever is typed
+  useEffect(() => { sfx('brief') }, [])            // the tower opens the channel
 
-  async function send(value: string, expired = false) {
-    if (sent.current) return
-    sent.current = true
+  /** Posts the box in front of the player: a song or album question is answered a
+   *  box at a time, each its own request, and the tower keeps them until the last
+   *  press settles the question. A rarest question is that one press. Answers true
+   *  when the box was parked and the next one is due. */
+  async function post(all: Record<string, string>, settle: boolean, expired = false): Promise<boolean> {
+    if (sent.current) return false
+    if (settle) { sent.current = true; setLeaving(true) }
+    sfx(settle ? 'send' : 'type')
+    const value = (all[field.key] ?? '').trim()
     try {
-      onAnswered(await submitAnswer(attemptId, question.id, value, token), value, expired)
+      // The exit takes half a second whether or not the server is quicker; parking a
+      // box has no exit to wait for.
+      const [reply] = await Promise.all([
+        question.qtype === 'rarest' ? submitAnswer(attemptId, question.id, join(all), token)
+                                    : submitField(attemptId, question.id, field.key, value, settle, token),
+        settle ? new Promise(done => setTimeout(done, 500)) : Promise.resolve(),
+      ])
+      if ('result' in reply) { onAnswered(reply, join(all), expired); return false }
+      return true
     } catch (cause) {
       sent.current = false
+      setLeaving(false)
       // A refresh that raced the timer: the server has moved on, so ask it where we are.
-      if (cause instanceof Error && cause.message.includes('current question')) return onLost()
+      if (cause instanceof Error && cause.message.includes('current question')) { onLost(); return false }
       setError(cause instanceof Error ? cause.message : 'That answer did not reach the tower.')
+      return false
     }
   }
 
-  /** Fields holding something the music catalog does not know. Empty on a rarest
-   *  question (no kind to check), on an empty field (a deliberate skip), and
+  /** The clock: the box being typed goes as it stands and the question settles,
+   *  late. The boxes already parked keep whatever they earned. */
+  function expire() {
+    void post(question.qtype === 'rarest' ? { [field.key]: typed.current } : values, true, true)
+  }
+
+  /** True when this field holds something the music catalog does not know. False on
+   *  a rarest question (no kind to check), on an empty field (a deliberate skip), and
    *  whenever the check itself fails: a catalog hiccup must never eat a guess. */
-  async function unrecognised(): Promise<Field[]> {
-    const checks = fields
-      .filter(field => field.kind && (values[field.key] ?? '').trim())
-      .map(async field => (await isKnown(field.kind!, values[field.key].trim())).known ? null : field)
-    try {
-      return (await Promise.all(checks)).filter(field => field !== null)
-    } catch { return [] }
+  async function unrecognised(value: string): Promise<boolean> {
+    if (!field.kind || !value) return false
+    try { return !(await isKnown(field.kind, value)).known } catch { return false }
+  }
+
+  /** Move to another box of the same question, parking the one being left. Nothing
+   *  is scored: the question settles only on the last press, so a player can walk up
+   *  and down the boxes as often as they like. */
+  async function go(to: number) {
+    if (fields.length < 2 || to === step || to < 0 || to >= fields.length) return
+    const all = { ...values, [field.key]: (values[field.key] ?? '').trim() }
+    setValues(all)
+    setUnknown(false)
+    queried.current = null
+    if (await post(all, false)) setStep(to)
+  }
+
+  /** This field is settled: park it, then on to the next one or off to the verdict. */
+  async function advance(all: Record<string, string>) {
+    setValues(all)
+    setUnknown(false)
+    queried.current = null
+    if (await post(all, finale) && !finale) setStep(step + 1)
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (sent.current) return
-    // Checked once. Pressing ANSWER again sends it anyway, because the catalog is
+    const value = (values[field.key] ?? '').trim()
+    // Checked once. Pressing the button again sends it anyway, because the catalog is
     // the top artists rather than every recording, and a right answer it has never
     // heard of must not be trapped behind this.
-    if (queried.current !== joined) {
-      queried.current = joined
-      const bad = await unrecognised()
-      if (bad.length > 0) return setUnknown(bad)
+    if (queried.current !== value) {
+      queried.current = value
+      if (await unrecognised(value)) return setUnknown(true)
     }
-    setUnknown([])
-    void send(joined)
+    void advance({ ...values, [field.key]: value })
   }
 
   return (<>
-    <section className="card prompt">
+    <section className={leaving ? 'card prompt gone' : 'card prompt'}>
       <p className="eyebrow">QUESTION {question.position} / 7 <Dots answered={answered} /></p>
       <h2>{question.prompt}</h2>
       {question.qtype === 'song' && <Snippet question={question} />}
       {question.qtype === 'album' && question.cover && <img className="cover" src={question.cover} alt="Album cover" />}
     </section>
-    <div className="hud">
+    <div className={leaving ? 'hud sunk' : 'hud'}>
       <form onSubmit={submit}>
-        <Countdown question={question} onExpire={() => void send(typed.current, true)} />
-        <div className="fields">
-          {fields.map((field, i) => (
-            <Input key={field.key} field={field} value={values[field.key] ?? ''} autoFocus={i === 0}
-                   invalid={unknown.some(bad => bad.key === field.key)}
-                   onChange={value => { setUnknown([]); setValues(prev => ({ ...prev, [field.key]: value })) }} />
-          ))}
-        </div>
-        <button className="cta" type="submit">ANSWER ▲</button>
-        <button className="chip" type="button" onClick={() => void send('')}>skip</button>
+        <Countdown question={question} onExpire={expire} />
+        {/* Every box of the question at once, the one being typed open and the rest
+            waiting under it: a single box gave no sign that two more were coming,
+            and Enter read as "send the lot". */}
+        {fields.length > 1 ? (
+          <div className="reel">
+            <span className="reel-nav">
+              <button type="button" onClick={() => void go(step - 1)}
+                      disabled={step === 0} aria-label="Previous field">▲</button>
+              <button type="button" onClick={() => void go(step + 1)}
+                      disabled={finale} aria-label="Next field">▼</button>
+            </span>
+            <ul className="slots">
+              {fields.map((slot, i) => {
+                const said = (values[slot.key] ?? '').trim()
+                return (
+                  <li key={slot.key} className={i === step ? 'here' : said ? 'filled' : undefined}>
+                    <span className="slot-n" aria-hidden="true">{i + 1}</span>
+                    <span className="slot-label">{slot.label}</span>
+                    {i === step ? (
+                      <Input key={slot.key} field={slot} value={values[slot.key] ?? ''} autoFocus
+                             invalid={unknown} hint={finale ? 'send' : 'next'}
+                             onLeave={direction => void go(step + direction)}
+                             onChange={value => { setUnknown(false); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
+                    ) : (
+                      <button type="button" className="slot-said" onClick={() => void go(i)}>
+                        {said || <i>empty</i>}
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        ) : (
+          <div className="fields">
+            <Input key={field.key} field={field} value={values[field.key] ?? ''} autoFocus invalid={unknown}
+                   onChange={value => { setUnknown(false); setValues(prev => ({ ...prev, [field.key]: value })) }} />
+          </div>
+        )}
+        <button className="cta" type="submit">{finale ? 'ANSWER ▲' : 'NEXT ▼'}</button>
+        <button className="chip" type="button"
+                onClick={() => void advance({ ...values, [field.key]: '' })}>skip</button>
       </form>
-      {unknown.length > 0 && (
+      {fields.length > 1 && !unknown && (
+        <p className="reel-hint">
+          box {step + 1} of {fields.length} · ↑↓ or ▲▼ to move
+          {finale ? ' · ANSWER sends the question' : ` · ${fields.length - step - 1} more before it is sent`}
+        </p>
+      )}
+      {unknown && (
         <p className="notice" role="alert">
-          No {unknown.map(field => field.label).join(' or ')} by that name in the catalog
-          — check the spelling, or press ANSWER again to send it as is.
+          No {field.label} by that name in the catalog
+          — check the spelling, or press {finale ? 'ANSWER' : 'NEXT'} again to send it as is.
         </p>
       )}
       {error && <p className="notice" role="alert">{error}</p>}
@@ -469,54 +718,95 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   </>)
 }
 
-function Verdict({ result, raw, expired, points, last, onNext }: {
-  result: Result; raw: string; expired: boolean; points: number; last: boolean; onNext: () => void
+/** The verdict reads out a beat after it lands; behind it the rocket boosts and
+ *  the stars stream past, which is what says "you climbed". */
+function Verdict({ result, raw, expired, points, max, tiers, last, leaving, onNext }: {
+  result: Result; raw: string; expired: boolean; points: number; max: number; tiers: Today['tiers']
+  last: boolean; leaving: boolean; onNext: () => void
 }) {
   // The client's timer fired, or the server counted it late: either way, the clock.
-  const headline = result.timed_out || (expired && !result.correct) ? 'THE CLOCK BEAT YOU'
+  const headline = (result.timed_out || expired) && !result.correct ? 'THE CLOCK BEAT YOU'
     : !raw.trim() ? 'SKIPPED'
     : result.correct ? `✓ ${result.tier}`
     : '✗ NOT ON THE LIST'
+  const said = raw.trim()
+  // The verdict, heard: the arpeggio climbs as far as the tier goes, so a
+  // Supernova is audibly further than a Nebula, and the clock has its own buzz.
+  useEffect(() => {
+    if (result.correct) sfx('hit', Math.max(0, tiers.findIndex(row => row.name === result.tier)))
+    else sfx((result.timed_out || expired) ? 'expire' : 'miss')
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  // A flick of the scanlines as the verdict lands, like a CRT taking a hit.
+  useEffect(() => {
+    document.body.classList.add('zap')
+    const timer = setTimeout(() => document.body.classList.remove('zap'), 300)
+    return () => { clearTimeout(timer); document.body.classList.remove('zap') }
+  }, [])
   return (
-    <section className="card verdict">
-      <p className={`eyebrow ${result.correct ? 'hit' : 'miss'}`}>{headline}</p>
-      <p className={`points ${result.correct ? 'slam' : 'shake'}`}>
-        {result.points > 0 ? `+${result.points}` : '+0'}
-        <small>PTS · {points} TOTAL · {altitudeAu(points).toFixed(1)} AU</small>
-      </p>
-      {!result.correct && raw.trim() && <p className="meta">You said “{raw.trim()}”. A moderator may still accept it.</p>}
-      <button className="cta" type="button" autoFocus onClick={onNext}>{last ? 'SEE RESULTS ▲' : 'NEXT ▲'}</button>
+    <section className={leaving ? 'card verdict gone' : 'card verdict'}>
+      <div className="after">
+        <p className={`eyebrow ${result.correct ? 'hit' : 'miss'}`}>
+          {result.correct && <span className="glyph"><TierIcon tier={result.tier} tiers={tiers} /></span>}
+          {headline}</p>
+        <p className={`points ${result.correct ? 'slam' : 'shake'}`}>
+          {result.points > 0 ? `+${result.points}` : '+0'}
+          <small>PTS · {points} TOTAL · {altitudeAu(points, max).toFixed(1)} AU</small>
+        </p>
+        {/* Box by box: a song or album question is several answers, and one number
+            for all of them says nothing about which ones landed. */}
+        {result.fields && (
+          <ul className="boxes">
+            {result.fields.map(box => (
+              <li key={box.field} className={box.correct ? 'hit' : 'miss'}>
+                <span>{box.field}</span>
+                <b>{box.text || '—'}</b>
+                <em>{box.points > 0 ? `+${box.points}` : '+0'}</em>
+                <i>{box.correct ? box.tier ?? 'landed' : 'miss'}</i>
+              </li>
+            ))}
+          </ul>
+        )}
+        {result.correct && result.tier && TIER_META[result.tier] && <p className="meta">{TIER_META[result.tier].blurb}</p>}
+        {!result.correct && said && <p className="meta">A moderator may still accept it.</p>}
+        <button className="cta" type="button" autoFocus onClick={() => { sfx('click'); onNext() }}>{last ? 'SEE RESULTS ▲' : 'NEXT ▲'}</button>
+      </div>
     </section>
   )
 }
 
-export function Play({ today, token, onPoints, onDone }: {
-  today: Today; token?: string; onPoints: (points: number) => void; onDone: () => void
+export function Play({ today, max, token, onPoints, onDone }: {
+  today: Today; max: number; token?: string; onPoints: (points: number, mood?: Mood) => void; onDone: () => void
 }) {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [last, setLast] = useState<{ result: Result; raw: string; expired: boolean; points: number; last: boolean } | null>(null)
   const [error, setError] = useState('')
+  const [leaving, setLeaving] = useState(false)   // the verdict drifts off while the next question loads
 
   // No question left means the flight has landed, so go straight to the results.
-  function serve() {
-    startAttempt(token).then(served => {
+  // The verdict stays on screen, fading, until the next question is in hand: no
+  // blank beat between them, and the exit gets its half second whatever the server does.
+  function serve(gently = false) {
+    const exit = new Promise(done => setTimeout(done, gently ? 550 : 0))
+    Promise.all([startAttempt(token), exit]).then(([served]) => {
+      setLeaving(false)
+      setLast(null)
       onPoints(served.total_points)
       if (served.question) setProgress(served); else onDone()
     }).catch((cause: unknown) =>
       setError(cause instanceof Error ? cause.message : 'The flight deck is not answering.'))
   }
-  function next() { setLast(null); serve() }
-  useEffect(serve, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  function next() { setLeaving(true); serve(true) }
+  useEffect(() => serve(), [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) return <p className="notice" role="alert">{error}</p>
-  if (last) return <Verdict {...last} onNext={last.last ? onDone : next} />
+  if (last) return <Verdict {...last} max={max} tiers={today.tiers} leaving={leaving} onNext={last.last ? onDone : next} />
   if (!progress?.question) return <p className="card meta wait" role="status">Clearing the launch tower…</p>
 
   return (
     <Ask key={progress.question.id} question={progress.question} attemptId={progress.id}
          answered={progress.answered} token={token} onLost={next}
          onAnswered={(answered, raw, expired) => {
-           onPoints(answered.total_points)
+           onPoints(answered.total_points, answered.result.correct ? 'boost' : 'tumble')
            setLast({ result: answered.result, raw, expired, points: answered.total_points,
                      last: answered.answered >= today.question_count })
          }} />
@@ -525,8 +815,8 @@ export function Play({ today, token, onPoints, onDone }: {
 
 const BUGS = 'https://github.com/en1y/jamillion/issues/new?labels=bug'
 
-function Curve({ dist, score, better }: { dist: number[]; score: number; better: number }) {
-  const geom = curveGeom(dist, score)
+function Curve({ dist, score, max, better }: { dist: number[]; score: number; max: number; better: number }) {
+  const geom = curveGeom(dist, score, max)
   if (!geom) return better ? <p className="better">better than {better}% of today's pilots</p> : null
   const youLabel = Math.min(Math.max(geom.youX, 14), 306)
   return (
@@ -544,8 +834,8 @@ function Curve({ dist, score, better }: { dist: number[]; score: number; better:
         <path d={geom.fill} fill="url(#curve-fill)" clipPath="url(#curve-beaten)" />
         <path d={geom.line} fill="none" stroke="var(--ion)" strokeWidth="1.4" strokeOpacity="0.75" />
         <line x1="0" y1={geom.base} x2={geom.width} y2={geom.base} stroke="var(--line)" />
-        {[100, 200, 300, 400, 500, 600].map(tick => {
-          const x = tick / MAX_POINTS * geom.width
+        {[0.25, 0.5, 0.75].map(share => Math.round(share * max)).map(tick => {
+          const x = tick / max * geom.width
           const hide = Math.abs(x - geom.youX) < 18
           return (
             <g key={tick}>
@@ -558,7 +848,7 @@ function Curve({ dist, score, better }: { dist: number[]; score: number; better:
         <circle cx={geom.youX} cy={geom.youY} r="2.6" fill="var(--pink)" />
         <text x={youLabel} y="90" textAnchor="middle" fill="var(--pink)" letterSpacing="0.12em">YOU</text>
         <text x="0" y="90" fill="var(--mute)" opacity="0.6">0</text>
-        <text x={geom.width} y="90" textAnchor="end" fill="var(--mute)" opacity="0.6">{MAX_POINTS}</text>
+        <text x={geom.width} y="90" textAnchor="end" fill="var(--mute)" opacity="0.6">{max}</text>
       </svg>
       <p className="better">better than {better}% of today's pilots</p>
     </div>
@@ -572,7 +862,7 @@ function FlightLog({ answers, tiers }: { answers: OwnAnswer[]; tiers: Today['tie
       <div className="flog-chart">
         {[0, 0.25, 0.5, 0.75, 1].map(step => (
           <div key={step} className="flog-rule" style={{ top: `${step * 100}%`, opacity: step === 0 ? 1 : 0.5 }}>
-            <span>{step === 0 ? '0 AU' : Math.round(step * 120)}</span>
+            <span>{step === 0 ? '0 AU' : Math.round(step * PLUTO_AU)}</span>
           </div>
         ))}
         <div className="flog-cols">
@@ -582,15 +872,16 @@ function FlightLog({ answers, tiers }: { answers: OwnAnswer[]; tiers: Today['tie
             const color = meta?.color ?? 'var(--mute)'
             return (
               <div key={answer.position} className="flog-col">
+                {/* the line grows and the mark drops down it, one question after the next */}
                 <div className="flog-line" aria-hidden="true"
-                     style={{ height: `calc(${depth * 100}% - 8px)`,
+                     style={{ height: `calc(${depth * 100}% - 8px)`, animationDelay: `${90 * i}ms`,
                               background: `linear-gradient(180deg, transparent, ${color})` }} />
-                <div className="flog-dot" style={{ top: `${depth * 100}%` }}
+                <div className="flog-dot" style={{ top: `${depth * 100}%`, '--d': depth, animationDelay: `${90 * i}ms` } as CSSProperties}
                      title={`Question ${answer.position}: ${answer.raw_text.trim() || 'miss'}, ${answer.points} pts`}>
                   <span className={meta ? 'flog-chip' : 'flog-miss'}
                         style={meta ? { background: color, boxShadow: `0 0 10px ${color}`, animationDelay: `${90 * i}ms` }
                                     : { animationDelay: `${90 * i}ms` }}>
-                    {meta ? emojiFor(answer, tiers) : null}
+                    {meta ? <TierIcon tier={answer.tier} tiers={tiers} /> : null}
                   </span>
                 </div>
                 <span className="flog-n">{answer.position}</span>
@@ -634,7 +925,7 @@ function Ideas({ token }: { token?: string }) {
   )
 }
 
-export function Results({ today, token }: { today: Today; token?: string }) {
+export function Results({ today, max, token }: { today: Today; max: number; token?: string }) {
   const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
   const [sheet, setSheet] = useState<RevealedQuestion[] | null>(null)
@@ -643,6 +934,7 @@ export function Results({ today, token }: { today: Today; token?: string }) {
   const [left, setLeft] = useState(() => countdown(nextRollover()))
   const [log, setLog] = useState(EMPTY_LOG)
   const attempt = today.attempt
+  const shown = useCountUp(attempt?.total_points ?? 0, 1200)
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
   useEffect(() => {
     let live = true
@@ -661,11 +953,12 @@ export function Results({ today, token }: { today: Today; token?: string }) {
     const timer = setInterval(tick, 1000)
     return () => clearInterval(timer)
   }, [])
+  useEffect(() => { sfx('land') }, [])   // touchdown: the whole ladder, once
   if (!attempt) return null
   const { answers, total_points: points } = attempt
-  const au = altitudeAu(points)
-  const band = bandFor(points)
-  const text = shareText(today.flight_no, points, answers, today.tiers)
+  const au = altitudeAu(points, max)
+  const band = bandFor(points, max)
+  const text = shareText(today.flight_no, points, answers, today.tiers, max)
   const avg = log.played ? Math.round(log.total / log.played) : 0
 
   async function copy() {
@@ -680,19 +973,19 @@ export function Results({ today, token }: { today: Today; token?: string }) {
         <span className="meta">Flight #{today.flight_no} complete</span>
       </header>
       <p className="results-score">
-        <b>{points}</b>
+        <b>{shown}</b>
         <span>{au.toFixed(1)} AU · past {passed(au)}</span>
       </p>
-      {dist && <Curve dist={dist} score={points} better={better} />}
+      {dist && <Curve dist={dist} score={points} max={max} better={better} />}
 
       <FlightLog answers={answers} tiers={today.tiers} />
 
       <section className="bearing">
         <p className="fathom">the bearing</p>
         <ul>
-          {SCORE_BANDS.map(row => (
-            <li key={row.min} className={band === row ? 'here' : undefined}>
-              <span className="bearing-icon">{emojiForTier(row.tier, today.tiers)}</span>
+          {scoreBands(max).map(row => (
+            <li key={row.tier} className={band.tier === row.tier ? 'here' : undefined}>
+              <span className="bearing-icon"><TierIcon tier={row.tier} tiers={today.tiers} /></span>
               <span className="bearing-range">{row.range}</span>
               <span className="bearing-verdict">{row.verdict}</span>
             </li>
@@ -701,7 +994,7 @@ export function Results({ today, token }: { today: Today; token?: string }) {
       </section>
 
       <div className="copy-row">
-        <button className="cta" type="button" onClick={() => void copy()}>{copied ? 'Copied ✓' : 'Copy result'}</button>
+        <button className="cta" type="button" onClick={() => { sfx('click'); void copy() }}>{copied ? 'Copied ✓' : 'Copy result'}</button>
         {canShare && <button className="chip" type="button" onClick={() => void navigator.share({ text })}>Share…</button>}
       </div>
 
@@ -716,7 +1009,7 @@ export function Results({ today, token }: { today: Today; token?: string }) {
                 <button type="button" className="round" onClick={() => setOpen(expanded ? null : answer.position)}
                         aria-expanded={expanded}>
                   <span className="n">{answer.position}</span>
-                  <span className="glyph">{emojiFor(answer, today.tiers)}</span>
+                  <span className="glyph"><TierIcon tier={answer.tier} tiers={today.tiers} correct={answer.correct} /></span>
                   <span className="said">
                     <small>{question?.prompt ?? `question ${answer.position}`}</small>
                     {answer.raw_text.trim() ? answer.raw_text.trim() : (answer.tier ?? 'skipped')}
@@ -728,12 +1021,16 @@ export function Results({ today, token }: { today: Today; token?: string }) {
                   <ul className="sheet">
                     {sheet === null && <li className="meta">unsealing the star charts…</li>}
                     {sheet && !question && <li className="meta">no chart for this question</li>}
-                    {question?.answers.map(option => (
+                    {/* A song or album key is a ladder of how much of the answer you named,
+                        not a rarity ladder: the tier glyph and its blurb say nothing there,
+                        the points do. Answers worth nothing are left off either way. */}
+                    {question?.answers.filter(option => option.points > 0 || option.yours).map(option => (
                       <li key={option.display} className={option.yours ? 'yours' : undefined}>
-                        <span className="glyph">{emojiForTier(option.tier, today.tiers)}</span>
+                        {question.qtype === 'rarest' &&
+                          <span className="glyph"><TierIcon tier={option.tier} tiers={today.tiers} /></span>}
                         <span className="said">
                           {option.display}{option.yours && <i>you</i>}
-                          {option.tier && TIER_META[option.tier] &&
+                          {question.qtype === 'rarest' && option.tier && TIER_META[option.tier] &&
                             <small>{TIER_META[option.tier].blurb}</small>}
                         </span>
                         <b>+{option.points}</b>

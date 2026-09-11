@@ -1,46 +1,126 @@
 /* --- scene: the flight is the background, always ------------------------- */
-.scene { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.scene { --pin: 52%; position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
 .starfield { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-/* The track is 7200px tall (60px per AU) and slides down by your altitude, so the
-   rocket, pinned 44% up the viewport, always sits at the right height. */
-.track { position: absolute; left: 50%; bottom: 44%; width: 0; height: 7200px;
-  transform: translateY(var(--y)); transition: transform 1.8s cubic-bezier(.2, .75, .25, 1); }
+/* The camera is a point pinned --pin up the viewport, where the rocket is; the
+   track hangs from it and slides down by your altitude, so the rocket always sits
+   at the right height. Scaling the camera zooms about the rocket, whatever --y is. */
+.camera { position: absolute; left: 50%; bottom: var(--pin); width: 0; height: 0; transform-origin: 0 0;
+  scale: var(--zoom, 1); transition: scale .8s cubic-bezier(.4, 0, .2, 1); }
+/* The trip: pull out until both planets fit, fly the leg, push back in. The slide
+   waits for the pull-out, and the stars stream for the same 4.2 s. */
+.camera.trip { animation: trip 4.2s cubic-bezier(.4, 0, .2, 1) 1; }
+@keyframes trip { 0% { scale: var(--zoom, 1); } 22% { scale: .2; } 76% { scale: .2; } 100% { scale: var(--zoom, 1); } }
+.track { position: absolute; left: 0; bottom: 0; width: 0;
+  transform: translateY(var(--y)); transition: transform 2.4s cubic-bezier(.4, .1, .2, 1) .8s; }
 .track::before { content: ""; position: absolute; left: -1px; top: 0; bottom: 0; border-left: 2px dashed #1b305066; }
-.sun { position: absolute; left: -16px; bottom: -16px; width: 32px; height: 32px; border-radius: 50%; background: var(--flare);
-  box-shadow: 0 0 80px 24px #ffb34766, 0 0 220px 90px #ff8a3d22; animation: breathe 4s ease-in-out infinite; }
-@keyframes breathe { 50% { box-shadow: 0 0 100px 30px #ffb34788, 0 0 260px 110px #ff8a3d30; } }
-.landmark { position: absolute; bottom: var(--px); display: flex; align-items: center; gap: 10px; transform: translateY(50%);
-  white-space: nowrap; font-size: 15px; letter-spacing: .12em; color: var(--mute); }
-.landmark.right { left: 16px; }
-.landmark.left { right: 16px; flex-direction: row-reverse; }
-.landmark i { display: block; flex: none; width: var(--size); height: var(--size); border-radius: 50%;
-  background: var(--color); box-shadow: 0 0 calc(var(--size) * .8) var(--color); }
-.landmark.right i { margin-left: calc(-16px - var(--size) / 2); }   /* the dot straddles the line */
-.landmark.left i { margin-right: calc(-16px - var(--size) / 2); }
-.landmark.tick i { width: 22px; height: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; }
-.rocket { position: absolute; left: 50%; bottom: 44%; z-index: 1; transform: translate(-50%, 50%); font-size: 30px; line-height: 1;
+/* The Sun: a disc as wide as the page (never under 640px), its rim 200px up the
+   track, 120px under the rocket's start at 320px, so at 0 AU it fills the whole
+   bottom of the screen and everything else is the climb away from it. */
+.sun { --r: max(320px, 50vw); position: absolute; left: calc(-1 * var(--r)); bottom: calc(200px - 2 * var(--r));
+  width: calc(2 * var(--r)); height: calc(2 * var(--r)); border-radius: 50%;
+  background: url(/planets/sun.png) center / cover no-repeat, #ff8a3d;
+  box-shadow: 0 0 120px 40px #ffb34766, 0 0 340px 150px #ff8a3d22;
+  animation: breathe 5s ease-in-out infinite; }
+@keyframes breathe { 50% { box-shadow: 0 0 150px 50px #ffb34788, 0 0 400px 170px #ff8a3d30; } }
+.landmark { position: absolute; bottom: var(--px); display: flex; align-items: center; gap: 14px; transform: translateY(50%);
+  white-space: nowrap; font-size: 16px; letter-spacing: .12em; color: var(--mute); }
+.landmark.right { left: 34px; }
+.landmark.left { right: 34px; flex-direction: row-reverse; }
+/* every planet is a rendered PNG from scripts/planets.py (lit from the upper
+   left, with its own surface), sized by the landmark and glowing in its colour */
+.landmark i { display: block; flex: none; width: var(--size); height: var(--size);
+  background: url(/planets/none.png) center / contain no-repeat;
+  filter: drop-shadow(0 0 calc(var(--size) * .12) color-mix(in srgb, var(--color) 55%, transparent)); }
+.planet-mercury i { background-image: url(/planets/mercury.png); }
+.planet-venus i { background-image: url(/planets/venus.png); }
+.planet-earth i { background-image: url(/planets/earth.png); }
+.planet-mars i { background-image: url(/planets/mars.png); }
+.planet-jupiter i { background-image: url(/planets/jupiter.png); }
+.planet-saturn i { background-image: url(/planets/saturn.png); width: calc(var(--size) * 2.2); }   /* the rings: the image is 2.2:1 */
+.planet-uranus i { background-image: url(/planets/uranus.png); }
+.planet-neptune i { background-image: url(/planets/neptune.png); }
+.planet-pluto i { background-image: url(/planets/pluto.png); }
+.planet-eris i { background-image: url(/planets/eris.png); }
+.planet-sedna i { background-image: url(/planets/sedna.png); }
+.landmark.tick i { width: 22px; height: 0; border-top: 1px solid var(--line); background: none; filter: none; }
+/* --- the other two planet displays, from the cabin settings -------------- */
+/* discs: no images at all, just the landmark's colour lit from the upper left --
+   the look before scripts/planets.py existed, and the cheap one on a slow phone */
+.planets-disc .landmark i, .planets-ticks .landmark i { background-image: none; }
+.planets-disc .landmark:not(.tick) i { border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #ffffffb3, #fff0 42%),
+              radial-gradient(circle at 62% 68%, #0009, #0000 60%), var(--color); }
+.planets-disc .planet-saturn i { position: relative; width: var(--size); }   /* no ring image, so no 2.2:1 */
+.planets-disc .planet-saturn i::after { content: ""; position: absolute; left: 50%; top: 50%;
+  width: calc(var(--size) * 2.1); height: calc(var(--size) * .5); margin: calc(var(--size) * -.25) 0 0 calc(var(--size) * -1.05);
+  border: 2px solid color-mix(in srgb, var(--color) 70%, transparent); border-radius: 50%; transform: rotate(-12deg); }
+/* charts: the track and its captions, nothing drawn -- the flight as a flight plan */
+.planets-ticks .landmark i { width: 22px; height: 0; border-top: 1px solid var(--line); filter: none; border-radius: 0; }
+.planets-ticks .landmark.right i { margin-left: -27px; }
+.planets-ticks .landmark.left i { margin-right: -27px; }
+.planets-ticks .landmark { color: var(--ion); opacity: .75; }
+.planets-ticks .sun { background: radial-gradient(circle at 40% 30%, #ffd9a0, #ff8a3d 60%, #b4441a); }
+
+.landmark.tick.right i { margin-left: -27px; }   /* ticks still straddle the line */
+.landmark.tick.left i { margin-right: -27px; }
+.rocket { position: absolute; left: 50%; bottom: var(--pin); z-index: 1; transform: translate(-50%, 50%); font-size: 30px; line-height: 1;
   color: var(--flare); text-shadow: 0 0 18px var(--flare); animation: bob 3.2s ease-in-out infinite; }
 .rocket::after { content: ""; position: absolute; left: 50%; top: 100%; width: 6px; height: 14px; margin: -6px 0 0 -3px;
   background: linear-gradient(#ffc46b, var(--pink) 60%, #0000); animation: flame .14s steps(2) infinite alternate; }
 @keyframes bob { 50% { translate: 0 -9px; } }
 @keyframes flame { to { height: 22px; opacity: .7; } }
+/* Krillion's krill has moods; the rocket has two. A hit is a burst of thrust,
+   squash then leap; a miss tumbles it and rattles the whole scene. Individual
+   translate/scale/rotate, so the centring transform underneath is untouched. */
+.rocket.boost { animation: jet 1s cubic-bezier(.4, 0, .2, 1) 1; }
+@keyframes jet { 24% { translate: 0 8px; scale: 1.28 .68; } 52% { translate: 0 -48px; scale: .8 1.32; rotate: -7deg; }
+  76% { translate: 0 -20px; scale: 1.05 .95; rotate: 4deg; } }
+.rocket.tumble { animation: roll .9s cubic-bezier(.3, .1, .3, 1) 1; }
+@keyframes roll { 30% { rotate: 140deg; translate: 0 -36px; } 60% { rotate: 280deg; translate: 0 -16px; } to { rotate: 360deg; } }
+.scene.tumble { animation: quake .5s linear 1; }
+@keyframes quake { 12% { transform: translate(-10px, 5px) rotate(-.6deg); } 26% { transform: translate(9px, -6px) rotate(.5deg); }
+  42% { transform: translate(-7px, 4px) rotate(-.35deg); } 58% { transform: translate(6px, -3px) rotate(.25deg); }
+  76% { transform: translate(-3px, 2px) rotate(-.1deg); } }
+/* the scanlines take a hit as a verdict lands */
+body.zap::after { animation: zap .28s steps(3) 1; }
+@keyframes zap { 0% { opacity: .9; transform: translateY(0); } 33% { opacity: .2; transform: translateY(2px); }
+  66% { opacity: .7; transform: translateY(-1px); } 100% { opacity: .45; } }
 
 /* --- page over the scene ------------------------------------------------- */
-main { position: relative; z-index: 1; max-width: 900px; min-height: 100vh; margin: auto; padding: 18px 26px 34px;
-  display: flex; flex-direction: column; }
+main { position: relative; z-index: 1; max-width: 900px; min-height: 100vh; margin: auto; padding: 96px 26px 34px;
+  display: flex; flex-direction: column; }   /* the gauges own the top */
 main.flying { padding-bottom: 150px; }        /* room under the HUD */
 header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+main.flying header { display: none; }         /* nothing but the flight while flying */
 .brand { letter-spacing: .2em; font-size: 21px; color: var(--mute); }
 .brand:hover { color: var(--ink); }
-.stats { display: flex; gap: 8px; }
-.stat { display: flex; flex-direction: column; align-items: center; min-width: 84px; padding: 4px 10px 2px; line-height: 1.05;
-  background: var(--panel); border: 1px solid var(--line); box-shadow: 0 0 0 2px var(--void); font-size: 20px; color: var(--ion); }
-.stat small { font-size: 12px; letter-spacing: .2em; color: var(--mute); }
+/* --- the gauges: Krillion's depth and score panels, top corners, over everything */
+.gauges { position: fixed; top: 0; left: 0; right: 0; z-index: 4; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 14px;
+  padding: 10px 14px 0; pointer-events: none; animation: gauges-in .6s cubic-bezier(.2, .8, .2, 1) both; }
+/* what is behind and what is ahead, under the two dials */
+.legs { flex-basis: 100%; display: flex; justify-content: center; gap: 22px; font-size: 13px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--mute); text-shadow: 0 1px 0 var(--void), 0 0 8px var(--void); }
+.leg i { font-style: normal; color: var(--flare); opacity: .7; }
+.leg.ahead i { color: var(--ion); }
+.leg b { font-weight: 400; color: var(--ink); letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+@keyframes gauges-in { from { opacity: 0; transform: translateY(-40px); } }
+.gauge { min-width: 132px; padding: 7px 16px 6px; text-align: center; line-height: 1; background: #0b1526f2;
+  box-shadow: 0 0 0 2px var(--void), 0 0 0 4px var(--line), 0 4px 0 4px #0d1a2e, 0 0 24px #0008; }
+.gauge small { display: block; margin-bottom: 5px; font-size: 10px; letter-spacing: .28em; color: var(--mute); }
+.gauge b { display: block; font-weight: 400; font-size: 24px; font-variant-numeric: tabular-nums; }
+.gauge.alt b { color: var(--ion); text-shadow: 0 0 10px #7fe9ff88; }
+.gauge.score b { color: var(--pink); text-shadow: 0 0 10px #ff5d8f88; }
+.gauges.bump .gauge b { animation: crank .5s var(--spring) 1; }
+@keyframes crank { 35% { transform: scale(1.12) translateY(3px); color: var(--flare); text-shadow: 0 0 18px #ffc46be6; } }
 .eyebrow, .meta, .flight { font-size: 16px; letter-spacing: .16em; color: var(--mute); }
 p { line-height: 1.5; color: #c3d2e8; }
-.card { animation: card-in .55s cubic-bezier(.2, .9, .3, 1.15) both; }
-@keyframes card-in { from { opacity: 0; transform: translateY(46px) scale(.92); } }
+/* arrivals glide in on a long ease-out with no overshoot: smooth, not bouncy */
+.card { animation: card-in .8s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes card-in { from { opacity: 0; transform: translateY(28px); } }
+/* the question drifts up and out of focus once the answer is away */
+.card.gone { animation: card-gone .6s ease-in forwards; pointer-events: none; }
+@keyframes card-gone { to { opacity: 0; filter: blur(2px); transform: translateY(-28px) scale(.9); } }
 .wait { text-align: center; margin-top: 30vh; }
 
 /* --- launchpad ----------------------------------------------------------- */
@@ -64,7 +144,10 @@ summary:hover { color: var(--ion); }
 .tiers li { display: flex; justify-content: space-between; padding: 4px 12px 2px; letter-spacing: .12em; font-size: 16px; color: var(--mute); }
 .tiers li + li { border-top: 1px solid var(--line); }
 .tiers b { color: var(--flare); font-weight: 400; }
-.cta.big { width: min(600px, 100%); font-size: clamp(22px, 3.6vw, 30px); padding: 16px 20px 13px; }
+.cta.big { width: min(600px, 100%); font-size: clamp(22px, 3.6vw, 30px); padding: 16px 20px 13px;
+  animation: btn-bob 1.9s ease-in-out infinite; }   /* idles like Krillion's BEGIN DESCENT, so it reads as the thing to press */
+.cta.big:hover, .cta.big:disabled { animation-play-state: paused; }
+@keyframes btn-bob { 50% { translate: 0 5px; } }
 .preflight { font-size: 16px; letter-spacing: .1em; color: var(--mute); margin: 22px 0 0; }
 .dock { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; width: 100%; margin-top: auto; padding-top: 30px; }
 .dock span { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -102,11 +185,19 @@ input:focus { outline: 2px solid var(--ion); outline-offset: 0; border-color: va
 .play:hover { transform: scale(1.08); }
 .play:active { transform: scale(.94); }
 input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; background: none; height: 28px; accent-color: var(--flare); cursor: pointer; }
+.volume { flex: none; display: flex; align-items: center; gap: 6px; color: var(--mute); }
+.volume input[type="range"] { flex: none; width: 80px; }
 .clock { font-size: 16px; letter-spacing: .1em; color: var(--mute); min-width: 74px; text-align: right; }
 
 .hud { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; padding: 26px 16px 18px;
-  background: linear-gradient(#0000, #050a14f0 45%); animation: rise .45s cubic-bezier(.2, .9, .3, 1.1) both; }
-@keyframes rise { from { opacity: 0; transform: translateY(30px); } }
+  background: linear-gradient(#0000, #050a14f0 45%); animation: rise .7s cubic-bezier(.2, .8, .2, 1) .15s both; }   /* a beat after the card */
+@keyframes rise { from { opacity: 0; transform: translateY(40px); } }
+.hud.sunk { animation: sink-out .5s ease-in forwards; pointer-events: none; }
+@keyframes sink-out { to { opacity: 0; transform: translateY(120%); } }
+/* the last five seconds: the edges of the screen throb pink */
+.edge { position: fixed; inset: 0; z-index: 1; pointer-events: none; box-shadow: inset 0 0 90px #ff5d8f;
+  animation: throb .55s ease-in-out infinite; }
+@keyframes throb { 0%, 100% { opacity: .15; } 50% { opacity: .85; } }
 .hud form { max-width: 900px; margin: auto; display: flex; gap: 10px; align-items: center; }
 .fields { flex: 1; display: flex; gap: 8px; min-width: 0; }
 .field { position: relative; flex: 1; min-width: 0; }
@@ -120,9 +211,41 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .picks li:hover, .picks li.on { background: #16294a; color: var(--flare); }
 .fields input { margin: 0; min-width: 0; font-size: 22px; padding: 12px 14px 10px; background: #0b1526e6; border: 2px solid #2c6d8cd7; transition: border-color .25s; }
 .fields input:focus { outline: 0; border-color: var(--ion); }
-.fields input[aria-invalid] { border-color: var(--pink); }
+.fields input[aria-invalid] { border-color: var(--pink); animation: jolt .4s linear 1; }   /* the catalog shakes its head */
+@keyframes jolt { 20% { transform: translateX(-8px); } 45% { transform: translateX(7px); } 70% { transform: translateX(-4px); } 88% { transform: translateX(2px); } }
 .hud .cta { font-size: 21px; padding: 12px 20px 10px; white-space: nowrap; }
 .hud .notice { max-width: 900px; margin: 10px auto 0; }
+/* every box of a song or album question at once: the one being typed is open, the
+   rest wait under it, and the pair of arrows walks between them. One box at a time
+   gave no sign that two more were coming, so Enter read as "send the lot". */
+.reel { flex: 1; min-width: 0; display: flex; align-items: stretch; gap: 8px; }
+.reel-nav { flex: none; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+.reel-nav button { width: 34px; padding: 3px 0 1px; font-size: 13px; line-height: 1.2; cursor: pointer;
+  color: var(--ion); background: #0b1526e6; border: 1px solid var(--line); transition: border-color .2s, color .2s; }
+.reel-nav button:hover:enabled, .reel-nav button:focus-visible { border-color: var(--ion); }
+.reel-nav button:disabled { color: var(--line); cursor: default; }
+.slots { flex: 1; min-width: 0; list-style: none; margin: 0; padding: 0;
+  background: #0b152699; border: 1px solid var(--line); }
+.slots li { display: grid; grid-template-columns: 1.6em 7em 1fr; align-items: center; gap: 8px;
+  padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.slots li:last-child { border-bottom: 0; }
+.slot-n { font-size: 13px; color: var(--line); text-align: right; }
+.slot-label { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--mute);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slots li.here { background: #16294a80; }
+.slots li.here .slot-n, .slots li.here .slot-label { color: var(--ion); }
+/* a waiting box: what is in it, and a click to go back to it */
+.slot-said { min-width: 0; padding: 6px 4px 4px; font-size: 17px; text-align: left; color: var(--ink);
+  background: none; border: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-said i { font-style: normal; color: var(--line); letter-spacing: .1em; }
+.slot-said:hover, .slot-said:focus-visible { color: var(--ion); }
+.slots .field input { font-size: 19px; padding: 7px 10px 5px; background: #0b1526e6;
+  border: 2px solid #2c6d8cd7; margin: 0; min-width: 0; transition: border-color .25s; }
+.slots .field input:focus { outline: 0; border-color: var(--ion); }
+.slots .field input[aria-invalid] { border-color: var(--pink); animation: jolt .4s linear 1; }
+/* where the player is, and what is still between them and sending it */
+.reel-hint { max-width: 900px; margin: 8px auto 0; font-size: 14px; letter-spacing: .08em;
+  color: var(--mute); text-align: center; }
 .ring { --p: 1; position: relative; flex: none; width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center;
   font-size: 24px; color: var(--flare); background: conic-gradient(var(--flare) calc(var(--p) * 100%), var(--line) 0); box-shadow: 0 0 0 2px var(--void); }
 .ring::before { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--deck); }
@@ -131,7 +254,8 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 @keyframes pulse { to { transform: scale(1.08); } }
 
 /* --- verdict and results ------------------------------------------------- */
-.verdict { width: 100%; max-width: 520px; margin: 8vh auto 0; text-align: center; }
+.verdict { width: 100%; max-width: 520px; margin: 3vh auto 0; padding: 12px 0; text-align: center;
+  background: radial-gradient(ellipse at 50% 45%, #050a14e6 35%, #0000 72%); }   /* dims the landmarks behind the ladder */
 .verdict .eyebrow { font-size: clamp(24px, 5vw, 40px); letter-spacing: .12em; color: var(--ink); }
 .verdict .eyebrow.hit { color: var(--flare); text-shadow: 0 0 22px #ffc46b88; }
 .verdict .eyebrow.miss { color: var(--mute); }
@@ -142,9 +266,19 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .shake { animation: shake .5s ease; }
 @keyframes shake { 20% { transform: translateX(-8px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
 .verdict .cta { margin-top: 22px; width: min(420px, 100%); }
+/* the verdict reads out a beat after it lands, once the rocket has kicked */
+.after { opacity: 0; animation: fade-up .5s ease-out .45s forwards; }
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .launchpad.landed { align-items: stretch; text-align: left; padding-top: 8px; overflow: visible; }
 .results { width: 100%; max-width: 560px; margin: 0 auto; padding: 8px 4px 48px; display: flex; flex-direction: column;
   gap: 28px; text-align: left; min-width: 0; background: none; }
+/* the report assembles top to bottom, a beat between sections */
+.results > * { animation: fade-up .45s ease-out both; }
+.results > :nth-child(2) { animation-delay: .1s; }
+.results > :nth-child(3) { animation-delay: .2s; }
+.results > :nth-child(4) { animation-delay: .3s; }
+.results > :nth-child(5) { animation-delay: .4s; }
+.results > :nth-child(n + 6) { animation-delay: .5s; }
 .results .said, .results .bearing-verdict, .results .bugs, .results .idea label { overflow-wrap: anywhere; }
 .results-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .brand-mark { letter-spacing: .14em; color: var(--ink); text-shadow: -2px 1px 0 var(--pink), 2px -1px 0 #7fe9ffd9; }
@@ -165,8 +299,12 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
   font-size: 11px; color: var(--mute); font-variant-numeric: tabular-nums; }
 .flog-cols { position: absolute; inset: 0 0 0 2rem; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .flog-col { position: relative; min-width: 0; }
-.flog-line { position: absolute; left: 50%; top: 0; width: 1px; transform: translateX(-50%); opacity: .45; }
-.flog-dot { position: absolute; left: 50%; transform: translate(-50%, -50%); }
+.flog-line { position: absolute; left: 50%; top: 0; width: 1px; transform: translateX(-50%); opacity: .45;
+  transform-origin: center top; animation: line-drop .9s cubic-bezier(.5, 0, .85, .6) both; }
+@keyframes line-drop { from { transform: translateX(-50%) scaleY(0); } }
+/* each mark falls from the top of the chart to its depth, in question order */
+.flog-dot { position: absolute; left: 50%; transform: translate(-50%, -50%); animation: mark-drop .9s cubic-bezier(.5, 0, .85, .6) both; }
+@keyframes mark-drop { from { transform: translate(-50%, calc(-50% - var(--d, 0) * 15rem)); } }
 .flog-chip, .flog-miss { display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%;
   font-size: 11px; line-height: 1; animation: flog-in .5s ease-out both; }
 .flog-miss { border: 1.8px dashed var(--mute); background: none; box-shadow: none; }
@@ -181,6 +319,27 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .bearing-icon { flex: none; }
 .bearing-range { flex: none; width: 5.2em; font-variant-numeric: tabular-nums; color: var(--flare); }
 .bearing-verdict { flex: 1; min-width: 0; }
+/* --- the tier badges, when the cabin is set to them ---------------------- */
+/* One image, sized by whatever holds it: the marks sit in a 19px chip on the
+   flight log and in a line of text everywhere else. */
+.tier-art { display: inline-block; width: 1.5em; height: 1.5em; object-fit: contain; vertical-align: -.35em; }
+.flog-chip .tier-art { width: 26px; height: 26px; }
+.flog-chip:has(.tier-art) { background: none !important; box-shadow: none !important; }   /* the badge is the mark */
+.bearing-icon .tier-art, .round .glyph .tier-art, .sheet .glyph .tier-art { width: 1.7em; height: 1.7em; }
+.verdict .glyph .tier-art { width: 1.4em; height: 1.4em; margin-right: 6px; }
+
+/* --- the cabin settings -------------------------------------------------- */
+.head-chips { display: flex; align-items: center; gap: 8px; }
+.modal { position: fixed; inset: 0; z-index: 10; display: grid; align-items: start;
+  background: #050a14cc; backdrop-filter: blur(2px); overflow: auto; }
+.settings { margin-top: 10vh; }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0;
+  font-size: 17px; letter-spacing: .1em; color: var(--mute); }
+.set-ctl { display: flex; align-items: center; gap: 8px; }
+.set-ctl b { min-width: 3.2em; text-align: right; color: var(--flare); font-weight: 400;
+  font-variant-numeric: tabular-nums; }
+.set-ctl input[type="range"] { width: 120px; accent-color: var(--flare); }
+
 .copy-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .copy-row .cta { flex: 1; min-width: 0; }
 
@@ -199,6 +358,17 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .sheet li { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px; }
 .sheet li.yours { background: #16294a80; }
 .sheet i { margin-left: 8px; font-style: normal; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ion); }
+
+/* which boxes of a song or album question landed */
+.boxes { list-style: none; margin: 10px auto 0; padding: 0; max-width: 26rem; }
+.boxes li { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 15px; }
+.boxes li span { flex: none; min-width: 5.5em; text-align: right; letter-spacing: .1em;
+  text-transform: uppercase; font-size: 13px; color: var(--mute); }
+.boxes li b { flex: 1; min-width: 0; font-weight: 400; text-align: left; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boxes li em { flex: none; min-width: 3em; text-align: right; font-style: normal; color: var(--ion); font-variant-numeric: tabular-nums; }
+.boxes li i { flex: none; min-width: 7em; text-align: left; font-style: normal; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--flare); }
+.boxes li.miss b, .boxes li.miss i, .boxes li.miss em { color: var(--mute); }
 
 /* --- flight log: the same row vocabulary as .haul, opened by <details> ---- */
 .logbook-stats { flex-wrap: wrap; margin: 4px 0 12px; }
@@ -231,10 +401,13 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .idea input:focus { outline: 0; border-color: var(--ion); }
 
 @media (max-width: 640px) {
-  main { padding: 14px 14px 26px; }
+  main { padding: 92px 14px 26px; }
   main.flying { padding-bottom: 240px; }
-  .stat { min-width: 64px; font-size: 17px; }
-  .landmark { font-size: 13px; }
+  .gauge { min-width: 96px; padding: 6px 10px 5px; }
+  .gauge b { font-size: 19px; }
+  .legs { gap: 12px; font-size: 11px; }
+  .landmark { font-size: 13px; gap: 8px; }
+  .landmark i { zoom: .6; }   /* half the planet on a phone, same track */
   .hud form { flex-wrap: wrap; }
   .fields { flex-basis: 100%; order: -1; flex-direction: column; }
   .hud .cta { flex: 1; font-size: 20px; padding: 12px 14px 10px; }

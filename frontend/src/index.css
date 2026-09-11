@@ -40,4 +40,8 @@ a { color: inherit; text-decoration: none; }
 .chip[aria-pressed="true"] { color: var(--ink); border-color: var(--flare); background: #16294a; }
 .chip:disabled { opacity: .45; }
 
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .after { opacity: 1; }                         /* nothing to wait for: the verdict just reads */
+  .card.gone, .hud.sunk { opacity: 0; }          /* and the question still leaves */
+}
