@@ -24,6 +24,7 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
   | Supernova     |    100 | One in a Krillion   |
 
   Moderators and admins can override the tier of any accepted answer.
+- **The cabin** — a gear beside the passport, and a mute next to it. The effects are synthesised in the browser (no audio files): a blip when a question arrives, a rising send, an arpeggio that climbs as far as the tier you hit, a buzz for the clock, a fanfare on landing. The same panel levels the snippets, and picks what the flight is drawn with: rendered planets, flat discs or a bare flight chart, and tier badges or glyphs. Shared results stay glyphs — a clipboard has no images.
 - **Height** — a share of the day: the most every question can pay is Pluto, 39.5 AU, so a perfect run always lands there whatever the questions are worth. Landmarks on the way: Mercury, Venus, Earth, Mars, the asteroid belt, Jupiter, Saturn, Uranus, Neptune, Pluto and the Kuiper belt, Eris, Sedna, the termination shock, Voyager 2's crossing and the heliopause Voyager 1 crossed in 2012.
 
 ## Roles
