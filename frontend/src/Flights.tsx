@@ -5,7 +5,8 @@ import { ApiError, getFlights } from './api'
 import type { Flight, Today } from './api'
 import { altitudeAu, emojiFor, formatDate, summarize } from './flight'
 
-export function Flights({ token, signedIn, tiers }: {
+export function Flights({ token, signedIn, tiers, ceilings }: {
+  ceilings: Record<string, number>
   token?: string
   signedIn: boolean
   tiers: Today['tiers'] | undefined
@@ -33,7 +34,10 @@ export function Flights({ token, signedIn, tiers }: {
   const error = result?.key === key ? result.error : ''
 
   const log = summarize(flights ?? [])
-  const avgAu = log.played ? altitudeAu(log.total / log.played) : 0
+  // Heights on each day's own scale, so they are averaged as heights, not points.
+  const heights = (flights ?? []).map(flight => altitudeAu(flight.total_points, ceilings[flight.quiz_date] ?? 0))
+  const bestAu = Math.max(0, ...heights)
+  const avgAu = heights.length ? heights.reduce((sum, au) => sum + au, 0) / heights.length : 0
 
   return (
     <section className="panel" aria-labelledby="flights-heading">
@@ -47,7 +51,7 @@ export function Flights({ token, signedIn, tiers }: {
         <div className="stats logbook-stats">
           <span className="stat"><small>FLIGHTS</small>{log.played}</span>
           <span className="stat"><small>STREAK</small>{log.streak}</span>
-          <span className="stat"><small>BEST</small>{altitudeAu(log.best).toFixed(1)} AU</span>
+          <span className="stat"><small>BEST</small>{bestAu.toFixed(1)} AU</span>
           <span className="stat"><small>AVERAGE</small>{avgAu.toFixed(1)} AU</span>
         </div>
 
@@ -65,7 +69,7 @@ export function Flights({ token, signedIn, tiers }: {
                         : `${flight.answers.length} answered`}
                     </span>
                   </span>
-                  <b>{flight.height_au.toFixed(1)} AU</b>
+                  <b>{altitudeAu(flight.total_points, ceilings[flight.quiz_date] ?? 0).toFixed(1)} AU</b>
                   <span className="more" aria-hidden="true" />
                 </summary>
                 <ul className="sheet">

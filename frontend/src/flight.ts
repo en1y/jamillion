@@ -2,43 +2,82 @@
 // share text. Pure, so flight.test.ts can check it without a browser.
 import type { Flight, OwnAnswer, Tier } from './api'
 
-export const AU_PER_POINT = 0.1714
-export const HELIOPAUSE_AU = 120          // 700 points, a perfect run
-/** Linear on purpose: the same points always move the rocket the same distance.
- *  The inner planets sit close together at the bottom, as they do in the sky;
- *  alternating the labels left and right keeps them readable. */
-export const PX_PER_AU = 60
+/** The summit. A perfect day -- every question at its best -- lands on Pluto, so
+ *  the scale is set by the quiz: `max` is that day's ceiling in points. */
+export const PLUTO_AU = 39.5
+/** The Sun is a disc this many px across, centred on the foot of the track, so at
+ *  0 AU it fills the bottom of the screen and the rocket sits on its rim. */
+export const SUN_RADIUS = 320
+/** Spacing is by leg, not by AU: every planet-to-planet leg is at least LEG_MIN px,
+ *  more than a tall screen, so one body is ever in view at a time, plus a little
+ *  per AU so the outer legs still read as the long ones. */
+export const LEG_MIN = 1500
+export const LEG_PER_AU = 140
 
 export interface Landmark { name: string; au: number; size?: number; color?: string }
 
-/** Bodies get a dot; the rest is a tick with a caption. Voyager 1 (~167 AU) is
- *  past the top of the track, so the heliopause it crossed in 2012 is the summit. */
+/** Bodies get a planet; the rest is a tick with a caption. Pluto is the summit. */
 export const LANDMARKS: Landmark[] = [
-  { name: 'Mercury', au: 0.39, size: 4, color: '#b9b1a6' },
-  { name: 'Venus', au: 0.72, size: 7, color: '#e8c48a' },
-  { name: 'Earth', au: 1, size: 7, color: '#6fb5ff' },
-  { name: 'Mars', au: 1.52, size: 5, color: '#e0714a' },
+  { name: 'Mercury', au: 0.39, size: 30, color: '#b9b1a6' },
+  { name: 'Venus', au: 0.72, size: 64, color: '#e8c48a' },
+  { name: 'Earth', au: 1, size: 68, color: '#6fb5ff' },
+  { name: 'Mars', au: 1.52, size: 44, color: '#e0714a' },
   { name: 'Asteroid belt', au: 2.7 },
-  { name: 'Jupiter', au: 5.2, size: 22, color: '#d9a877' },
-  { name: 'Saturn', au: 9.5, size: 18, color: '#e6cf9a' },
-  { name: 'Uranus', au: 19.2, size: 12, color: '#9fe3e8' },
-  { name: 'Neptune', au: 30.1, size: 12, color: '#5b7cff' },
-  { name: 'Pluto · Kuiper belt', au: 39.5, size: 4, color: '#cbb8a8' },
-  { name: 'Eris', au: 68, size: 4, color: '#dfe6f0' },
-  { name: 'Sedna', au: 76, size: 3, color: '#d98a6b' },
-  { name: 'Termination shock · the solar wind stalls', au: 90 },
-  { name: 'Voyager 2 crossed here, 2018', au: 119 },
-  { name: 'Heliopause · Voyager 1, 2012', au: HELIOPAUSE_AU },
+  { name: 'Jupiter', au: 5.2, size: 220, color: '#d9a877' },
+  { name: 'Saturn', au: 9.5, size: 180, color: '#e6cf9a' },
+  { name: 'Uranus', au: 19.2, size: 120, color: '#9fe3e8' },
+  { name: 'Neptune', au: 30.1, size: 116, color: '#5b7cff' },
+  { name: 'Pluto · Kuiper belt', au: PLUTO_AU, size: 34, color: '#cbb8a8' },
 ]
 
-export const altitudeAu = (points: number) => points * AU_PER_POINT
+/** The day's ceiling: the key's sum when the RPC delivered it, else a rough one,
+ *  every question at the top tier, so the rocket still flies before it loads. */
+export const ceilingFor = (today: { quiz_date: string; question_count: number; tiers: Tier[] },
+                           ceilings: Record<string, number>) =>
+  ceilings[today.quiz_date] ?? today.question_count * Math.max(0, ...today.tiers.map(tier => tier.points))
 
-/** Pixels up the track, 0 at the Sun, clamped to the heliopause. */
-export const trackPx = (au: number) => Math.max(0, Math.min(au, HELIOPAUSE_AU)) * PX_PER_AU
+/** Points to altitude on the day's scale: `max` points is Pluto. */
+export const altitudeAu = (points: number, max: number) => max > 0 ? points / max * PLUTO_AU : 0
+
+/** The bodies the legs run between: the Sun, then every planet, each with the px
+ *  the track has climbed to reach it. Ticks fall wherever their AU lands in a leg. */
+const STOPS = [{ au: 0 }, ...LANDMARKS.filter(mark => mark.size)].map(mark => ({ au: mark.au, px: 0 }))
+for (let i = 1; i < STOPS.length; i++)
+  STOPS[i].px = STOPS[i - 1].px + LEG_MIN + LEG_PER_AU * (STOPS[i].au - STOPS[i - 1].au)
+
+/** Pixels up the track: the Sun's rim at 0 AU, straight within a leg, clamped to Pluto. */
+export function trackPx(au: number): number {
+  const at = Math.max(0, Math.min(au, PLUTO_AU))
+  const i = Math.max(1, STOPS.findIndex(stop => stop.au >= at))
+  const from = STOPS[i - 1], to = STOPS[i]
+  return SUN_RADIUS + from.px + (to.px - from.px) * (at - from.au) / (to.au - from.au)
+}
+
+export interface Leg { name: string; au: number; points: number }
+
+/** What is behind and what is ahead: the last body passed (the Sun at the start)
+ *  and the next one coming, each with the gap in AU and in the points it takes to
+ *  cover it on the day's scale. */
+export function legs(au: number, max: number): { behind: Leg; ahead: Leg | null } {
+  const bodies = [{ name: 'the Sun', au: 0 }, ...LANDMARKS.filter(mark => mark.size)]
+  const gap = (mark: { name: string; au: number }): Leg => {
+    const distance = Math.abs(mark.au - au)
+    return { name: mark.name.split(' · ')[0], au: distance, points: Math.ceil(distance / PLUTO_AU * max - 1e-9) }
+  }
+  const behind = bodies.filter(mark => mark.au <= au).at(-1) ?? bodies[0]
+  const ahead = bodies.find(mark => mark.au > au) ?? null
+  return { behind: gap(behind), ahead: ahead && gap(ahead) }
+}
+
+/** The one-word class a landmark's planet is drawn with: 'pluto' for 'Pluto · Kuiper belt'. */
+export const slug = (name: string) => name.toLowerCase().split(/[^a-z]/)[0]
 
 /** The last landmark below you, for "past Jupiter". */
 export const passed = (au: number) =>
   LANDMARKS.filter(mark => mark.au <= au).at(-1)?.name.split(' · ')[0] ?? 'the Sun'
+
+/** A tier's badge in public/tiers: 'Main Sequence' is main-sequence.png. */
+export const tierSlug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
 /** One glyph per tier, in tier order, so renaming a tier does not break the grid. */
 export const TIER_EMOJI = ['☁️', '✨', '⭐', '🔴', '🌟', '💥']
@@ -109,12 +148,11 @@ export const monthLabel = (iso: string) =>
   utc(iso).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' })
 
 export function shareText(flight: number, points: number, answers: OwnAnswer[],
-                          tiers: Tier[]): string {
+                          tiers: Tier[], max: number): string {
   const grid = answers.map(answer => emojiFor(answer, tiers)).join('')
-  return `JAMILLION #${flight}\n${altitudeAu(points).toFixed(1)} AU\n\n${grid}`
+  return `JAMILLION #${flight}\n${altitudeAu(points, max).toFixed(1)} AU\n\n${grid}`
 }
 
-export const MAX_POINTS = 700
 export const DIST_BINS = 36
 
 export interface TierMeta { height: number; color: string; blurb: string }
@@ -131,16 +169,29 @@ export const TIER_META: Record<string, TierMeta> = {
 
 export interface ScoreBand { min: number; tier: string; range: string; verdict: string }
 
-export const SCORE_BANDS: ScoreBand[] = [
-  { min: 0,   tier: 'Nebula',        range: '0–150',   verdict: 'Nebula. Still among the inner planets.' },
-  { min: 151, tier: 'Main Sequence', range: '151–250', verdict: 'Main sequence. Past the asteroid belt.' },
-  { min: 251, tier: 'Red Giant',     range: '251–350', verdict: 'Red giant. Out among the giants.' },
-  { min: 351, tier: 'Supergiant',    range: '351–449', verdict: 'Supergiant. The Kuiper belt is in the rear view.' },
-  { min: 450, tier: 'Supernova',     range: '450+',    verdict: 'Supernova. Heliopause. Absurd.' },
+/** The bearing's bands as shares of a perfect day: the old 151/251/351/450 of 700. */
+const BAND_SHARES = [
+  { share: 0,         tier: 'Nebula',        verdict: 'Nebula. Still among the inner planets.' },
+  { share: 151 / 700, tier: 'Main Sequence', verdict: 'Main sequence. Past the asteroid belt.' },
+  { share: 251 / 700, tier: 'Red Giant',     verdict: 'Red giant. Out among the giants.' },
+  { share: 351 / 700, tier: 'Supergiant',    verdict: 'Supergiant. Neptune is in the rear view.' },
+  { share: 450 / 700, tier: 'Supernova',     verdict: 'Supernova. Pluto. Absurd.' },
 ]
 
-export const bandFor = (points: number) =>
-  [...SCORE_BANDS].reverse().find(band => points >= band.min) ?? SCORE_BANDS[0]
+/** The bands for a day whose ceiling is `max` points, ranges included. */
+export function scoreBands(max: number): ScoreBand[] {
+  const floor = (share: number) => Math.ceil(share * max - 1e-9)
+  return BAND_SHARES.map((band, i) => {
+    const min = floor(band.share)
+    const next = BAND_SHARES[i + 1]
+    return { min, tier: band.tier, verdict: band.verdict, range: next ? `${min}–${floor(next.share) - 1}` : `${min}+` }
+  })
+}
+
+export const bandFor = (points: number, max: number) => {
+  const bands = scoreBands(max)
+  return [...bands].reverse().find(band => points >= band.min) ?? bands[0]
+}
 
 /** How far down the flight log a mark sits: 0 at the Sun, ~1 at the heliopause.
  *  Same depths Krillion uses, so a miss hugs the top and a Supernova lands at the bottom. */
@@ -178,7 +229,7 @@ function catmull(points: [number, number][]): string {
   return d
 }
 
-export function curveGeom(dist: number[], score: number) {
+export function curveGeom(dist: number[], score: number, max: number) {
   const smooth = smoothDist(dist)
   const peak = Math.max(...smooth)
   if (!(peak > 0)) return null
@@ -187,7 +238,7 @@ export function curveGeom(dist: number[], score: number) {
   smooth.forEach((v, i) => pts.push([((i + 0.5) / smooth.length) * width, base - v / peak * rise]))
   pts.push([width, base])
   const line = catmull(pts)
-  const youX = Math.min(Math.max(score, 0), MAX_POINTS) / MAX_POINTS * width
+  const youX = max > 0 ? Math.min(Math.max(score, 0), max) / max * width : 0
   let youY = base
   for (let i = 0; i < pts.length - 1; i++) {
     const [x0, y0] = pts[i], [x1, y1] = pts[i + 1]

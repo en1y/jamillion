@@ -514,7 +514,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/players/98561bb
                 "is_correct": true, "tier": "Nebula", "points": 10, "answered_at": "…"}]}]}
 ```
 
-An empty `raw_text` is a skip or a timeout; the schema does not tell the two apart. `height_au` is `total_points × 0.1714`.
+An empty `raw_text` is a skip or a timeout; the schema does not tell the two apart. `height_au` is `total_points × 0.1714`, a legacy figure: the game draws heights from `quiz_ceilings()` instead (see `docs/README.md`).
 
 **Audio while previewing.** `GET /api/audio/{question_id}` normally serves only published quizzes dated today or earlier. A moderator's token lifts both conditions, so tomorrow's song question can be checked before anyone can play it. Without a token the route behaves exactly as it does for players.
 
@@ -573,7 +573,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" 'localhost:8080/api/quizzes/2026-0
                     "guess_count": 2, "share": "0.6667"}]}]}
 ```
 
-`heights` is the `quiz_heights` view: one row per distinct score among the finished flights, with `height_au` = points × 0.1714. `answered` counts every answer stored for the question, `skipped` the empty ones (a deliberate skip or a timeout), `correct` those that matched an approved answer. `share` divides an answer's `guess_count` by every answer stored for that question, skips included, which is the same denominator the scorer uses, so it is the share the tiers were computed against. A malformed date is 400, an unused one 404.
+`heights` is the `quiz_heights` view: one row per distinct score among the finished flights, with `height_au` on the day's scale (`height_au()` in the DB: points over `quiz_max_points()`, times 39.5). `answered` counts every answer stored for the question, `skipped` the empty ones (a deliberate skip or a timeout), `correct` those that matched an approved answer. `share` divides an answer's `guess_count` by every answer stored for that question, skips included, which is the same denominator the scorer uses, so it is the share the tiers were computed against. A malformed date is 400, an unused one 404.
 
 **Raw table view.** Read-only, over a fixed allowlist.
 

@@ -4,6 +4,16 @@ const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
 export const supabase = url && key ? createClient(url, key) : null
 
+/** Each published day's ceiling in points, by date: the quiz_ceilings() RPC, the
+ *  one number the frontend reads from the answer key. Empty without Supabase
+ *  configured or when the call fails; callers fall back to a rough ceiling. */
+export async function getCeilings(): Promise<Record<string, number>> {
+  if (!supabase) return {}
+  const { data } = await supabase.rpc('quiz_ceilings')
+  return Object.fromEntries(((data ?? []) as { quiz_date: string; max_points: number }[])
+    .map(row => [row.quiz_date, row.max_points]))
+}
+
 export interface Player {
   player_id: string
   authenticated: boolean

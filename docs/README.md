@@ -24,7 +24,7 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
   | Supernova     |    100 | One in a Krillion   |
 
   Moderators and admins can override the tier of any accepted answer.
-- **Height** — 1 point = 0.1714 AU. A perfect 700-point run reaches ~120 AU, the heliopause. Landmarks on the way: Mercury, Venus, Earth, Mars, the asteroid belt, Jupiter, Saturn, Uranus, Neptune, Pluto and the Kuiper belt, Eris, Sedna, the termination shock, Voyager 2's crossing and the heliopause Voyager 1 crossed in 2012.
+- **Height** — a share of the day: the most every question can pay is Pluto, 39.5 AU, so a perfect run always lands there whatever the questions are worth. Landmarks on the way: Mercury, Venus, Earth, Mars, the asteroid belt, Jupiter, Saturn, Uranus, Neptune, Pluto and the Kuiper belt, Eris, Sedna, the termination shock, Voyager 2's crossing and the heliopause Voyager 1 crossed in 2012.
 
 ## Roles
 
