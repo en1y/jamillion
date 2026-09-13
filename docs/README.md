@@ -2,7 +2,7 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, on a clock or in your own time. The rarer your correct answer, the further you fly.
 
-**Current: v0.10.0 — hardening.** `docker compose up` brings the whole thing up behind HTTPS on one origin: Caddy serves the built app and passes `/api` to the backend, while Postgres and Auth stay in the Supabase stack where the migrations put them. Rate limits per IP and per player, a body cap, bounded search terms and filter stacks, and a nightly `pg_dump` with a restore that has actually been run. Before that, v0.9.0 — ground control — an admin gets a fifth chip in the dock and the last screen the backend had been waiting for: everyone aboard, searchable across username and email, sortable by any of six columns, with a role select and a delete on each row and the last admin protected from both; how a day went, as its score distribution and every question's guesses with their shares, on its own tab and again on the editor's day once people have flown it; the six rarity tiers editable in place, name, points and the share that still reaches them; and a read-only window on sixteen tables. The rest is the flight deck of v0.8.7: pick a day, drag a snippet window over a decoded waveform, write the accepted answers out of the catalog rather than out of memory, publish. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
+**Current: v0.11.0 — pull and run.** One `compose.yaml` and `docker compose up -d` bring the whole thing up from Docker Hub behind HTTPS, Supabase included, with no checkout and no `.env`: secrets generated on first boot, migrations applied on every boot, and a setup page on the first visit that creates the admin, takes the catalog keys — kept in a volume only the backend can read — and starts seeding as many artists as you ask for. Before that, v0.10.0 — hardening — rate limits per IP and per player, a body cap, bounded search terms and filter stacks, and a nightly `pg_dump` with a restore that has actually been run. Before that, v0.9.0 — ground control — an admin gets a fifth chip in the dock and the last screen the backend had been waiting for: everyone aboard, searchable across username and email, sortable by any of six columns, with a role select and a delete on each row and the last admin protected from both; how a day went, as its score distribution and every question's guesses with their shares, on its own tab and again on the editor's day once people have flown it; the six rarity tiers editable in place, name, points and the share that still reaches them; and a read-only window on sixteen tables. The rest is the flight deck of v0.8.7: pick a day, drag a snippet window over a decoded waveform, write the accepted answers out of the catalog rather than out of memory, publish. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
 
 ## The game
 
@@ -51,7 +51,10 @@ backend/    Drogon server
 frontend/   Vite React app
 supabase/   migrations, seed, local database/auth configuration
 scripts/    seed_music.py, fetch_audio.py, backup.sh
-compose.yaml, Caddyfile   backend + frontend behind HTTPS on one origin
+docker/     first-boot secrets, the db image, role passwords and the migration runner
+compose.yaml        the whole stack from Docker Hub, Supabase included
+compose.build.yaml  the same, built from this checkout
+Caddyfile   one HTTPS origin for the site, /api, /auth/v1 and /rest/v1
 docs/       RUNNING.md — how to run everything
 docs/ROADMAP.md  what gets built in which order
 ```

@@ -325,7 +325,7 @@ Decisions worth carrying forward:
   injected header never reaches the limiter. That is also why the resolver had to
   be proved against the backend directly, where loopback *is* a trusted proxy:
   two forwarded addresses, two budgets of ten.
-- **Compose has no database service, and `DB_*` is not `PG*`.** The roadmap line
+- **Compose has no database service, and `DB_*` is not `PG*`.** *(Superseded in v0.11.0: compose brings its own Supabase.)* The roadmap line
   said "db + backend + frontend", but CLAUDE.md says Postgres only ever runs
   inside the Supabase stack, and a second Postgres would not carry GoTrue anyway —
   the backend's whole auth story is verifying tokens that `auth.users` issued. The
@@ -372,12 +372,75 @@ Decisions worth carrying forward:
   six Supabase default-privilege statements. All 17 `public` tables matched the
   live row counts afterwards and both views kept `security_invoker = true`. The
   dump is right; the exit code is not the check.
-- **The SPA image refuses to be built without a Supabase project.** `VITE_*` is
+- **The SPA image refuses to be built without a Supabase project.** *(Superseded in v0.11.0: the anon key arrives at runtime.)* `VITE_*` is
   baked in at build time and vite inlines `undefined` for a missing one, so an
   image built from the local `.env` asks each *visitor's* `127.0.0.1:54321` for a
   token — a stack that works only on the machine it was built on, and only fails
   in the browser. The build now stops on an empty argument, and a deployment
   passes the hosted project's URL and anon key.
+
+## v0.11.0 — Pull and run
+
+v0.10.0's compose needed `npx supabase start` on the host, a checkout to build
+from, and an `.env` of keys, which is a stack you cannot hand to anyone.
+
+- [x] `db`, `auth` and `rest` from Supabase's own images, the tags the CLI runs.
+- [x] Secrets generated on first boot; migrations applied by a one-shot on every boot.
+- [x] Caddy routes `/auth/v1` and `/rest/v1`; the anon key reaches the browser at runtime.
+- [x] Three published images, `en1y/jamillion-{backend,db,web}`: `compose.yaml` alone
+      runs the stack, `compose.build.yaml` builds it.
+- [x] A setup page on first visit: the admin account, the catalog keys, how many
+      artists; the keys kept in a volume only the backend mounts; the seeder started
+      by the backend.
+- [x] A startup summary in the backend log: where to open it, whether setup is
+      done, the schema version and what the database holds.
+
+Decisions worth carrying forward:
+
+- **Three Supabase services, not eleven.** The browser signs in and calls one RPC;
+  nothing uses storage, realtime, Studio or edge functions, and Kong's job — routing
+  and an `apikey` check on a key every visitor already has — is two `handle_path`
+  lines in the Caddyfile.
+- **The generated secrets live in a volume, and each image is handed them its own
+  way.** Compose cannot read an env file out of a volume, so `db`, `auth` and
+  `backend` source it in a `sh -c` entrypoint, and PostgREST — whose image has no
+  shell — reads `@/secrets/jwt_secret` and `@/secrets/rest_db_uri`, its own
+  from-file syntax. Only `public/` is mounted into Caddy, via a volume `subpath`.
+- **Those secrets are bound to the database volume.** The Supabase postgres image
+  runs `/etc/postgresql.schema.sql` once at the end of initdb, which is where the
+  role passwords are set; a new `secrets` volume against an old `db` volume is a
+  stack that cannot log in. They are removed together or not at all.
+- **Migrations run after GoTrue is healthy**, because they hang a trigger on
+  `auth.users` and that table is GoTrue's own first migration. They are recorded
+  in the CLI's `supabase_migrations.schema_migrations`, so both ways agree.
+- **The keys are entered in the browser, not a terminal.** `docker compose up -d`
+  cannot ask a question, and a wizard in `docker compose run` is a second command
+  that needs a TTY. The setup page is also where the admin account has to be made
+  anyway. `POST /api/setup` is admin-only and write-only: no route returns a key.
+- **The keys are a file in a volume, not a table.** `settings.json`, `0600`, in a
+  `config` volume mounted into the backend alone. A table would be one RLS
+  mistake away from PostgREST, which is on the public origin; a file there is
+  unreachable from every other container. The cost is that `pg_dump` does not
+  carry them, which is the right way round for credentials.
+- **The backend runs the seeder, not a worker service.** It already shells out to
+  `fetch_audio.py`, so the image already had python; it gained the seed script's
+  packages in a venv. `fork` + `execvpe` with the environment built before the
+  fork, `setsid`, and a thread that `waitpid`s the child, so a finished seeder is
+  not a zombie that still reads as running. One at a time, under the same lock as
+  the settings write. A restart of the container stops it; the seeder commits per
+  artist, so calling setup again picks up.
+- **`compose.yaml` has no `build:` at all.** A downloaded compose file with a build
+  context that does not exist is a trap; `compose.build.yaml` layers the three
+  builds on for a checkout. Tested by copying `compose.yaml` alone into an empty
+  directory and running it with `--pull never` against the local images.
+- **Development keeps `.env`.** A key in the environment counts as configured, so
+  the setup page never shows for a developer whose `.env` has `LASTFM_API_KEY`
+  and an admin.
+- **The startup summary asks the database**, so a summary with numbers in it is
+  also the proof that the backend is wired to the right one.
+- **`src/limits.h` shadowed `<limits.h>`.** Any target with `src/` on its include
+  path — `auth_guards_test` — lost `INT_MAX` inside OpenSSL's headers. The module
+  is `ratelimit.{h,cc}` now.
 
 ## v1.0.0 — Public
 

@@ -1,8 +1,169 @@
 # Running Jamillion
 
-Three moving parts: the Supabase stack (Postgres, Auth, Studio, all in Docker), the Drogon backend, the Vite frontend. Plus a one-off Python seed.
+**With Docker** (below) is how to run it: the images are on Docker Hub, one `compose.yaml` brings up Postgres, Auth, the backend and the site behind HTTPS, and the first visit to the site sets it up. Prerequisite: Docker with the compose plugin. Nothing else — no checkout, no `.env`.
 
-Prerequisites: Docker running, Node, CMake and a C++20 compiler, Python 3.
+**Development** (sections 0–4) runs the same pieces loosely instead — the Supabase CLI stack, the backend from CMake, Vite with hot reload — for working on the code. Prerequisites there: Docker, Node, CMake and a C++20 compiler, Python 3.
+
+## Run it with Docker
+
+```bash
+mkdir jamillion && cd jamillion
+curl -fsSLO https://raw.githubusercontent.com/en1y/jamillion/main/compose.yaml
+docker compose up -d
+```
+
+Then open **https://localhost**. The browser warns about the certificate the first time, because `localhost` gets Caddy's own CA.
+
+### First visit: the setup page
+
+Until the site has an admin and a catalog, every visitor gets the setup page instead of the game:
+
+1. **Create the admin account.** Username, email, password. This is the only account that can ever be made admin by signing up — the first one — so do it before sharing the address.
+2. **Fill the catalog.** Paste the keys and choose how many artists to seed:
+
+   | field | |
+   |---|---|
+   | Last.fm API key | required — free at <https://www.last.fm/api/account/create>; it drives the artist chart and the listen counts. Checked against Last.fm before anything is saved. |
+   | YouTube Data API key | optional — exact view counts |
+   | Spotify client id / secret | optional — cross-reference ids; skipped when empty |
+   | Artists to seed | biggest first, about 45 s each: 50 is ~40 minutes, 500 is ~6 hours |
+
+3. **Launch.** The keys are saved and the seeder starts in the background; the page shows how far it has got and can be closed. The site works meanwhile, and the admin writes the first day's questions on the flight deck as soon as there are artists to write them from.
+
+**Where the keys go.** They are sent once, to `POST /api/setup`, which only the admin may call, and written to `settings.json` in the `config` volume: mode `0600`, owned by the backend's user, mounted into the backend container and nothing else. No route returns them — the status the page reads says only whether a Last.fm key is set. They are not in any image, any `.env`, or the database, so `pg_dump` does not carry them either. The stack's own secrets — the JWT secret, the database password — are generated on first boot into the `secrets` volume and never need to be seen at all.
+
+### Day to day
+
+```bash
+docker compose logs backend         # the startup summary, below
+docker compose exec backend tail -f data/config/seed.log   # the seeder
+docker compose pull && docker compose up -d                # update to the latest images
+docker compose stop                 # stop everything, keep it all
+docker compose down                 # remove the containers, keep the data
+docker compose down -v              # wipe: database, secrets, keys, audio, certificates
+```
+
+An update pulls new images and restarts; the `migrate` one-shot applies whatever migrations the new database image carries, and the data, secrets and keys stay where they are. Pin a release with `JAMILLION_VERSION=0.11.0 docker compose up -d` instead of following `latest`.
+
+The backend's startup summary is the first thing to read when something looks wrong:
+
+```
+jamillion 0.11.0 is up
+
+    open         https://localhost
+    first run    nobody has set it up yet -- open https://localhost to create the admin account and start the catalog
+
+    database     postgres@db:5432/postgres, 18 migrations, schema 20260910160000
+    auth         tokens from https://localhost/auth/v1
+    accounts     0 (0 admin)
+    catalog      0 artists, 0 tracks -- empty, the setup page seeds it
+    quizzes      0 published, today's is not published yet
+
+    listening    :8080
+    rate limits  on
+    body cap     256 kB, database timeout 5 s
+```
+
+The numbers come from the database, so a summary with numbers is also the proof the backend reached it. When it cannot, the same place says the database is not answering and why.
+
+### More artists later
+
+The setup route stays available to the admin. Adding artists, or replacing a key, is the same call with the admin's access token (from the browser's session, or a sign-in against `/auth/v1/token`):
+
+```bash
+curl -k https://localhost/api/setup -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' -d '{"artists": 200}'
+```
+
+It seeds the top 200 on the chart; artists already in the catalog are refreshed rather than duplicated, and only missing data is fetched. One seeder runs at a time (a second call answers 409), and it commits an artist at a time, so a restart of the backend container — which stops it — keeps everything it had done. Section 2 covers what it fetches.
+
+### On a server
+
+Point a DNS name at the machine, open ports 80 and 443, and start it with the name:
+
+```bash
+DOMAIN=jamillion.example.com docker compose up -d
+```
+
+(or put `DOMAIN=jamillion.example.com` in a `.env` beside `compose.yaml`, so every later command sees it). A real hostname gets a Let's Encrypt certificate with no further configuration. Visit it before anyone else does: the first account created is the admin.
+
+### What is running
+
+It starts in this order, each step waiting for the previous one to be healthy or done:
+
+| service | image | what it is |
+|---|---|---|
+| `setup` | `en1y/jamillion-backend` | one-shot: generates the JWT secret, the database password and the anon key into the `secrets` volume, once (`docker/setup.py`) |
+| `db` | `en1y/jamillion-db` | Supabase's Postgres image, the tag the CLI runs, with the migrations baked in |
+| `auth` | `supabase/gotrue` | sign-up and sign-in |
+| `migrate` | `en1y/jamillion-db` | one-shot: applies the migrations that are not applied yet (`docker/migrate.sh`) |
+| `rest` | `supabase/postgrest` | for the one RPC the browser makes (`quiz_ceilings()`) |
+| `backend` | `en1y/jamillion-backend` | the Drogon server; it also runs the seeder the setup page starts |
+| `web` | `en1y/jamillion-web` | Caddy: the site, `/api`, `/auth/v1` and `/rest/v1` on one origin |
+
+| volume | holds |
+|---|---|
+| `db` | Postgres |
+| `secrets` | the generated JWT secret, database password and anon key |
+| `config` | the keys from the setup page, and the seeder's log |
+| `audio` | preview clips, a cache — a missing one is downloaded again |
+| `caddy_data`, `caddy_config` | certificates |
+
+- **Only the Supabase pieces the app calls.** The browser uses auth and one RPC, so
+  there is no Kong, Studio, storage, realtime or mail server; Caddy does Kong's
+  routing. Only Caddy publishes a port. To look inside the database:
+  `docker compose exec db psql -U supabase_admin -h 127.0.0.1 -d postgres`.
+- **One origin for all of it**, which is what makes CORS unnecessary. supabase-js
+  is pointed at the page's own origin, and the anon key reaches the browser at
+  runtime through `/config.js`, which Caddy serves out of the `public/` corner of
+  the secrets volume — nothing else in that volume is mounted into Caddy. So one
+  web image serves every deployment.
+- **The `secrets` and `db` volumes live and die together.** The passwords are
+  written into the database once, at initdb (`docker/roles.sql`). Dropping one
+  volume without the other leaves services that cannot log in: `down -v` removes
+  both, which is the only way to start over.
+- **There is no mail.** `GOTRUE_MAILER_AUTOCONFIRM` is on, matching
+  `enable_confirmations = false` in `config.toml`, so sign-up works without SMTP.
+  Password recovery does not until `GOTRUE_SMTP_*` is set on `auth`.
+- The migrations are recorded in `supabase_migrations.schema_migrations`, the CLI's
+  own table, so the two ways of applying them agree on what has been applied.
+- `COOKIE_SECURE=true` is set for the backend, because Caddy terminates TLS in
+  front of it. The backend is health checked over `/api/health`, so an unhealthy
+  container is also the answer to "can it still see Postgres", and the site waits
+  for it rather than answering 502.
+
+### Backups
+
+```bash
+docker compose exec -T db pg_dump -U supabase_admin -h 127.0.0.1 -d postgres \
+    -n public -n auth -Fc > jamillion-$(date -u +%Y%m%d).dump
+docker compose exec -T db pg_restore -U supabase_admin -h 127.0.0.1 -d postgres \
+    --clean --if-exists --no-owner < jamillion-20260913.dump
+```
+
+Section 4c explains the schema choice and why a restore into an empty database reports errors that are not data loss. The audio volume does not need backing up. The keys are not in the dump: re-enter them through `/api/setup` after restoring onto a new machine.
+
+### Building and publishing the images
+
+From a checkout, `compose.build.yaml` adds the build steps on top of `compose.yaml`:
+
+```bash
+# run what is checked out, built locally
+docker compose -f compose.yaml -f compose.build.yaml up --build -d
+
+# publish a release: the version from backend/CMakeLists.txt, and latest
+docker login
+for tag in 0.11.0 latest; do
+  JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
+  JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
+done
+```
+
+The second build of the loop is all cache. Three images carry the project — `jamillion-backend`, `jamillion-db`, `jamillion-web` — and the other two services run Supabase's own images unchanged.
+
+---
+
+# Development
 
 ## 0. Environment
 
@@ -28,12 +189,12 @@ npx supabase start
 
 First run pulls a few GB of images and takes several minutes; after that it is seconds. It applies everything in `supabase/migrations/` automatically and prints your keys.
 
-| What | Where |
-|------|-------|
-| Studio (table editor, SQL, auth users) | http://127.0.0.1:54323 |
-| API / Auth | http://127.0.0.1:54321 |
-| Postgres | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` |
-| Inbucket (catches signup emails) | http://127.0.0.1:54324 |
+| What                                   | Where                                                     |
+|----------------------------------------|-----------------------------------------------------------|
+| Studio (table editor, SQL, auth users) | http://127.0.0.1:54323                                    |
+| API / Auth                             | http://127.0.0.1:54321                                    |
+| Postgres                               | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` |
+| Inbucket (catches signup emails)       | http://127.0.0.1:54324                                    |
 
 ```bash
 npx supabase stop        # shut down, keeps data
@@ -188,59 +349,13 @@ The calendar beside the day's heading **moves the draft to another date** — se
 
 *tables* is the allowlisted dump of section 10: pick one of the sixteen tables and a page size. Neither list route returns a total, so the paging says only what is on screen (*rows 51–100*) and **next** stops at a short page; an empty page carries no column names either, so it says which table is empty instead of drawing an invented header.
 
-## 4b. The whole thing in containers
+## 4b. Rate limits
 
-`docker compose up --build` runs the backend and a Caddy that serves the built
-SPA and proxies `/api` to it. There is **no database service**: Postgres and Auth
-stay in the Supabase stack, so `npx supabase start` still has to be running on the
-host (or `DB_*` has to point at a hosted project). That keeps one schema, applied
-one way, by `supabase/migrations/`.
+They apply the same way in Docker and in development.
 
-```bash
-npx supabase start
-docker compose up --build -d
-curl -k https://localhost/api/health
-docker compose logs -f backend
-docker compose down
-```
-
-- `DOMAIN` is the address Caddy serves. `localhost` (the default) gets Caddy's own
-  internal CA, which is why `curl` needs `-k` and a browser shows a warning. A real
-  hostname gets a Let's Encrypt certificate with no further configuration.
-- **The SPA and the API share one origin**, which is what makes CORS unnecessary:
-  the browser only ever talks to Caddy. It is also where the `try_files` fallback
-  lives, so reloading `/editor/2026-09-11` serves `index.html` instead of a 404.
-- `COOKIE_SECURE=true` is set for the backend container, because Caddy is
-  terminating TLS in front of it.
-- **`DB_HOST` and friends are deliberately not `PGHOST`.** Compose reads the same
-  `.env` the host tools use, where `PGHOST=127.0.0.1` — which inside a container
-  means the container. Left unset they default to `host.docker.internal`, reaching
-  the Supabase CLI stack on the host; a hosted project sets `DB_*` explicitly.
-- `SUPABASE_URL` *is* passed through unchanged, because the backend never calls
-  Supabase over HTTP — it only derives the expected token issuer from it. The
-  host's `http://127.0.0.1:54321` is the correct value even though the container
-  cannot reach it.
-- **The frontend image is specific to one Supabase project.** `VITE_SUPABASE_URL`
-  and `VITE_SUPABASE_ANON_KEY` are build arguments baked into the bundle, so the
-  image cannot be built once and promoted between environments. The build refuses
-  to run without them, because vite's alternative is inlining `undefined` and
-  breaking every sign-in in the browser. They have to be the addresses the
-  *visitor's* browser can reach: the `.env` values are the local stack, so a
-  deployment on a real hostname passes the hosted project's URL and anon key.
-- **The backend is health checked, and the SPA waits for it.** The check is the
-  `/api/health` route over the compose network, so an unhealthy container is also
-  the answer to "can it still see Postgres". `web` starts on
-  `condition: service_healthy` rather than at container start, which removes the
-  window where Caddy answers 502 to somebody who opened the page too early.
-- The backend image is not a lone binary: `ensureAudio` shells out to
-  `scripts/fetch_audio.py`, so it carries `python3`, `psycopg`, `requests` and
-  `python-dotenv`, and `DATABASE_URL` has to be set for the script's sake even
-  though the backend itself reads `PG*`. Clips land in the `audio` volume.
-
-### Rate limits
 
 Drogon's own `Hodor` plugin, configured from the environment in
-`backend/src/limits.cc` — no config file, the same rule the rest of the backend
+`backend/src/ratelimit.cc` — no config file, the same rule the rest of the backend
 follows. `RealIpResolver` sits in front of it so the caps see the client Caddy
 forwarded rather than the bridge address.
 
@@ -272,6 +387,8 @@ route already reports.
 ```bash
 scripts/backup.sh
 ```
+
+It dumps whatever `DATABASE_URL` in `.env` points at — the CLI stack, as written. For the Docker stack, whose database publishes no port, see *Backups* under *Run it with Docker*.
 
 Writes `data/backup/jamillion-<date>.dump` (custom format) and
 `data/backup/audio-<date>.tgz`, then deletes anything older than
