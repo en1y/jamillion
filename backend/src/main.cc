@@ -45,11 +45,18 @@ int main()
     // ponytail: no config.json, everything comes from .env / environment
     const auto port = static_cast<uint16_t>(std::stoi(env("PORT", "8080")));
 
-    // DATABASE_URL=postgresql://user:pass@host:5432/db
+    // The query timeout rides the client, and it has to be passed here: the
+    // manager behind getDbClient() only exists once the framework is running, so
+    // a getDbClient()->setTimeout() from main() dereferences null. Without it --
+    // Drogon's own default is no timeout -- a query that finds no ready
+    // connection is buffered and never called back, so a database that is down
+    // hangs every route instead of failing it. 0 spells "no timeout".
+    const auto dbTimeout = std::stod(env("DB_TIMEOUT_SEC", "5"));
     app().createDbClient("postgresql", env("PGHOST", "localhost"),
                          static_cast<unsigned short>(std::stoi(env("PGPORT", "5432"))),
                          env("PGDATABASE", "jamillion"), env("PGUSER", "jamillion"),
-                         env("PGPASSWORD", "jamillion"), 2, "", "default");
+                         env("PGPASSWORD", "jamillion"), 2, "", "default", false, "",
+                         dbTimeout);
 
     app().registerHandler("/api/health", [](const HttpRequestPtr &, std::function<void(const HttpResponsePtr &)> &&cb) {
         app().getDbClient()->execSqlAsync(
