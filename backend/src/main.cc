@@ -70,7 +70,10 @@ static void startupSummary(uint16_t port, double dbTimeout, size_t maxBody)
                 << " tracks" << (row["artists"].as<long>() == 0 ? " -- empty, the setup page seeds it" : "") << "\n"
                 << "    quizzes      " << row["published"].as<long>() << " published, today's "
                 << (row["today"].as<bool>() ? "is live" : "is not published yet") << "\n"
-                << "\n    listening    :" << port << "\n"
+                << "\n    ports        frontend  " << url << "\n"
+                << "                 backend   :" << port << ", proxied at " << url << "/api\n"
+                << "                 supabase  " << env("SUPABASE_URL")
+                << " -- auth /auth/v1, rest /rest/v1\n"
                 << "    rate limits  " << (env("RATE_LIMIT", "on") == "off" ? "OFF (RATE_LIMIT=off)" : "on") << "\n"
                 << "    body cap     " << maxBody / 1024 << " kB, database timeout "
                 << (dbTimeout > 0 ? std::to_string(static_cast<int>(dbTimeout)) + " s" : "none") << "\n";

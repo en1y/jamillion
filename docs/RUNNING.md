@@ -43,12 +43,12 @@ docker compose down                 # remove the containers, keep the data
 docker compose down -v              # wipe: database, secrets, keys, audio, certificates
 ```
 
-An update pulls new images and restarts; the `migrate` one-shot applies whatever migrations the new database image carries, and the data, secrets and keys stay where they are. Pin a release with `JAMILLION_VERSION=0.11.0 docker compose up -d` instead of following `latest`.
+An update pulls new images and restarts; the `migrate` one-shot applies whatever migrations the new database image carries, and the data, secrets and keys stay where they are. Pin a release with `JAMILLION_VERSION=1.0.0 docker compose up -d` instead of following `latest`.
 
 The backend's startup summary is the first thing to read when something looks wrong:
 
 ```
-jamillion 0.11.0 is up
+jamillion 1.0.0 is up
 
     open         http://localhost:8000
     first run    nobody has set it up yet -- open http://localhost:8000 to create the admin account and start the catalog
@@ -59,7 +59,9 @@ jamillion 0.11.0 is up
     catalog      0 artists, 0 tracks -- empty, the setup page seeds it
     quizzes      0 published, today's is not published yet
 
-    listening    :8080
+    ports        frontend  http://localhost:8000
+                 backend   :8080, proxied at http://localhost:8000/api
+                 supabase  http://localhost:8000 -- auth /auth/v1, rest /rest/v1
     rate limits  on
     body cap     256 kB, database timeout 5 s
 ```
@@ -162,7 +164,7 @@ docker compose -f compose.yaml -f compose.build.yaml up --build -d
 
 # publish a release: the version from backend/CMakeLists.txt, and latest
 docker login
-for tag in 0.11.0 latest; do
+for tag in 1.0.0 latest; do
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
 done
@@ -776,7 +778,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/players/98561bb
                 "is_correct": true, "tier": "Nebula", "points": 10, "answered_at": "…"}]}]}
 ```
 
-An empty `raw_text` is a skip or a timeout; the schema does not tell the two apart. `height_au` is `total_points × 0.1714`, a legacy figure: the game draws heights from `quiz_ceilings()` instead (see `docs/README.md`).
+An empty `raw_text` is a skip or a timeout; the schema does not tell the two apart. `height_au` is `total_points × 0.1714`, a legacy figure: the game draws heights from `quiz_ceilings()` instead (see the README).
 
 **Audio while previewing.** `GET /api/audio/{question_id}` normally serves only published quizzes dated today or earlier. A moderator's token lifts both conditions, so tomorrow's song question can be checked before anyone can play it. Without a token the route behaves exactly as it does for players.
 

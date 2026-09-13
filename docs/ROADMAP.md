@@ -450,6 +450,29 @@ Decisions worth carrying forward:
 
 ## v1.0.0 — Public
 
+Everything a stranger meets before the game: the repository, the images, the
+first visit.
+
+- [x] The README is the front door: what it is, three lines to run it, how it
+      plays, the flight deck, the stack, with screenshots of a real flight.
+- [x] CI on every push and pull request: frontend tests, lint and build; the
+      backend built with its tests.
+- [x] A `v*` tag publishes `en1y/jamillion-{backend,db,web}` to Docker Hub from
+      CI, so a release is a tag and nothing else.
+- [x] A bug report template behind the results screen's link.
+- [x] Description and social meta on the page; description and topics on the
+      repository.
+
+Decisions worth carrying forward:
+
+- **A release is a tag.** The version lives in `backend/CMakeLists.txt` and
+  `frontend/package.json`; the tag's number is what the images are pushed as,
+  and `latest` follows it. Publishing needs `DOCKERHUB_USERNAME` and
+  `DOCKERHUB_TOKEN` as repository secrets, and without them the job says so
+  and passes, so a fork's CI is not red for lack of a registry.
+- **`docs/README.md` is gone.** GitHub shows the root README and nothing else,
+  and two READMEs is two places for one sentence to go stale.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).
