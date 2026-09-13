@@ -5,6 +5,7 @@
 #include "admin.h"
 #include "auth.h"
 #include "catalog.h"
+#include "limits.h"
 #include "quiz.h"
 
 using namespace drogon;
@@ -42,6 +43,7 @@ int main()
     quiz::registerRoutes();
     admin::registerRoutes();
     catalog::registerRoutes();
+    limits::configure();
     // ponytail: no config.json, everything comes from .env / environment
     const auto port = static_cast<uint16_t>(std::stoi(env("PORT", "8080")));
 
