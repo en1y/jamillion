@@ -30,6 +30,8 @@ public:
                   drogon::FilterChainCallback &&) override;
 };
 void configure();
+// The "iss" an access token has to carry, for the startup summary.
+const std::string &issuerUrl();
 void registerRoutes();
 
 // Shared with the quiz routes.

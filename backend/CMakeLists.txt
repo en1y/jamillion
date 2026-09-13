@@ -32,6 +32,7 @@ FetchContent_MakeAvailable(jwt-cpp)
 file(GLOB_RECURSE SRC CONFIGURE_DEPENDS src/*.cc)
 add_executable(jamillion ${SRC})
 target_link_libraries(jamillion PRIVATE drogon jwt-cpp::jwt-cpp)
+target_compile_definitions(jamillion PRIVATE JAM_VERSION="${PROJECT_VERSION}")
 
 option(JAMILLION_BUILD_TESTS "Build Jamillion auth guard tests" OFF)
 if(JAMILLION_BUILD_TESTS)

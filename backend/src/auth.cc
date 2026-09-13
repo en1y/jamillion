@@ -123,6 +123,8 @@ void configure() {
     secureCookie = secure && std::string(secure) == "true";
 }
 
+const std::string &issuerUrl() { return issuer; }
+
 void Optional::doFilter(const HttpRequestPtr &req, FilterCallback &&cb, FilterChainCallback &&next) {
     const auto &header = req->getHeader("authorization");
     if (req->headers().find("authorization") == req->headers().end()) {

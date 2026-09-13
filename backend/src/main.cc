@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include "admin.h"
 #include "auth.h"
 #include "catalog.h"
@@ -33,6 +34,53 @@ static std::filesystem::path loadDotenv()
         }
         if (dir == dir.parent_path()) return std::filesystem::current_path();
     }
+}
+
+// The first thing to read after `docker compose up`: what is running, where to
+// open it, what it is talking to, and what state that is in -- the database's
+// answer included, so "is it wired up" is one log line rather than five probes.
+// Runs once the loop is up, because the database client only exists then.
+static void startupSummary(uint16_t port, double dbTimeout, size_t maxBody)
+{
+    app().getDbClient()->execSqlAsync(
+        "SELECT (SELECT count(*) FROM supabase_migrations.schema_migrations) AS migrations, "
+        "       (SELECT max(version) FROM supabase_migrations.schema_migrations) AS schema, "
+        "       (SELECT count(*) FROM profiles) AS accounts, "
+        "       (SELECT count(*) FROM profiles WHERE role = 'admin') AS admins, "
+        "       (SELECT count(*) FROM quizzes WHERE published) AS published, "
+        "       (SELECT count(*) FROM artists) AS artists, "
+        "       (SELECT count(*) FROM tracks) AS tracks, "
+        "       EXISTS (SELECT 1 FROM quizzes WHERE quiz_date = game_today() AND published) AS today",
+        [=](const orm::Result &r) {
+            const auto &row = r[0];
+            const auto url = env("PUBLIC_URL", "http://localhost:5173");
+            const auto admins = row["admins"].as<long>();
+            std::ostringstream out;
+            out << "jamillion " JAM_VERSION " is up\n"
+                << "\n    open         " << url << "\n";
+            if (admins == 0)
+                out << "    first run    nobody has set it up yet -- open " << url
+                    << " to create the admin account and start the catalog\n";
+            out << "\n    database     " << env("PGUSER") << "@" << env("PGHOST") << ":" << env("PGPORT")
+                << "/" << env("PGDATABASE") << ", " << row["migrations"].as<long>()
+                << " migrations, schema " << (row["schema"].isNull() ? "none" : row["schema"].as<std::string>()) << "\n"
+                << "    auth         tokens from " << auth::issuerUrl() << "\n"
+                << "    accounts     " << row["accounts"].as<long>() << " (" << admins << " admin)\n"
+                << "    catalog      " << row["artists"].as<long>() << " artists, " << row["tracks"].as<long>()
+                << " tracks" << (row["artists"].as<long>() == 0 ? " -- empty, the setup page seeds it" : "") << "\n"
+                << "    quizzes      " << row["published"].as<long>() << " published, today's "
+                << (row["today"].as<bool>() ? "is live" : "is not published yet") << "\n"
+                << "\n    listening    :" << port << "\n"
+                << "    rate limits  " << (env("RATE_LIMIT", "on") == "off" ? "OFF (RATE_LIMIT=off)" : "on") << "\n"
+                << "    body cap     " << maxBody / 1024 << " kB, database timeout "
+                << (dbTimeout > 0 ? std::to_string(static_cast<int>(dbTimeout)) + " s" : "none") << "\n";
+            LOG_INFO << out.str();
+        },
+        [port](const orm::DrogonDbException &e) {
+            LOG_ERROR << "jamillion " JAM_VERSION " is listening on :" << port
+                      << ", but the database at " << env("PGHOST") << ":" << env("PGPORT")
+                      << " is not answering: " << e.base().what();
+        });
 }
 
 int main()
@@ -90,11 +138,11 @@ int main()
             });
     });
 
-    LOG_INFO << "jamillion listening on :" << port;
     // The largest legitimate body is POST /api/quizzes: seven questions and
     // their expanded answer key, a few tens of kB. TLS and the static files are
     // Caddy's job, so this process only ever sees JSON.
     const auto maxBody = static_cast<size_t>(std::stoul(env("MAX_BODY_BYTES", "262144")));
+    app().registerBeginningAdvice([=] { startupSummary(port, dbTimeout, maxBody); });
     app().setClientMaxBodySize(maxBody)
          .setClientMaxMemoryBodySize(maxBody)
          .addListener("0.0.0.0", port).setThreadNum(4).run();
