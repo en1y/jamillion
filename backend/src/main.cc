@@ -1,4 +1,5 @@
 #include <drogon/drogon.h>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -35,6 +36,11 @@ static std::filesystem::path loadDotenv()
 
 int main()
 {
+    // Trantor's logger fwrites to stdout and only flushes at error level, so in a
+    // container -- where stdout is a pipe, not a tty -- INFO and WARN sit in the
+    // buffer until the process exits. The startup line is what you look for after
+    // `docker compose up`, so make stdout line buffered instead.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
     const auto root = loadDotenv();
     try { auth::configure(); }
     catch (const std::exception &e) { LOG_ERROR << e.what(); return 1; }

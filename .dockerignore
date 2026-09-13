@@ -1,0 +1,14 @@
+.git
+.env
+.cache
+data/
+.venv/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+backend/build/
+backend/cmake-build-debug/
+__pycache__/
+supabase/.temp/
+supabase/.branches/
+*.log

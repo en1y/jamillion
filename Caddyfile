@@ -1,0 +1,13 @@
+# One origin for the SPA and the API, which is what makes CORS unnecessary.
+# DOMAIN=localhost gets Caddy's internal CA; a real hostname gets Let's Encrypt.
+{$DOMAIN:localhost} {
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+	handle {
+		root * /srv
+		# /editor/2026-09-11 is a client route, not a file.
+		try_files {path} /index.html
+		file_server
+	}
+}

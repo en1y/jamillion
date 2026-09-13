@@ -1,0 +1,90 @@
+# Backend and frontend only. Postgres and Auth stay in the Supabase stack --
+# `npx supabase start` on the host, or a hosted project -- so there is no second
+# database to keep in step with supabase/migrations/.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      PORT: 8080
+      # Deliberately NOT ${PGHOST}: compose reads the same .env the host tools
+      # use, where PGHOST is 127.0.0.1 -- which inside a container is the
+      # container. DB_* are the compose-side names, defaulting to the Supabase
+      # CLI stack on the host; a hosted project sets them.
+      PGHOST: ${DB_HOST:-host.docker.internal}
+      PGPORT: ${DB_PORT:-54322}
+      PGDATABASE: ${DB_NAME:-postgres}
+      PGUSER: ${DB_USER:-postgres}
+      PGPASSWORD: ${DB_PASSWORD:-postgres}
+      # fetch_audio.py needs this; the backend itself never reads it.
+      DATABASE_URL: ${DB_URL:-postgresql://postgres:postgres@host.docker.internal:54322/postgres}
+      # Issuer only -- the backend never calls Supabase over HTTP, it just
+      # derives the expected "iss" claim. So the host's own value is correct
+      # here even though the container cannot reach it.
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
+      AUDIO_DIR: /app/data/audio
+      # Caddy terminates TLS, so the cookie may insist on it.
+      COOKIE_SECURE: "true"
+      RATE_LIMIT: ${RATE_LIMIT:-on}
+      TRUST_PROXY_IPS: ${TRUST_PROXY_IPS:-127.0.0.1,172.16.0.0/12}
+      # Seconds a query may wait for a connection or run. 0 leaves Drogon's own
+      # default, which is no timeout -- and a database that is down then hangs
+      # every route instead of failing it.
+      DB_TIMEOUT_SEC: ${DB_TIMEOUT_SEC:-5}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - audio:/app/data/audio
+    # python3 is in the image and the route is plain HTTP inside the network.
+    # A non-200 is exactly what the health handler reports when the database is
+    # unreachable, so this doubles as "is it still talking to Postgres".
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import http.client, sys
+          c = http.client.HTTPConnection('127.0.0.1', 8080, timeout=6)
+          c.request('GET', '/api/health')
+          sys.exit(0 if c.getresponse().status == 200 else 1)
+      # start_interval is what keeps `up` quick: the first probe goes out two
+      # seconds after start instead of waiting out the 30 s interval.
+      interval: 30s
+      start_interval: 2s
+      start_period: 30s
+      # Above DB_TIMEOUT_SEC (5) on purpose, so a database that is down reads as
+      # the 500 it answers rather than as a probe that gave up.
+      timeout: 8s
+      retries: 3
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      backend:
+        # The SPA is useless without the API, and Caddy answers 502 until it is
+        # up, so wait for the health check rather than for the container.
+        condition: service_healthy
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  audio:
+  caddy_data:
+  caddy_config:
