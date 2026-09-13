@@ -27,7 +27,7 @@ cuts are skipped, and remaster/deluxe duplicates collapse into one row per song.
 Everything upserts on platform ids, so re-running refreshes instead of duplicating.
 A failed artist is rolled back and the run continues; --start N resumes at rank N.
 """
-import argparse, os, re, sys, time
+import argparse, json, os, re, sys, time
 import psycopg
 import requests
 from dotenv import load_dotenv
@@ -449,8 +449,18 @@ def main():
     ap.add_argument("--yt-refresh", action="store_true", help="re-read play counts already stored")
     ap.add_argument("--lastfm-cap", type=int, default=30, help="tracks per artist to fetch Last.fm listens for")
     ap.add_argument("--selftest", action="store_true", help="run the pure-logic checks and exit")
+    ap.add_argument("--progress-file", help="write a small status file for the moderator UI")
     args = ap.parse_args()
     if args.selftest: return selftest()
+
+    def progress(**fields):
+        if not args.progress_file: return
+        path = args.progress_file + ".next"
+        with open(path, "w") as out:
+            json.dump(fields, out)
+        os.replace(path, args.progress_file)
+
+    progress(state="preparing", done=0, total=0, failed=0, artist="", failed_artists=[])
 
     mb = musicbrainz()
     sp = None if args.no_spotify else spotify()
@@ -465,24 +475,39 @@ def main():
     ranked = not args.artists      # only a chart run knows the global ranking
     print(f"seeding {len(names)} artists" + (f" from rank {args.start}" if ranked else " (rank left unchanged)"), flush=True)
 
+    total = max(0, len(names) - args.start + 1)
+    done = failed = 0
+    failed_artists = []
+    progress(state="running", done=done, total=total, failed=failed, artist="", failed_artists=failed_artists)
+
     with psycopg.connect(DB) as conn, conn.cursor() as cur:
         for rank, name in enumerate(names, 1):
             if rank < args.start: continue
             t0 = time.time()
             print(f"[{rank}/{len(names)}] {name}", flush=True)
+            progress(state="running", done=done, total=total, failed=failed, artist=name, failed_artists=failed_artists)
             try:
                 got = seed_artist(cur, sp, mb, name, rank if ranked else None)
-                if not got:
-                    conn.commit(); continue
-                aid, dzid = got
-                tracks = seed_albums(cur, aid, dzid, args.detail_cap)
-                if yt: seed_youtube(cur, yt, aid, tracks, args.yt_albums, args.yt_refresh)
-                seed_lastfm_tracks(cur, tracks, args.lastfm_cap)
+                if got:
+                    aid, dzid = got
+                    tracks = seed_albums(cur, aid, dzid, args.detail_cap)
+                    if yt: seed_youtube(cur, yt, aid, tracks, args.yt_albums, args.yt_refresh)
+                    seed_lastfm_tracks(cur, tracks, args.lastfm_cap)
+                else:
+                    failed += 1
+                    failed_artists = (failed_artists + [name])[-20:]
+                    print("      SKIPPED: no Deezer artist found", flush=True)
                 conn.commit()          # per artist, so --start resumes cleanly
-                print(f"      {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
+                if got: print(f"      {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
             except Exception as e:
                 conn.rollback()        # an aborted tx would poison every later artist
+                failed += 1
+                failed_artists = (failed_artists + [name])[-20:]
                 print(f"      FAILED {type(e).__name__}: {e}", flush=True)
+            done += 1
+            progress(state="running", done=done, total=total, failed=failed, artist="", failed_artists=failed_artists)
+
+    progress(state="finished", done=done, total=total, failed=failed, artist="", failed_artists=failed_artists)
 
 if __name__ == "__main__":
     main()

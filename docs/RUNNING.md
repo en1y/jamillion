@@ -241,6 +241,9 @@ The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST
 tail -f data/seed.log
 ```
 
+Signed-in moderators and admins see a run progress card in the flight deck: artists processed, current artist, failures and catalog size. It refreshes every ten seconds. `GET /api/seeder` is the staff-only status endpoint behind the card and returns counts and run state, never catalog keys or raw logs.
+From the same card, staff can retry a failed artist, enter any artist name to refresh it, or rerun the top-N chart. `POST /api/seeder` accepts either `{"artist":"Radiohead"}` or `{"limit":500}`. A second run is refused while one is active. Artist runs leave chart rank unchanged.
+
 Each run starts a fresh log and keeps the previous one as `data/seed.log.prev`. If the seeder dies in its first seconds (bad flag, missing key, database down) the script prints the log and exits 1 instead of leaving it to be discovered later. It also refuses to start a second seeder while one is running:
 
 ```bash

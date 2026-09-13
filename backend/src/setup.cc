@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstdlib>
@@ -72,11 +73,14 @@ bool save(const Json::Value &settings) {
 // seed_music.py in the background, logging to CONFIG_DIR/seed.log. Its
 // environment is built before fork(), because between fork and exec a
 // multithreaded process may only make async-signal-safe calls.
-bool startSeeder(const Json::Value &settings, int artists) {
+bool startSeeder(const Json::Value &settings, int artists, const std::string &artist = "") {
     const auto venv = rootDir / ".venv/bin/python";
     const std::string python = std::filesystem::exists(venv) ? venv.string() : "python3";
     const auto limit = std::to_string(artists);
     const auto log = (configDir / "seed.log").string();
+    const auto progress = (configDir / "seed-progress.json").string();
+    std::error_code ignored;
+    std::filesystem::remove(progress, ignored);
 
     std::vector<std::string> env;
     for (char **entry = environ; *entry; ++entry) env.emplace_back(*entry);
@@ -86,7 +90,14 @@ bool startSeeder(const Json::Value &settings, int artists) {
     for (auto &entry : env) envp.push_back(entry.data());
     envp.push_back(nullptr);
 
-    std::vector<std::string> args{python, "-u", "scripts/seed_music.py", "--limit", limit};
+    std::vector<std::string> args{python, "-u", "scripts/seed_music.py", "--progress-file", progress};
+    if (artist.empty()) {
+        args.emplace_back("--limit");
+        args.push_back(limit);
+    } else {
+        args.emplace_back("--artists");
+        args.push_back(artist);
+    }
     if (value(settings, kKeys[2]).empty()) args.emplace_back("--no-spotify");
     std::vector<char *> argv;
     for (auto &arg : args) argv.push_back(arg.data());
@@ -106,11 +117,12 @@ bool startSeeder(const Json::Value &settings, int artists) {
     seeder = pid;
     // Reaped here, so a finished seeder is not left a zombie that still looks alive.
     std::thread([pid] { waitpid(pid, nullptr, 0); seeder = 0; }).detach();
-    LOG_INFO << "seeding " << artists << " artists (pid " << pid << "), log in " << log;
+    LOG_INFO << "seeding " << (artist.empty() ? limit + " chart artists" : "artist " + artist)
+             << " (pid " << pid << "), log in " << log;
     return true;
 }
 
-Task<HttpResponsePtr> status(HttpRequestPtr) {
+Task<HttpResponsePtr> status(HttpRequestPtr req) {
     const auto settings = load();
     try {
         const auto rows = co_await app().getDbClient()->execSqlCoro(
@@ -122,6 +134,21 @@ Task<HttpResponsePtr> status(HttpRequestPtr) {
         out["seeding"] = seeder.load() != 0;
         out["artists"] = static_cast<Json::Int64>(rows[0]["artists"].as<long>());
         out["seed_target"] = settings["seed_target"].asInt();
+        if (req->path() == "/api/seeder") {
+            Json::Value progress;
+            std::ifstream progressFile(configDir / "seed-progress.json");
+            if (progressFile) {
+                Json::CharReaderBuilder reader;
+                std::string ignored;
+                if (Json::parseFromStream(reader, progressFile, &progress, &ignored) && progress.isObject()) {
+                    // A killed child leaves its last snapshot behind. Never call it running
+                    // once the process has gone, even if the file says it was.
+                    if (!out["seeding"].asBool() && progress["state"].asString() != "finished")
+                        progress["state"] = "interrupted";
+                    out["progress"] = progress;
+                }
+            }
+        }
         auto response = HttpResponse::newHttpJsonResponse(out);
         response->addHeader("Cache-Control", "no-store");
         co_return response;
@@ -171,6 +198,46 @@ Task<HttpResponsePtr> apply(HttpRequestPtr req) {
     co_return co_await status(req);
 }
 
+// Staff can rerun the configured chart size or refresh one named artist. These
+// runs use the already stored keys and the same single-child lock as setup.
+Task<HttpResponsePtr> rerun(HttpRequestPtr req) {
+    const auto body = req->getJsonObject();
+    if (!body || !body->isObject()) co_return auth::error(k400BadRequest, "JSON body required");
+    const bool named = body->isMember("artist");
+    if (named == body->isMember("limit"))
+        co_return auth::error(k400BadRequest, "Provide either artist or limit");
+
+    std::string artist;
+    int count = 0;
+    if (named) {
+        if (!(*body)["artist"].isString())
+            co_return auth::error(k400BadRequest, "artist must be a name");
+        artist = (*body)["artist"].asString();
+        while (!artist.empty() && std::isspace(static_cast<unsigned char>(artist.back()))) artist.pop_back();
+        while (!artist.empty() && std::isspace(static_cast<unsigned char>(artist.front()))) artist.erase(artist.begin());
+        if (artist.empty() || artist.size() > 120 ||
+            std::any_of(artist.begin(), artist.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+            co_return auth::error(k400BadRequest, "artist must be 1-120 characters without control characters");
+    } else {
+        const auto &given = (*body)["limit"];
+        if (!given.isIntegral() || given.asInt() < 1 || given.asInt() > 2000)
+            co_return auth::error(k400BadRequest, "limit must be between 1 and 2000");
+        count = given.asInt();
+    }
+
+    const auto settings = load();
+    if (value(settings, kKeys[0]).empty())
+        co_return auth::error(k409Conflict, "The catalog needs a Last.fm key before seeding");
+    {
+        std::lock_guard guard(lock);
+        if (seeder.load() != 0)
+            co_return auth::error(k409Conflict, "A catalog run is already in progress");
+        if (!startSeeder(settings, count, artist))
+            co_return auth::error(k500InternalServerError, "Could not start the seeder");
+    }
+    co_return co_await status(req);
+}
+
 }  // namespace
 
 void configure(const std::filesystem::path &root) {
@@ -183,6 +250,10 @@ void configure(const std::filesystem::path &root) {
 void registerRoutes() {
     app().registerHandler("/api/setup", &status, {Get});
     app().registerHandler("/api/setup", &apply, {Post, "auth::Optional", "auth::Admin"});
+    // Setup remains readable before there is an account. Once the site is live,
+    // the same non-secret catalog count is for the people writing its questions.
+    app().registerHandler("/api/seeder", &status, {Get, "auth::Optional", "auth::Moderator"});
+    app().registerHandler("/api/seeder", &rerun, {Post, "auth::Optional", "auth::Moderator"});
 }
 
 }  // namespace setup

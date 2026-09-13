@@ -1,6 +1,7 @@
 // The flight deck: where a moderator writes the day. Everything it talks to is in
 // moderator.ts; everything it decides without a DOM is in quizdraft.ts.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import { ApiError } from './api'
 import { QuizStats } from './Admin'
 import { navigate } from './routing'
@@ -24,6 +25,8 @@ import {
 import type { AnswerField, Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
 import { formatDate, monthGrid, monthLabel, parseDate, shiftDay, shiftMonth, weekday } from './flight'
+import { getSeeder, rerunSeeder } from './setup'
+import type { SetupStatus } from './setup'
 
 /** The fields a song question will take more than one name for. Not the artist:
  *  a song has one, and another name for that is a different act. */
@@ -167,6 +170,122 @@ function DatePicker({ value, onPick, label = 'Open the calendar' }:
 
 // --- the day list ----------------------------------------------------------
 
+/** The seed takes hours on a real catalog. Keep run progress where staff plan
+ * questions, and keep checking for another run started by an admin. */
+function SeederProgress({ token }: { token?: string }) {
+  const [status, setStatus] = useState<SetupStatus | null>(null)
+  const [error, setError] = useState('')
+  const [reload, setReload] = useState(0)
+  const [artistName, setArtistName] = useState('')
+  const [limit, setLimit] = useState<number | null>(null)
+  const [starting, setStarting] = useState(false)
+
+  useEffect(() => {
+    let live = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const check = () => {
+      getSeeder(token)
+        .then(next => {
+          if (!live) return
+          setStatus(next)
+          setError('')
+          timer = setTimeout(check, 10_000)
+        })
+        .catch((cause: unknown) => {
+          if (!live) return
+          setError(wall(cause))
+          timer = setTimeout(check, 10_000)
+        })
+    }
+    check()
+    return () => { live = false; if (timer) clearTimeout(timer) }
+  }, [token, reload])
+
+  const progress = status?.progress
+  const running = Boolean(status?.seeding)
+  const percent = progress?.total ? Math.min(100, Math.round(progress.done / progress.total * 100)) : 0
+  const state = running ? 'Catalog is being built'
+    : progress?.state === 'interrupted' ? 'Catalog run stopped early'
+    : progress?.state === 'finished' ? 'Catalog run finished'
+    : 'Catalog status'
+
+  async function start(request: { artist: string } | { limit: number }) {
+    if (starting || running) return
+    setStarting(true)
+    setError('')
+    try {
+      const next = await rerunSeeder(request, token)
+      setStatus(next)
+      if ('artist' in request) setArtistName('')
+      setReload(n => n + 1)
+    } catch (cause) {
+      setError(wall(cause))
+    } finally { setStarting(false) }
+  }
+
+  function submitArtist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const name = artistName.trim()
+    if (name) void start({ artist: name })
+  }
+
+  function submitChart(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const count = limit ?? status?.seed_target ?? 500
+    if (count >= 1 && count <= 2000) void start({ limit: count })
+  }
+
+  const disabled = !status || !status.configured || running || starting
+  return (
+    <aside className="seeder-progress" aria-label="Catalog seeder progress">
+      <div className="seeder-head">
+        <div><span className="eyebrow">MUSIC CATALOG</span><h3>{state}</h3></div>
+        <button className="chip" type="button" onClick={() => setReload(n => n + 1)}>Refresh</button>
+      </div>
+      {status ? <>
+        {progress?.total ? <>
+          <div className="seeder-count" role="status" aria-live="polite">
+            <strong>{progress.done} of {progress.total}</strong> artists processed
+            <b>{percent}%</b>
+          </div>
+          <progress max={progress.total} value={progress.done} aria-label="Artists processed" />
+          {running && progress.artist && <p className="seeder-current">Working on <strong>{progress.artist}</strong>…</p>}
+          {progress.failed > 0 && <p className="seeder-note">{progress.failed} artist{progress.failed === 1 ? '' : 's'} could not be added. The run continued.</p>}
+          {Boolean(progress.failed_artists?.length) && <div className="seeder-failures">
+            <span>Retry a failed artist:</span>
+            {progress.failed_artists?.map(name =>
+              <button key={name} className="chip" type="button" disabled={disabled}
+                      onClick={() => void start({ artist: name })}>{name}</button>)}
+          </div>}
+        </> : running ? <p className="seeder-current" role="status">Preparing the artist list…</p> : null}
+        <p className="seeder-note">{status.artists} artists currently in the catalog.
+          {running && ' Updates automatically every 10 seconds.'}
+          {progress?.state === 'interrupted' && ' Check the seeder log before starting another run.'}
+        </p>
+        <div className="seeder-actions">
+          <form onSubmit={submitArtist}>
+            <label>Retry one artist
+              <input value={artistName} onChange={event => setArtistName(event.target.value)}
+                     placeholder="Artist name" maxLength={120} required disabled={disabled} /></label>
+            <button className="chip" type="submit" disabled={disabled || !artistName.trim()}>
+              {starting ? 'Starting…' : 'Run artist'}</button>
+          </form>
+          <form onSubmit={submitChart}>
+            <label>Rerun the chart
+              <input type="number" min="1" max="2000" required disabled={disabled}
+                     value={limit ?? (status.seed_target || 500)}
+                     onChange={event => setLimit(Number(event.target.value))} /></label>
+            <button className="chip" type="submit" disabled={disabled || (limit !== null && (limit < 1 || limit > 2000))}>
+              {starting ? 'Starting…' : 'Run top artists'}</button>
+          </form>
+        </div>
+        <p className="seeder-note">Runs one job at a time. A chart rerun may take hours; existing artists are updated.</p>
+      </> : <p role="status">{error || 'Checking catalog status…'}</p>}
+      {status && error && <p className="seeder-note" role="alert">Status could not refresh: {error}</p>}
+    </aside>
+  )
+}
+
 function DayList({ token, admin }: { token?: string; admin?: boolean }) {
   const [days, setDays] = useState<QuizDay[] | null>(null)
   const [error, setError] = useState('')
@@ -205,6 +324,7 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
     <section className="editor" aria-labelledby="deck-heading">
       <p className="eyebrow">FLIGHT DECK</p>
       <h2 id="deck-heading">Which day are we writing?</h2>
+      <SeederProgress token={token} />
       {error && <p className="notice" role="alert">{error}</p>}
 
       <div className="deck-open">

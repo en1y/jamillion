@@ -7,9 +7,24 @@ export interface SetupStatus {
   seeding: boolean
   artists: number
   seed_target: number
+  progress?: {
+    state: 'preparing' | 'running' | 'finished' | 'interrupted'
+    done: number
+    total: number
+    failed: number
+    artist: string
+    failed_artists?: string[]
+  }
 }
 
 export const getSetup = () => call<SetupStatus>('/api/setup')
+
+/** The staff-only counterpart to the first-run status. It deliberately returns
+ * counts and state only; catalog keys never leave the server. */
+export const getSeeder = (token?: string) => call<SetupStatus>('/api/seeder', token)
+
+export const rerunSeeder = (request: { artist: string } | { limit: number }, token?: string) =>
+  call<SetupStatus>('/api/seeder', token, { method: 'POST', body: JSON.stringify(request) })
 
 /** Needs the setup page: nobody can administer it yet, or it has no catalog keys. */
 export const needsSetup = (status: SetupStatus) => !status.admin || !status.configured
