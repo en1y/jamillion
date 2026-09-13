@@ -66,6 +66,9 @@ Task<HttpResponsePtr> listUsers(HttpRequestPtr req) {
     // pages and the same user shows up twice while another never does.
     const std::string order = std::string(column->second) + (dir == "desc" ? " DESC" : " ASC") +
                               " NULLS LAST, p.id";
+    // Same cap the catalog lookups use: past this it is not a search term.
+    auto search = req->getParameter("q");
+    if (search.size() > 100) search.resize(100);
     try {
         Json::Value out(Json::arrayValue);
         for (const auto &row : co_await app().getDbClient()->execSqlCoro(
@@ -78,7 +81,7 @@ Task<HttpResponsePtr> listUsers(HttpRequestPtr req) {
                  "WHERE ($1 = '' OR p.username ILIKE '%' || $1 || '%' OR u.email ILIKE '%' || $1 || '%') "
                  "  AND ($2 = '' OR p.role::text = $2) "
                  "ORDER BY " + order + " LIMIT $3::int OFFSET $4::int",
-                 req->getParameter("q"), role, clampParam(req, "limit", 50, 1, 200),
+                 search, role, clampParam(req, "limit", 50, 1, 200),
                  clampParam(req, "offset", 0, 0, 1000000))) {
             Json::Value user;
             user["id"] = row["id"].as<std::string>();
@@ -303,8 +306,9 @@ Task<HttpResponsePtr> patchTier(HttpRequestPtr req, int tierId) {
                hasShare = body->isMember("max_share");
     if (!hasName && !hasPoints && !hasShare)
         co_return auth::error(k400BadRequest, "name, points or max_share is required");
-    if (hasName && (!(*body)["name"].isString() || (*body)["name"].asString().empty()))
-        co_return auth::error(k400BadRequest, "name must be a non-empty string");
+    if (hasName && (!(*body)["name"].isString() || (*body)["name"].asString().empty() ||
+                    (*body)["name"].asString().size() > 40))
+        co_return auth::error(k400BadRequest, "name must be 1 to 40 characters");
     if (hasPoints && (!(*body)["points"].isIntegral() || (*body)["points"].asInt() < 0 ||
                       (*body)["points"].asInt() > 32767))
         co_return auth::error(k400BadRequest, "points must be between 0 and 32767");

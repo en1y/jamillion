@@ -262,10 +262,19 @@ void search(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr 
     const auto *entity = findEntity((*body)["entity"].isString() ? (*body)["entity"].asString() : "");
     if (!entity) return cb(auth::error(k400BadRequest, "entity must be tracks, albums or artists"));
 
+    // A stack deeper than this is not a query anyone wrote by hand, and every
+    // row past it is another predicate and another bound parameter.
+    constexpr unsigned kMaxStack = 8;
+    // An "in" list arrives as one comma-separated string, so the same cap bounds
+    // both a single term and a list of them.
+    constexpr size_t kMaxValue = 500;
+
     std::vector<std::string> params, wheres;
     const auto &filters = (*body)["filters"];
     if (!filters.isNull() && !filters.isArray())
         return cb(auth::error(k400BadRequest, "filters must be an array"));
+    if (filters.size() > kMaxStack)
+        return cb(auth::error(k400BadRequest, "At most 8 filters"));
     for (const auto &filter : filters) {
         const auto key = filter["field"].isString() ? filter["field"].asString() : "";
         const auto *column = findColumn(key, entity->bit);
@@ -280,6 +289,8 @@ void search(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr 
             const auto value = asText(filter["value"]);
             if (value.empty())
                 return cb(auth::error(k400BadRequest, (key + " " + name + " needs a value").c_str()));
+            if (value.size() > kMaxValue)
+                return cb(auth::error(k400BadRequest, (key + " " + name + " value is too long").c_str()));
             params.push_back(value);
         }
         wheres.push_back(predicate(*column, name, static_cast<int>(params.size())));
@@ -289,6 +300,8 @@ void search(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr 
     const auto &sorts = (*body)["sorts"];
     if (!sorts.isNull() && !sorts.isArray())
         return cb(auth::error(k400BadRequest, "sorts must be an array"));
+    if (sorts.size() > kMaxStack)
+        return cb(auth::error(k400BadRequest, "At most 8 sorts"));
     for (const auto &sort : sorts) {
         const auto key = sort["field"].isString() ? sort["field"].asString() : "";
         if (!findColumn(key, entity->bit))

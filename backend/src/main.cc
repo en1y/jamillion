@@ -61,9 +61,11 @@ int main()
                 cb(HttpResponse::newHttpJsonResponse(j));
             },
             [cb](const orm::DrogonDbException &e) {
+                // Public route: log the database's own words, report only that
+                // it is down. Every other route already makes this trade.
+                LOG_ERROR << e.base().what();
                 Json::Value j;
                 j["ok"] = false;
-                j["error"] = e.base().what();
                 auto resp = HttpResponse::newHttpJsonResponse(j);
                 resp->setStatusCode(k500InternalServerError);
                 cb(resp);
@@ -71,5 +73,11 @@ int main()
     });
 
     LOG_INFO << "jamillion listening on :" << port;
-    app().addListener("0.0.0.0", port).setThreadNum(4).run();
+    // The largest legitimate body is POST /api/quizzes: seven questions and
+    // their expanded answer key, a few tens of kB. TLS and the static files are
+    // Caddy's job, so this process only ever sees JSON.
+    const auto maxBody = static_cast<size_t>(std::stoul(env("MAX_BODY_BYTES", "262144")));
+    app().setClientMaxBodySize(maxBody)
+         .setClientMaxMemoryBodySize(maxBody)
+         .addListener("0.0.0.0", port).setThreadNum(4).run();
 }
