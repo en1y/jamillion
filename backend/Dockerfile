@@ -18,7 +18,8 @@ COPY backend/src ./src
 RUN rm -f src/_stub.cc && cmake --build build -j "$(nproc)"
 
 # Not a static binary: ensureAudio() shells out to scripts/fetch_audio.py, so the
-# runtime carries python and the seed script's request-path dependencies.
+# runtime carries python and the seed script's request-path dependencies. The same
+# image runs the stack's first-boot `setup` one-shot (docker/setup.py).
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 libssl3 zlib1g libjsoncpp26 libuuid1 ca-certificates \
@@ -28,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /src/build/jamillion /usr/local/bin/jamillion
 COPY scripts/fetch_audio.py ./scripts/fetch_audio.py
+COPY docker/setup.py ./docker/setup.py
 # main.cc's loadDotenv() finds no .env here and falls back to the working
 # directory, which is what AUDIO_DIR and scripts/ resolve against.
 RUN mkdir -p /app/data/audio && chown -R jamillion:jamillion /app

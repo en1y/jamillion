@@ -1,7 +1,11 @@
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY
+// The compose stack's Caddy serves /config.js with the anon key generated on its
+// first boot, and Supabase on this same origin. `npm run dev` gets the empty
+// public/config.js and falls back to the VITE_ values in .env.
+const runtime = (globalThis as { JAM?: { anonKey: string } }).JAM
+const url = runtime ? globalThis.location.origin : import.meta.env.VITE_SUPABASE_URL
+const key = runtime?.anonKey ?? import.meta.env.VITE_SUPABASE_ANON_KEY
 export const supabase = url && key ? createClient(url, key) : null
 
 /** Each published day's ceiling in points, by date: the quiz_ceilings() RPC, the

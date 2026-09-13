@@ -1,8 +1,23 @@
-# One origin for the SPA and the API, which is what makes CORS unnecessary.
+# One origin for the SPA, the API and Supabase, which is what makes CORS
+# unnecessary: supabase-js is pointed at the page's own origin.
 # DOMAIN=localhost gets Caddy's internal CA; a real hostname gets Let's Encrypt.
 {$DOMAIN:localhost} {
 	handle /api/* {
 		reverse_proxy backend:8080
+	}
+	# What supabase-js calls: sign-in, and the quiz_ceilings() RPC.
+	handle_path /auth/v1/* {
+		reverse_proxy auth:9999
+	}
+	handle_path /rest/v1/* {
+		reverse_proxy rest:3000
+	}
+	# The anon key generated on first boot. Only public/ of the secrets volume is
+	# mounted here, so nothing else in it can be served.
+	handle /config.js {
+		root * /srv/runtime
+		header Cache-Control no-store
+		file_server
 	}
 	handle {
 		root * /srv

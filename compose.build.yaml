@@ -1,0 +1,20 @@
+# Builds the three jamillion images from this checkout instead of pulling them.
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up --build -d   # run what is checked out
+#   docker compose -f compose.yaml -f compose.build.yaml build           # build to publish
+#   docker compose -f compose.yaml -f compose.build.yaml push backend db web
+#
+# Each image is built once; setup and migrate reuse the backend and db images.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+  db:
+    build:
+      context: .
+      dockerfile: docker/db.Dockerfile
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile

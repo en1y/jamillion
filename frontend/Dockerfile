@@ -5,16 +5,9 @@ WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
-# vite.config.ts sets envDir: '..', and the root .env is not in the build
-# context. Vite also reads VITE_-prefixed process env, so these arrive that way.
-# They are baked into the bundle: this image is specific to one Supabase project.
-ARG VITE_SUPABASE_URL
-ARG VITE_SUPABASE_ANON_KEY
-ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
-ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
-# Vite has nothing to fall back on: an unset arg is inlined as `undefined` and
-# every sign-in fails in the browser, hours after the build said it was fine.
-RUN test -n "$VITE_SUPABASE_URL" && test -n "$VITE_SUPABASE_ANON_KEY"
+# No VITE_SUPABASE_* here: the anon key is generated when the stack first boots,
+# after this image is built, so the browser reads it from /config.js at runtime
+# and Supabase itself sits on the page's own origin. One image, any deployment.
 RUN npm run build
 
 FROM caddy:2-alpine

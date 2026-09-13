@@ -1,43 +1,167 @@
-# Backend and frontend only. Postgres and Auth stay in the Supabase stack --
-# `npx supabase start` on the host, or a hosted project -- so there is no second
-# database to keep in step with supabase/migrations/.
+# Jamillion, the whole stack. This file is all a deployment needs:
+#
+#   docker compose up -d                            # then open https://localhost
+#   DOMAIN=jamillion.example.com docker compose up -d
+#
+# The first visit is a setup page: create the admin account, paste the catalog
+# keys, choose how many artists to seed. Nothing goes in an .env file -- the
+# stack's own secrets are generated on first boot, and the keys you enter are
+# kept by the backend in the `config` volume.
+#
+#   setup    one-shot: generates the JWT secret, database password and anon key, once
+#   db       Supabase's Postgres image, with the migrations baked in
+#   auth     GoTrue, sign-up and sign-in
+#   migrate  one-shot: applies the migrations that are not applied yet
+#   rest     PostgREST, for the one RPC the browser calls
+#   backend  the Drogon server; also runs the catalog seeder the setup page starts
+#   web      Caddy: the site, /api, /auth/v1 and /rest/v1 on one HTTPS origin
+#
+# Only Caddy publishes ports. `secrets` and `db` belong together -- the passwords
+# are written into the database at initdb -- so `docker compose down -v` drops both.
+# Building these images from a checkout: compose.build.yaml.
+name: jamillion
+
 services:
+  setup:
+    image: en1y/jamillion-backend:${JAMILLION_VERSION:-latest}
+    user: root
+    entrypoint: ["python3", "/app/docker/setup.py"]
+    volumes:
+      - secrets:/secrets
+
+  db:
+    image: en1y/jamillion-db:${JAMILLION_VERSION:-latest}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    entrypoint:
+      - sh
+      - -c
+      - . /secrets/env && export POSTGRES_PASSWORD="$$DB_PASSWORD" && exec docker-entrypoint.sh postgres -D /etc/postgresql
+    environment:
+      POSTGRES_USER: supabase_admin
+      POSTGRES_DB: postgres
+      POSTGRES_HOST: /var/run/postgresql
+      POSTGRES_INITDB_ARGS: --allow-group-access --locale-provider=icu --encoding=UTF-8 --icu-locale=en_US.UTF-8
+    volumes:
+      - db:/var/lib/postgresql/data
+      - secrets:/secrets:ro
+    healthcheck:
+      # 127.0.0.1 rather than the socket: initdb's temporary server listens on
+      # the socket only, so this stays unhealthy until the real one is up.
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  auth:
+    image: public.ecr.aws/supabase/gotrue:v2.196.0
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        . /secrets/env &&
+        export GOTRUE_JWT_SECRET="$$JWT_SECRET"
+        GOTRUE_DB_DATABASE_URL="postgresql://supabase_auth_admin:$$DB_PASSWORD@db:5432/postgres" &&
+        exec auth
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: https://${DOMAIN:-localhost}/auth/v1
+      GOTRUE_SITE_URL: https://${DOMAIN:-localhost}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_MIGRATIONS_PATH: /usr/local/etc/auth/migrations
+      GOTRUE_JWT_ISSUER: https://${DOMAIN:-localhost}/auth/v1
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      # No SMTP in this stack, so no confirmation mail: same as config.toml's
+      # enable_confirmations = false. Password recovery needs GOTRUE_SMTP_* set.
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_PASSWORD_MIN_LENGTH: 6
+      GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
+    volumes:
+      - secrets:/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:9999/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    image: en1y/jamillion-db:${JAMILLION_VERSION:-latest}
+    # After GoTrue is healthy: the migrations hang a trigger on auth.users.
+    depends_on:
+      auth:
+        condition: service_healthy
+    entrypoint: ["jamillion-migrate"]
+    volumes:
+      - secrets:/secrets:ro
+
+  rest:
+    image: public.ecr.aws/supabase/postgrest:v16.1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      # The image has no shell, so these are read from files: PostgREST's @ syntax.
+      PGRST_DB_URI: "@/secrets/rest_db_uri"
+      PGRST_JWT_SECRET: "@/secrets/jwt_secret"
+      PGRST_DB_SCHEMAS: public,graphql_public
+      PGRST_DB_EXTRA_SEARCH_PATH: public,extensions
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_DB_MAX_ROWS: 1000
+    volumes:
+      - secrets:/secrets:ro
+    restart: unless-stopped
+
   backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
+    image: en1y/jamillion-backend:${JAMILLION_VERSION:-latest}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        . /secrets/env &&
+        export SUPABASE_JWT_SECRET="$$JWT_SECRET" PGPASSWORD="$$DB_PASSWORD"
+        DATABASE_URL="postgresql://postgres:$$DB_PASSWORD@db:5432/postgres" &&
+        exec jamillion
     environment:
       PORT: 8080
-      # Deliberately NOT ${PGHOST}: compose reads the same .env the host tools
-      # use, where PGHOST is 127.0.0.1 -- which inside a container is the
-      # container. DB_* are the compose-side names, defaulting to the Supabase
-      # CLI stack on the host; a hosted project sets them.
-      PGHOST: ${DB_HOST:-host.docker.internal}
-      PGPORT: ${DB_PORT:-54322}
-      PGDATABASE: ${DB_NAME:-postgres}
-      PGUSER: ${DB_USER:-postgres}
-      PGPASSWORD: ${DB_PASSWORD:-postgres}
-      # fetch_audio.py needs this; the backend itself never reads it.
-      DATABASE_URL: ${DB_URL:-postgresql://postgres:postgres@host.docker.internal:54322/postgres}
-      # Issuer only -- the backend never calls Supabase over HTTP, it just
-      # derives the expected "iss" claim. So the host's own value is correct
-      # here even though the container cannot reach it.
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
-      SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
+      PUBLIC_URL: https://${DOMAIN:-localhost}
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      # The issuer GoTrue above signs with.
+      SUPABASE_URL: https://${DOMAIN:-localhost}
       AUDIO_DIR: /app/data/audio
+      # The catalog keys from the setup page, 0600, readable by this container only.
+      CONFIG_DIR: /app/data/config
       # Caddy terminates TLS, so the cookie may insist on it.
       COOKIE_SECURE: "true"
       RATE_LIMIT: ${RATE_LIMIT:-on}
       TRUST_PROXY_IPS: ${TRUST_PROXY_IPS:-127.0.0.1,172.16.0.0/12}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-262144}
       # Seconds a query may wait for a connection or run. 0 leaves Drogon's own
       # default, which is no timeout -- and a database that is down then hangs
       # every route instead of failing it.
       DB_TIMEOUT_SEC: ${DB_TIMEOUT_SEC:-5}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - audio:/app/data/audio
+      - config:/app/data/config
+      - secrets:/secrets:ro
     # python3 is in the image and the route is plain HTTP inside the network.
     # A non-200 is exactly what the health handler reports when the database is
     # unreachable, so this doubles as "is it still talking to Postgres".
@@ -63,28 +187,37 @@ services:
     restart: unless-stopped
 
   web:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-      args:
-        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
-        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    image: en1y/jamillion-web:${JAMILLION_VERSION:-latest}
     environment:
       DOMAIN: ${DOMAIN:-localhost}
     ports:
       - "80:80"
       - "443:443"
     depends_on:
+      # The site is useless without the API, and Caddy answers 502 until it is
+      # up, so wait for the health check rather than for the container.
       backend:
-        # The SPA is useless without the API, and Caddy answers 502 until it is
-        # up, so wait for the health check rather than for the container.
         condition: service_healthy
+      auth:
+        condition: service_healthy
+      rest:
+        condition: service_started
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      # Only the public/ corner of the secrets volume: config.js and its anon key.
+      - type: volume
+        source: secrets
+        target: /srv/runtime
+        read_only: true
+        volume:
+          subpath: public
     restart: unless-stopped
 
 volumes:
+  secrets:
+  db:
   audio:
+  config:
   caddy_data:
   caddy_config:
