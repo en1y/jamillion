@@ -5,7 +5,8 @@
 -- reset, dump it first and restore it after:
 --
 --   pg_dump "$DATABASE_URL" --data-only --no-owner \
---     -t artists -t genres -t artist_genres -t albums -t tracks -t track_artists \
+--     -t artists -t genres -t artist_genres -t album_genres -t albums -t tracks \
+--     -t track_artists \
 --     > data/backup/catalog.sql
 --   npx supabase db reset
 --   psql "$DATABASE_URL" -f data/backup/catalog.sql
