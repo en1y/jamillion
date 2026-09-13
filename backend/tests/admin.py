@@ -174,8 +174,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         status, stats, _ = api(f'/api/quizzes/{QUIZ_DATE}/stats', token=ADMIN)
         assert status == 200, (status, stats)
         assert stats['id'] == quiz_id and stats['published'] is False
+        # The altitude scale is per quiz since v0.9.x -- a perfect day lands on
+        # Pluto at 39.5 AU -- so this is 30 points against this quiz's own
+        # ceiling, not the flat 0.1714 AU a point that gave 5.14.
         assert stats['heights'] == [{'total_points': 0, 'height_au': '0.00', 'players': 1},
-                                    {'total_points': 30, 'height_au': '5.14', 'players': 2}], stats['heights']
+                                    {'total_points': 30, 'height_au': '1.69', 'players': 2}], stats['heights']
         assert [q['position'] for q in stats['questions']] == [1, 2, 3, 4, 5, 6, 7]
         one = stats['questions'][0]
         assert (one['answered'], one['skipped'], one['correct']) == (3, 1, 2), one

@@ -242,7 +242,10 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert 'album_id' not in served['question'] and 'track_id' not in served['question']
         status, body = answer_boxes(cookie, attempt_id, questions[6], [('title', 'Answer 6')])
         assert body['result']['points'] == 10 and body['total_points'] == 50
-        assert body['result']['fields'] == [{'field': 'title', 'text': 'Answer 6', 'correct': True}], body
+        # v0.9.x added what each box was worth: a field with no tier of its own
+        # reports points 0 and tier None, and the question's own points stand.
+        assert body['result']['fields'] == [
+            {'field': 'title', 'text': 'Answer 6', 'correct': True, 'points': 0, 'tier': None}], body
         song_id = questions[7]
         status, served = serve(cookie)
         assert served['question']['id'] == song_id and served['question']['qtype'] == 'song'
