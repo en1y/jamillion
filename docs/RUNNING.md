@@ -188,6 +188,121 @@ The calendar beside the day's heading **moves the draft to another date** — se
 
 *tables* is the allowlisted dump of section 10: pick one of the sixteen tables and a page size. Neither list route returns a total, so the paging says only what is on screen (*rows 51–100*) and **next** stops at a short page; an empty page carries no column names either, so it says which table is empty instead of drawing an invented header.
 
+## 4b. The whole thing in containers
+
+`docker compose up --build` runs the backend and a Caddy that serves the built
+SPA and proxies `/api` to it. There is **no database service**: Postgres and Auth
+stay in the Supabase stack, so `npx supabase start` still has to be running on the
+host (or `DB_*` has to point at a hosted project). That keeps one schema, applied
+one way, by `supabase/migrations/`.
+
+```bash
+npx supabase start
+docker compose up --build -d
+curl -k https://localhost/api/health
+docker compose logs -f backend
+docker compose down
+```
+
+- `DOMAIN` is the address Caddy serves. `localhost` (the default) gets Caddy's own
+  internal CA, which is why `curl` needs `-k` and a browser shows a warning. A real
+  hostname gets a Let's Encrypt certificate with no further configuration.
+- **The SPA and the API share one origin**, which is what makes CORS unnecessary:
+  the browser only ever talks to Caddy. It is also where the `try_files` fallback
+  lives, so reloading `/editor/2026-09-11` serves `index.html` instead of a 404.
+- `COOKIE_SECURE=true` is set for the backend container, because Caddy is
+  terminating TLS in front of it.
+- **`DB_HOST` and friends are deliberately not `PGHOST`.** Compose reads the same
+  `.env` the host tools use, where `PGHOST=127.0.0.1` — which inside a container
+  means the container. Left unset they default to `host.docker.internal`, reaching
+  the Supabase CLI stack on the host; a hosted project sets `DB_*` explicitly.
+- `SUPABASE_URL` *is* passed through unchanged, because the backend never calls
+  Supabase over HTTP — it only derives the expected token issuer from it. The
+  host's `http://127.0.0.1:54321` is the correct value even though the container
+  cannot reach it.
+- **The frontend image is specific to one Supabase project.** `VITE_SUPABASE_URL`
+  and `VITE_SUPABASE_ANON_KEY` are build arguments baked into the bundle, so the
+  image cannot be built once and promoted between environments. The build refuses
+  to run without them, because vite's alternative is inlining `undefined` and
+  breaking every sign-in in the browser. They have to be the addresses the
+  *visitor's* browser can reach: the `.env` values are the local stack, so a
+  deployment on a real hostname passes the hosted project's URL and anon key.
+- **The backend is health checked, and the SPA waits for it.** The check is the
+  `/api/health` route over the compose network, so an unhealthy container is also
+  the answer to "can it still see Postgres". `web` starts on
+  `condition: service_healthy` rather than at container start, which removes the
+  window where Caddy answers 502 to somebody who opened the page too early.
+- The backend image is not a lone binary: `ensureAudio` shells out to
+  `scripts/fetch_audio.py`, so it carries `python3`, `psycopg`, `requests` and
+  `python-dotenv`, and `DATABASE_URL` has to be set for the script's sake even
+  though the backend itself reads `PG*`. Clips land in the `audio` volume.
+
+### Rate limits
+
+Drogon's own `Hodor` plugin, configured from the environment in
+`backend/src/limits.cc` — no config file, the same rule the rest of the backend
+follows. `RealIpResolver` sits in front of it so the caps see the client Caddy
+forwarded rather than the bridge address.
+
+| knob | default | what it covers |
+|---|---|---|
+| `RATE_IP` | 120/min | everything under `/api/` |
+| `RATE_ME` | 10/min | `/api/me`, which inserts a `players` row on every cookieless call |
+| `RATE_LOOKUP` | 60/min | `/api/suggest` and `/api/known`, unauthenticated catalog scans |
+| `RATE_PLAY` | 40/min | `/api/attempts`, per player rather than per IP |
+| `RATE_IDEAS` | 5/min | in front of the existing three-per-game-day rule |
+| `RATE_CATALOG` | 60/min | `/api/catalog`, per moderator |
+| `RATE_LIMIT=off` | — | disables all of it, for the integration suites |
+| `TRUST_PROXY_IPS` | `127.0.0.1,172.16.0.0/12` | whose `X-Forwarded-For` is believed. **IPv4 only** |
+| `MAX_BODY_BYTES` | 262144 | largest accepted request body |
+| `DB_TIMEOUT_SEC` | 5 | how long a query may wait for a connection before failing (`0` = never) |
+
+A throttled request is a 429 carrying the same `{"error": ...}` body as every
+other refusal, so the frontend needed no change to render it.
+
+`DB_TIMEOUT_SEC` is not a rate limit but it belongs to the same "fail instead of
+waiting" idea, and it is the one that matters when the database is the thing that
+is down: Drogon buffers a query with no ready connection and never calls it back,
+so with a timeout of 0 — Drogon's own default — **every** route waits forever, the
+health check included. Five seconds turns that into the same generic error each
+route already reports.
+
+## 4c. Backups
+
+```bash
+scripts/backup.sh
+```
+
+Writes `data/backup/jamillion-<date>.dump` (custom format) and
+`data/backup/audio-<date>.tgz`, then deletes anything older than
+`BACKUP_KEEP_DAYS` (14). Nightly, as a cron line:
+
+```bash
+0 5 * * * /path/to/jamillion/scripts/backup.sh >> /path/to/jamillion/data/backup.log 2>&1
+```
+
+Restore:
+
+```bash
+pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" data/backup/jamillion-20260911.dump
+```
+
+- **The dump is `-n public -n auth`, not the whole database.** `public` is the
+  game and `auth` is the accounts it hangs off; realtime's partitions, vault,
+  storage and the extension grants belong to the Supabase stack, are recreated by
+  it, and dumping them only produces errors on the way back in.
+- **A restore into an empty database exits 1, and that is expected.** Drilled
+  against a scratch database: 26 errors, none of them data — 19 are `DROP POLICY
+  IF EXISTS ... ON public.<table>` from `--clean`, which needs the table to exist
+  and cannot on an empty target (the policies are created again further down the
+  same dump), 1 is the `auth.users` trigger and 6 are `ALTER DEFAULT PRIVILEGES`
+  for Supabase's own roles. All 17 `public` tables then match the source row for
+  row, both views keep `security_invoker = true`, and the answer key comes across
+  whole. Read the error list, do not trust the exit code.
+- **The audio tarball is a convenience, not a requirement.** A clip whose file is
+  missing is re-downloaded on first use, so `data/audio/` is a cache. Restoring
+  without it costs one Deezer round trip per track, not a broken quiz.
+
 ## 5. First admin
 
 Open the frontend, follow **Sign in** in the top right (the launchpad is the home page; auth lives at `/account`) and choose **Create account**. Email and password go directly to Supabase Auth through `@supabase/supabase-js`; there is no backend password endpoint. The first account is admin, including when two people sign up concurrently. Later accounts are users; signup metadata cannot choose a role. Duplicate usernames receive a numeric suffix. Local email confirmations are disabled; if enabled, the UI asks the user to confirm their email before signing in.
@@ -226,6 +341,27 @@ npm test
 npm run build
 npm run lint
 ```
+
+Those four python suites need the backend started with **`RATE_LIMIT=off`**: they
+call the API in tight loops and would otherwise spend the v0.10.0 caps and start
+reading 429s as failures. `hardening.py` is the opposite — it needs the caps on,
+so restart the backend without the switch and run it on its own:
+
+```bash
+RATE_LIMIT=off ./backend/build/jamillion      # for the four suites above
+```
+
+```bash
+./backend/build/jamillion                      # default caps
+.venv/bin/python backend/tests/hardening.py
+```
+
+`hardening.py` covers what v0.10.0 added: that `/api/health` carries no database
+message, that an oversized body is refused, that the user search term, the filter
+and sort stacks, the filter value and the tier name are all bounded, and that
+`/api/me` stops minting player rows once it is hammered — comparing the row count
+before and after, so it is the limit that stopped it rather than luck. It burns
+`/api/me`'s minute budget on purpose, so run it last or wait a minute afterwards.
 
 All three scripts share their fixtures through `backend/tests/common.py`. Run them from the repository root, so a relative `AUDIO_DIR` resolves the same way it does for the backend. They use `psycopg` from `scripts/requirements.txt`, accept `TEST_API_URL` for another backend port, refuse non-local services, and create/delete only their own test accounts and player rows. `quiz_play.py` owns the current game day: it refuses to run if a quiz already exists for `game_today()`, and it needs at least one catalogue track with a preview. It covers quiz creation and its validation, one-at-a-time delivery, rarity tiering and moderator overrides, timeouts and skips, finishing, audio by question id, one flight per account across browsers, and that neither anonymous nor signed-in players can read the answer key, the question prompts and track ids, or call the scorer. Since v0.6.0 it also checks that answering never serves the next question (the attempt's `question_started_at` is null until the next `POST /api/attempts`) and that `/api/quiz/today` reports the flight's own answers with their tiers. Since v0.7.0 its quiz has an album question asking for the title only, and it checks the served fields, that no album or track id leaks, and `/api/suggest`. Since v0.8.1 it also checks `/api/known`: a real artist under any casing or punctuation, a made-up one, an empty query, a bad `kind`, and that an accepted answer which is not a catalog name still reads as unknown.
 

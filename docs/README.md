@@ -2,7 +2,7 @@
 
 A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io), but instead of diving into the ocean you launch from the Sun and fly toward the edge of the solar system. Seven questions a day, on a clock or in your own time. The rarer your correct answer, the further you fly.
 
-**Current: v0.9.0 — ground control.** An admin gets a fifth chip in the dock and the last screen the backend had been waiting for: everyone aboard, searchable across username and email, sortable by any of six columns, with a role select and a delete on each row and the last admin protected from both; how a day went, as its score distribution and every question's guesses with their shares, on its own tab and again on the editor's day once people have flown it; the six rarity tiers editable in place, name, points and the share that still reaches them; and a read-only window on sixteen tables. The rest is the flight deck of v0.8.7: pick a day, drag a snippet window over a decoded waveform, write the accepted answers out of the catalog rather than out of memory, publish. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
+**Current: v0.10.0 — hardening.** `docker compose up` brings the whole thing up behind HTTPS on one origin: Caddy serves the built app and passes `/api` to the backend, while Postgres and Auth stay in the Supabase stack where the migrations put them. Rate limits per IP and per player, a body cap, bounded search terms and filter stacks, and a nightly `pg_dump` with a restore that has actually been run. Before that, v0.9.0 — ground control — an admin gets a fifth chip in the dock and the last screen the backend had been waiting for: everyone aboard, searchable across username and email, sortable by any of six columns, with a role select and a delete on each row and the last admin protected from both; how a day went, as its score distribution and every question's guesses with their shares, on its own tab and again on the editor's day once people have flown it; the six rarity tiers editable in place, name, points and the share that still reaches them; and a read-only window on sixteen tables. The rest is the flight deck of v0.8.7: pick a day, drag a snippet window over a decoded waveform, write the accepted answers out of the catalog rather than out of memory, publish. Once people have flown a day it freezes — points are fixed at answer time — and the screen turns into the review queue for the guesses that came in.
 
 ## The game
 
@@ -42,7 +42,7 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 - **Frontend** — React + Vite + TypeScript.
 - **Music data** — Python seed script (`scripts/seed_music.py`). Deezer is the catalog backbone: artists, albums and tracks with labels, release dates, UPC/ISRC, BPM, fan counts and official 30 s preview clips, all without an API key. Last.fm supplies the candidate set of artists and real listen counts; the seeder re-sorts that set by listener count, so `global_rank` 1 is the biggest artist rather than the most-trending one. MusicBrainz adds country, artist type, gender and active years. YouTube Music adds the song play count the app shows (plays over every upload of a recording, rounded), the video it plays and the artist's monthly listeners; the YouTube Data API adds exact views and likes for those videos. Spotify contributes ids only, because in 2025 it stopped serving popularity, followers, genres, top tracks and audio features to new apps.
 - Only original studio recordings are stored. Live versions, remixes, demos and acoustic cuts are skipped, and remaster or deluxe duplicates collapse into one row per song.
-- Audio is never in the database. A track's preview clip is downloaded to `data/audio/` the first time it is used in a quiz.
+- Audio is never in the database. A track's preview clip is downloaded to `data/audio/` the first time it is used in a quiz, and re-downloaded if the file ever goes missing, so the directory is a cache rather than state a backup has to carry.
 
 ## Layout
 
@@ -50,7 +50,8 @@ A daily rare-answer trivia game, in the spirit of [Krillion](https://krillion.io
 backend/    Drogon server
 frontend/   Vite React app
 supabase/   migrations, seed, local database/auth configuration
-scripts/    seed_music.py and friends
+scripts/    seed_music.py, fetch_audio.py, backup.sh
+compose.yaml, Caddyfile   backend + frontend behind HTTPS on one origin
 docs/       RUNNING.md — how to run everything
 docs/ROADMAP.md  what gets built in which order
 ```

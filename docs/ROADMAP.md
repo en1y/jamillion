@@ -271,8 +271,113 @@ Decisions worth carrying forward:
 
 ## v0.10.0 — Hardening
 
-- Rate limits, input limits, CORS, HTTPS config, backups.
-- Docker compose for db + backend + frontend.
+Everything up to here was built to be run by one person on one laptop, and it
+showed: no rate limiting anywhere, `/api/me` inserting a `players` row on every
+cookieless request, two unauthenticated `ILIKE` scans, `/api/health` handing the
+database's own words to anonymous callers, and the whole Drogon configuration in
+one line. No container, no TLS, and a backup procedure that existed only as a
+comment inside `supabase/seed.sql`.
+
+- [x] Rate limits: Drogon's `Hodor` plugin, per-IP and per-user, with sub-limits
+      on the routes that actually cost something. `RealIpResolver` in front of it.
+- [x] Input limits: a request body cap, the user search term, the catalog filter
+      and sort stacks, the filter value, the tier name.
+- [x] `/api/health` stops reporting the database's own error.
+- [x] HTTPS and one origin: Caddy serves the built SPA and proxies `/api`.
+- [x] `docker compose up` — backend and frontend. **No db service**: Postgres and
+      Auth stay in the Supabase stack.
+- [x] `scripts/backup.sh`, and the `clip()` fix that makes a restore survivable.
+- [x] `backend/tests/hardening.py`.
+
+Decisions worth carrying forward:
+
+- **Hodor's `trust_ips` and RealIpResolver's `trust_ips` are spelled the same and
+  mean opposite things.** The resolver's list is the proxies whose forwarded
+  address is believed; Hodor's is addresses **exempt from every limit**. Handing
+  Hodor the proxy range — the obvious move, since the two configs sit next to each
+  other — exempts whatever the proxy forwards for whenever the resolver comes up
+  short, and the symptom is a rate limiter that silently does nothing. Caught
+  because ten bursts from loopback all returned 200. Hodor gets no `trust_ips`.
+- **RealIpResolver parses `trust_ips` as `in_addr_t`, so the list is IPv4 only.**
+  An entry like `::1` throws out of `initAndStart` and takes the process down at
+  startup, before the listener binds. The default is `127.0.0.1,172.16.0.0/12`.
+- **The plugins are configured from a `Json::Value`, not a config file.**
+  `app().addPlugin(name, dependencies, config)` takes the JSON in memory, so the
+  "no config.json, everything from the environment" rule survives contact with a
+  plugin system that documents itself entirely in terms of a config file.
+- **The user-id getter has to read the cookie, not the identity.** Hodor registers
+  a *pre-handling* advice, which runs before `auth::Optional` has inserted
+  `"identity"` into the request's attributes; reading the attribute there throws.
+  `auth::cookiePlayer(req)` is already a free function on the request.
+- **A throttle is the same shape as every other refusal.** `setRejectResponseFactory`
+  returns `auth::error(k429TooManyRequests, ...)`, so the body is `{"error": ...}`
+  and `frontend/src/api.ts` renders it without learning a new response. Hodor's own
+  default is a plain-text body, which would have read as a blank error to the app.
+- **`/api/ideas` keeps its 200.** The three-per-game-day count is a game rule with
+  a friendly message, not abuse protection, and the frontend reads that shape.
+  Hodor sits in front of it for the abuse case.
+- **CORS is not implemented, on purpose.** Caddy serves the SPA and proxies `/api`,
+  so there is one origin and nothing to allow. If the SPA ever moves to its own
+  host it is a pre-routing advice for `OPTIONS`, a post-handling advice for the
+  headers, and moving the `jam_player` cookie to `SameSite=None; Secure`.
+- **A client cannot forge its own IP through Caddy.** Caddy replaces
+  `X-Forwarded-For` unless the peer is one of its own `trusted_proxies`, so an
+  injected header never reaches the limiter. That is also why the resolver had to
+  be proved against the backend directly, where loopback *is* a trusted proxy:
+  two forwarded addresses, two budgets of ten.
+- **Compose has no database service, and `DB_*` is not `PG*`.** The roadmap line
+  said "db + backend + frontend", but CLAUDE.md says Postgres only ever runs
+  inside the Supabase stack, and a second Postgres would not carry GoTrue anyway —
+  the backend's whole auth story is verifying tokens that `auth.users` issued. The
+  env names are deliberately different because compose reads the same `.env` the
+  host tools use, where `PGHOST=127.0.0.1` means the container.
+- **The backend image is not a lone binary.** `ensureAudio` shells out to
+  `scripts/fetch_audio.py`, so the runtime carries python and three packages, and
+  needs `DATABASE_URL` the backend itself never reads. The dependency build gets
+  its own layer by configuring against a stub source: the glob in `CMakeLists.txt`
+  needs one file to configure at all, and configuring is what clones Drogon.
+- **The dump is `-n public -n auth`.** A whole-database `pg_dump` of a Supabase
+  instance restored with 56 errors — realtime's partitions, vault, the extension
+  grants — none of them jamillion's. Narrowed to the two schemas the app owns, a
+  restore into a scratch database reproduced every table's row count exactly.
+- **`data/audio/` is a cache, and now behaves like one.** `clip()` re-fetched only
+  when `tracks.audio_path` was *empty*, so a restored database meeting an empty
+  audio volume 404'd every song question for good. It now also re-fetches when the
+  column is set but the file is gone, which is what makes the audio tarball a
+  convenience rather than load-bearing state.
+- **The container had been up for eight minutes and logged nothing.** Trantor
+  `fwrite`s every line to stdout and calls `fflush` *only at error level*, so with
+  a pipe instead of a tty the startup line, the `RATE_LIMIT=off` warning and the
+  shutdown warning all sat in a buffer until the process died; `docker compose
+  logs -f backend` on a healthy stack showed an empty screen. `setvbuf(stdout,
+  nullptr, _IOLBF, 0)` is the whole fix. A log line flush policy is not something
+  you notice until you are looking at the logs on purpose, which is what the
+  health check made somebody do.
+- **`getDbClient()` is not a startup API.** Its doc comment says it must be called
+  after the framework has run, and it means it: the manager is built inside
+  `run()`, so a `getDbClient()->setTimeout()` in `main()` dereferences null and
+  takes the process with it at startup. The query timeout is an argument to
+  `createDbClient`, which is also the only place `DbClientManager` applies it.
+- **A query with no ready connection is buffered and never called back.** With no
+  timeout — Drogon's own default — a database that is down makes *every* route
+  wait forever, the health route included, which is the opposite of what the route
+  is for: pointed at a port with nothing on it, the request hung past two minutes
+  while the process stayed alive and answered other routes. `DB_TIMEOUT_SEC` (5)
+  turns it into the generic error each route already reports, and since the answer
+  is a real one now, compose health checks `/api/health` and `web` starts on
+  `service_healthy` instead of racing the backend into a 502.
+- **A restore into an empty database exits 1, and none of it is data.** Drilled
+  into a scratch database: 26 errors — 19 `DROP POLICY IF EXISTS` that `--clean`
+  emits before the table `IF EXISTS` needs exists, one `auth.users` trigger and
+  six Supabase default-privilege statements. All 17 `public` tables matched the
+  live row counts afterwards and both views kept `security_invoker = true`. The
+  dump is right; the exit code is not the check.
+- **The SPA image refuses to be built without a Supabase project.** `VITE_*` is
+  baked in at build time and vite inlines `undefined` for a missing one, so an
+  image built from the local `.env` asks each *visitor's* `127.0.0.1:54321` for a
+  token — a stack that works only on the machine it was built on, and only fails
+  in the browser. The build now stops on an empty argument, and a deployment
+  passes the hosted project's URL and anon key.
 
 ## v1.0.0 — Public
 
