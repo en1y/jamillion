@@ -433,6 +433,12 @@ Decisions worth carrying forward:
   context that does not exist is a trap; `compose.build.yaml` layers the three
   builds on for a checkout. Tested by copying `compose.yaml` alone into an empty
   directory and running it with `--pull never` against the local images.
+- **Plain HTTP on 8000 by default, HTTPS only with a hostname.** A certificate
+  for `localhost` is Caddy's own CA: a warning on every browser that opens it, on
+  ports 80 and 443 a desktop would rather keep. `SITE_ADDRESS` carries the scheme,
+  `HTTP_PORT`/`HTTPS_PORT` what the container's 80 and 443 are published as, and
+  the site address needs no port of its own because Caddy matches a site on the
+  hostname and ignores the port in the `Host` header.
 - **Development keeps `.env`.** A key in the environment counts as configured, so
   the setup page never shows for a developer whose `.env` has `LASTFM_API_KEY`
   and an admin.

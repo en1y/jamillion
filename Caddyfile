@@ -1,7 +1,11 @@
 # One origin for the SPA, the API and Supabase, which is what makes CORS
 # unnecessary: supabase-js is pointed at the page's own origin.
-# DOMAIN=localhost gets Caddy's internal CA; a real hostname gets Let's Encrypt.
-{$DOMAIN:localhost} {
+# Plain HTTP by default: a certificate for localhost means Caddy's own CA and a
+# browser warning for a site nobody reaches from outside the machine. A real
+# hostname -- SITE_ADDRESS=https://jamillion.example.com -- gets Let's Encrypt.
+# The port lives in the compose mapping, not here: Caddy matches the site on the
+# hostname and ignores the port the Host header carries.
+{$SITE_ADDRESS:http://localhost} {
 	handle /api/* {
 		reverse_proxy backend:8080
 	}

@@ -1,6 +1,6 @@
 # Running Jamillion
 
-**With Docker** (below) is how to run it: the images are on Docker Hub, one `compose.yaml` brings up Postgres, Auth, the backend and the site behind HTTPS, and the first visit to the site sets it up. Prerequisite: Docker with the compose plugin. Nothing else — no checkout, no `.env`.
+**With Docker** (below) is how to run it: the images are on Docker Hub, one `compose.yaml` brings up Postgres, Auth, the backend and the site on one origin, and the first visit to the site sets it up. Prerequisite: Docker with the compose plugin. Nothing else — no checkout, no `.env`.
 
 **Development** (sections 0–4) runs the same pieces loosely instead — the Supabase CLI stack, the backend from CMake, Vite with hot reload — for working on the code. Prerequisites there: Docker, Node, CMake and a C++20 compiler, Python 3.
 
@@ -12,7 +12,7 @@ curl -fsSLO https://raw.githubusercontent.com/en1y/jamillion/main/compose.yaml
 docker compose up -d
 ```
 
-Then open **https://localhost**. The browser warns about the certificate the first time, because `localhost` gets Caddy's own CA.
+Then open **http://localhost:8000**. Plain HTTP, no certificate warning and no privileged port: a certificate for `localhost` would be Caddy's own CA, which every browser distrusts. `HTTP_PORT=9000 docker compose up -d` serves it somewhere else; *On a server*, below, is the HTTPS case.
 
 ### First visit: the setup page
 
@@ -50,11 +50,11 @@ The backend's startup summary is the first thing to read when something looks wr
 ```
 jamillion 0.11.0 is up
 
-    open         https://localhost
-    first run    nobody has set it up yet -- open https://localhost to create the admin account and start the catalog
+    open         http://localhost:8000
+    first run    nobody has set it up yet -- open http://localhost:8000 to create the admin account and start the catalog
 
     database     postgres@db:5432/postgres, 18 migrations, schema 20260910160000
-    auth         tokens from https://localhost/auth/v1
+    auth         tokens from http://localhost:8000/auth/v1
     accounts     0 (0 admin)
     catalog      0 artists, 0 tracks -- empty, the setup page seeds it
     quizzes      0 published, today's is not published yet
@@ -71,7 +71,7 @@ The numbers come from the database, so a summary with numbers is also the proof 
 The setup route stays available to the admin. Adding artists, or replacing a key, is the same call with the admin's access token (from the browser's session, or a sign-in against `/auth/v1/token`):
 
 ```bash
-curl -k https://localhost/api/setup -H "Authorization: Bearer $TOKEN" \
+curl http://localhost:8000/api/setup -H "Authorization: Bearer $TOKEN" \
      -H 'Content-Type: application/json' -d '{"artists": 200}'
 ```
 
@@ -79,13 +79,18 @@ It seeds the top 200 on the chart; artists already in the catalog are refreshed 
 
 ### On a server
 
-Point a DNS name at the machine, open ports 80 and 443, and start it with the name:
+Point a DNS name at the machine, open ports 80 and 443, and put four lines in a `.env` beside `compose.yaml`:
 
-```bash
-DOMAIN=jamillion.example.com docker compose up -d
+```
+SITE_ADDRESS=https://jamillion.example.com
+HTTP_PORT=80
+HTTPS_PORT=443
+COOKIE_SECURE=true
 ```
 
-(or put `DOMAIN=jamillion.example.com` in a `.env` beside `compose.yaml`, so every later command sees it). A real hostname gets a Let's Encrypt certificate with no further configuration. Visit it before anyone else does: the first account created is the admin.
+Then `docker compose up -d`. `SITE_ADDRESS` is the whole address, scheme included: `https://` is what tells Caddy to get a Let's Encrypt certificate, and the ports have to be the standard pair because that is where the certificate authority comes looking. `COOKIE_SECURE=true` marks the guest cookie HTTPS-only — leave it off over plain HTTP, where the browser would drop it and every request would arrive as a new guest. The same `SITE_ADDRESS` is the token issuer GoTrue signs with and the backend checks, so changing it later signs everyone out.
+
+Visit it before anyone else does: the first account created is the admin.
 
 ### What is running
 
@@ -99,7 +104,7 @@ It starts in this order, each step waiting for the previous one to be healthy or
 | `migrate` | `en1y/jamillion-db` | one-shot: applies the migrations that are not applied yet (`docker/migrate.sh`) |
 | `rest` | `supabase/postgrest` | for the one RPC the browser makes (`quiz_ceilings()`) |
 | `backend` | `en1y/jamillion-backend` | the Drogon server; it also runs the seeder the setup page starts |
-| `web` | `en1y/jamillion-web` | Caddy: the site, `/api`, `/auth/v1` and `/rest/v1` on one origin |
+| `web` | `en1y/jamillion-web` | Caddy: the site, `/api`, `/auth/v1` and `/rest/v1` on one origin, published on `HTTP_PORT` (8000) and `HTTPS_PORT` (8443) |
 
 | volume | holds |
 |---|---|
@@ -113,6 +118,10 @@ It starts in this order, each step waiting for the previous one to be healthy or
   there is no Kong, Studio, storage, realtime or mail server; Caddy does Kong's
   routing. Only Caddy publishes a port. To look inside the database:
   `docker compose exec db psql -U supabase_admin -h 127.0.0.1 -d postgres`.
+- **Caddy listens on 80 and 443 inside the container whatever the deployment**, and
+  the published ports are what change; it matches the site on the hostname and
+  ignores the port the `Host` header carries, so `http://localhost` in the
+  Caddyfile answers `http://localhost:8000`.
 - **One origin for all of it**, which is what makes CORS unnecessary. supabase-js
   is pointed at the page's own origin, and the anon key reaches the browser at
   runtime through `/config.js`, which Caddy serves out of the `public/` corner of

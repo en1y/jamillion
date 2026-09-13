@@ -1,7 +1,14 @@
 # Jamillion, the whole stack. This file is all a deployment needs:
 #
-#   docker compose up -d                            # then open https://localhost
-#   DOMAIN=jamillion.example.com docker compose up -d
+#   docker compose up -d                            # then open http://localhost:8000
+#
+# A server with a hostname of its own puts four lines in a .env beside this file
+# and gets a Let's Encrypt certificate:
+#
+#   SITE_ADDRESS=https://jamillion.example.com
+#   HTTP_PORT=80
+#   HTTPS_PORT=443
+#   COOKIE_SECURE=true
 #
 # The first visit is a setup page: create the admin account, paste the catalog
 # keys, choose how many artists to seed. Nothing goes in an .env file -- the
@@ -71,11 +78,11 @@ services:
     environment:
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
-      API_EXTERNAL_URL: https://${DOMAIN:-localhost}/auth/v1
-      GOTRUE_SITE_URL: https://${DOMAIN:-localhost}
+      API_EXTERNAL_URL: ${SITE_ADDRESS:-http://localhost:${HTTP_PORT:-8000}}/auth/v1
+      GOTRUE_SITE_URL: ${SITE_ADDRESS:-http://localhost:${HTTP_PORT:-8000}}
       GOTRUE_DB_DRIVER: postgres
       GOTRUE_DB_MIGRATIONS_PATH: /usr/local/etc/auth/migrations
-      GOTRUE_JWT_ISSUER: https://${DOMAIN:-localhost}/auth/v1
+      GOTRUE_JWT_ISSUER: ${SITE_ADDRESS:-http://localhost:${HTTP_PORT:-8000}}/auth/v1
       GOTRUE_JWT_AUD: authenticated
       GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
       GOTRUE_JWT_ADMIN_ROLES: service_role
@@ -139,18 +146,19 @@ services:
         exec jamillion
     environment:
       PORT: 8080
-      PUBLIC_URL: https://${DOMAIN:-localhost}
+      PUBLIC_URL: ${SITE_ADDRESS:-http://localhost:${HTTP_PORT:-8000}}
       PGHOST: db
       PGPORT: 5432
       PGDATABASE: postgres
       PGUSER: postgres
       # The issuer GoTrue above signs with.
-      SUPABASE_URL: https://${DOMAIN:-localhost}
+      SUPABASE_URL: ${SITE_ADDRESS:-http://localhost:${HTTP_PORT:-8000}}
       AUDIO_DIR: /app/data/audio
       # The catalog keys from the setup page, 0600, readable by this container only.
       CONFIG_DIR: /app/data/config
-      # Caddy terminates TLS, so the cookie may insist on it.
-      COOKIE_SECURE: "true"
+      # Only with TLS in front: a Secure cookie over plain http is dropped, and
+      # every request then arrives as a new guest.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       RATE_LIMIT: ${RATE_LIMIT:-on}
       TRUST_PROXY_IPS: ${TRUST_PROXY_IPS:-127.0.0.1,172.16.0.0/12}
       MAX_BODY_BYTES: ${MAX_BODY_BYTES:-262144}
@@ -189,10 +197,13 @@ services:
   web:
     image: en1y/jamillion-web:${JAMILLION_VERSION:-latest}
     environment:
-      DOMAIN: ${DOMAIN:-localhost}
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
     ports:
-      - "80:80"
-      - "443:443"
+      # Caddy always listens on 80 and 443 inside; what they are published as is
+      # the deployment's business. A hostname needs the standard pair, because
+      # that is where Let's Encrypt comes looking.
+      - "${HTTP_PORT:-8000}:80"
+      - "${HTTPS_PORT:-8443}:443"
     depends_on:
       # The site is useless without the API, and Caddy answers 502 until it is
       # up, so wait for the health check rather than for the container.
