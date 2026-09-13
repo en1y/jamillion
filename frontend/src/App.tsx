@@ -14,6 +14,8 @@ import { Admin } from './Admin'
 import { altitudeAu, ceilingFor, legs, passed } from './flight'
 import { setPrefs, sfx, usePrefs } from './prefs'
 import { Settings } from './Settings'
+import { Setup } from './Setup'
+import { getSetup, needsSetup } from './setup'
 
 /** The body just passed and the one coming up, with the gap in AU and in points. */
 function Legs({ au, max }: { au: number; max: number }) {
@@ -53,12 +55,15 @@ function App() {
     const timer = setTimeout(() => setMood(null), 1500)
     return () => clearTimeout(timer)
   }, [mood])
+  // First run takes over the page until the admin launches it (Setup.tsx).
+  const [setup, setSetup] = useState(false)
+  useEffect(() => { getSetup().then(status => setSetup(needsSetup(status))).catch(() => {}) }, [])
   const [screen, arg] = useRoute()
   const onAccount = screen === 'account'
   const onFlights = screen === 'flights'
   const onEditor = screen === 'editor'
   const onAdmin = screen === 'admin'
-  const away = onAccount || onFlights || onEditor || onAdmin
+  const away = setup || onAccount || onFlights || onEditor || onAdmin
   // The wheel over bare sky pulls the camera out, on the play page only, and only
   // when nothing of the page is under the cursor: cards, HUD, buttons and text
   // keep their scroll. The gauges are pointer-transparent, so they count as sky.
@@ -186,7 +191,9 @@ function App() {
       </header>
       <Settings open={settings} onClose={() => setSettings(false)} />
 
-      {onEditor ? (
+      {setup ? (
+        <Setup token={token} player={player ?? null} onDone={() => { setSetup(false); navigate('/') }} />
+      ) : onEditor ? (
         <Editor date={arg} token={token} admin={player?.role === 'admin'} />
       ) : onAdmin ? (
         <Admin tab={arg} token={token} me={player?.profile?.id} />

@@ -17,22 +17,25 @@ RUN mkdir -p src && echo 'int main() { return 0; }' > src/_stub.cc \
 COPY backend/src ./src
 RUN rm -f src/_stub.cc && cmake --build build -j "$(nproc)"
 
-# Not a static binary: ensureAudio() shells out to scripts/fetch_audio.py, so the
-# runtime carries python and the seed script's request-path dependencies. The same
-# image runs the stack's first-boot `setup` one-shot (docker/setup.py).
+# Not a static binary: ensureAudio() shells out to scripts/fetch_audio.py and the
+# setup page starts scripts/seed_music.py, so the runtime carries python and the
+# seed script's dependencies in a venv that is first on PATH. The same image runs
+# the stack's first-boot `setup` one-shot (docker/setup.py).
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libpq5 libssl3 zlib1g libjsoncpp26 libuuid1 ca-certificates \
-        python3 python3-psycopg python3-requests python3-dotenv \
+        libpq5 libssl3 zlib1g libjsoncpp26 libuuid1 ca-certificates python3 python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /app jamillion
+COPY scripts/requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+ENV PATH=/opt/venv/bin:$PATH
 WORKDIR /app
 COPY --from=build /src/build/jamillion /usr/local/bin/jamillion
-COPY scripts/fetch_audio.py ./scripts/fetch_audio.py
+COPY scripts/fetch_audio.py scripts/seed_music.py ./scripts/
 COPY docker/setup.py ./docker/setup.py
 # main.cc's loadDotenv() finds no .env here and falls back to the working
-# directory, which is what AUDIO_DIR and scripts/ resolve against.
-RUN mkdir -p /app/data/audio && chown -R jamillion:jamillion /app
+# directory, which is what AUDIO_DIR, CONFIG_DIR and scripts/ resolve against.
+RUN mkdir -p /app/data/audio /app/data/config && chown -R jamillion:jamillion /app
 USER jamillion
 EXPOSE 8080
 CMD ["jamillion"]
