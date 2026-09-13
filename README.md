@@ -38,6 +38,8 @@ curl -fsSLO https://raw.githubusercontent.com/en1y/jamillion/main/compose.yaml
 docker compose up -d
 ```
 
+`docker compose up -d` pulls three public images straight from Docker Hub — [`en1y/jamillion-backend`](https://hub.docker.com/r/en1y/jamillion-backend), [`en1y/jamillion-db`](https://hub.docker.com/r/en1y/jamillion-db), [`en1y/jamillion-web`](https://hub.docker.com/r/en1y/jamillion-web) — plus Supabase's own `gotrue` and `postgrest` images. No `docker login`, no build.
+
 Open **http://localhost:8000**. The first visit is the setup page: create the admin account, paste a free [Last.fm API key](https://www.last.fm/api/account/create), choose how many artists to seed, launch. The catalog fills in the background while you write the first day's questions.
 
 To serve it on a real hostname with HTTPS, put four lines in a `.env` beside `compose.yaml` and run the same command. Caddy fetches the certificate itself.
