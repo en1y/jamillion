@@ -672,7 +672,10 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
 // audio-by-track one, so the content type and the cache header are decided once.
 HttpResponsePtr clip(long long trackId, const orm::Field &cached, const char *missing) {
     auto name = cached.isNull() ? std::string{} : cached.as<std::string>();
-    if (name.empty()) name = ensureAudio(trackId);
+    // The column having a filename is not the same as the file being there: a
+    // restored database meets an empty audio volume, and re-fetching only on an
+    // empty column left every song question 404ing for good.
+    if (name.empty() || !std::filesystem::exists(audioDir / name)) name = ensureAudio(trackId);
     const auto path = audioDir / name;
     if (name.empty() || !std::filesystem::exists(path)) return auth::error(k404NotFound, missing);
     const bool mp3 = path.extension() == ".mp3";
