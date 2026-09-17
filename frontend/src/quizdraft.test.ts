@@ -53,7 +53,7 @@ test('each qtype carries only its own fields on the wire', () => {
   assert.deepEqual(song, { position: 1, qtype: 'song', prompt: 'Question 1',
     time_limit_sec: 0, answers: [{ display: 'Answer 1' }], track_id: 42,
     snippet_start_sec: 8, snippet_len_sec: 12,
-    ask_artist: true, ask_title: false, ask_album: true })
+    ask_artist: true, ask_title: false, ask_album: true, hints: true })
   assert.equal(album.album_id, 7)
   assert.equal(album.track_id, undefined)
   assert.equal(album.ask_artist, true)
