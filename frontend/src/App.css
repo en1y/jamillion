@@ -290,6 +290,7 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .brand-mark { letter-spacing: .14em; color: var(--ink); text-shadow: -2px 1px 0 var(--pink), 2px -1px 0 #7fe9ffd9; }
 .results-score { margin: 0; }
 .results-score b { display: block; font-size: clamp(56px, 16vw, 96px); font-weight: 400; line-height: .9; color: var(--ink); }
+.results-score b i { font-style: normal; font-size: .28em; letter-spacing: .12em; margin-left: .2em; color: var(--ion); }
 .results-score span { color: var(--ion); letter-spacing: .12em; font-size: 16px; }
 .curve { width: 100%; min-width: 0; }
 .curve svg { display: block; width: 100%; height: auto; }

@@ -1034,7 +1034,7 @@ export function Results({ today, max, token }: { today: Today; max: number; toke
         <span className="meta">Flight #{today.flight_no} complete</span>
       </header>
       <p className="results-score">
-        <b>{shown}</b>
+        <b>{shown}<i>pts</i></b>
         <span>{au.toFixed(1)} AU · past {passed(au)}</span>
       </p>
       {dist && <Curve dist={dist} score={points} max={max} better={better} />}
