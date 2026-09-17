@@ -518,6 +518,8 @@ The same flight, on a phone that can keep up with it.
 - [x] No review queue. `submit_answer()` only bumps `guess_count` on a row the key
       already holds; a guess outside it scores 0 and leaves no `question_answers` row.
       The old `is_correct IS NULL` rows are deleted and the column is `NOT NULL`.
+- [x] The landing reads the score first: the big number is points, with the
+      altitude in AU under it, and the share text carries both -- `130 pts * 7.3 AU`.
 - [x] A rarest answer is one of the key's answers or none: `match_answer()` corrects
       a slip in the spelling to the answer it meant, and an answer it cannot place
       is refused with 422 instead of landing as a guess worth nothing.
