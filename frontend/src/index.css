@@ -7,15 +7,16 @@
   color: var(--ink); background: var(--bg); color-scheme: dark; font-synthesis: none;
 }
 * { box-sizing: border-box; }
-html, body { overflow-x: hidden; }
-body { margin: 0; min-width: 280px; min-height: 100vh; min-height: 100dvh; background: var(--bg); }
+html { overflow-x: hidden; }
+/* body clips rather than hides: hidden made it a second scroller under the page's own */
+body { overflow-x: clip; margin: 0; min-width: 280px; min-height: 100vh; min-height: 100dvh; background: var(--bg); }
 /* CRT scanlines over everything -- as tall as the screen with the URL bar gone, like
    the scene, so scrolling on a phone never uncovers a strip without them */
-body::after { content: ""; position: fixed; inset: 0 0 auto; height: 100vh; height: 100lvh; pointer-events: none; z-index: 9;
+body::after { content: ""; position: fixed; inset: 0 0 auto; height: 100vh; height: max(100lvh, var(--sky, 0px)); pointer-events: none; z-index: 9;
   background: repeating-linear-gradient(#0000 0 2px, #00000026 2px 4px); }
 
 button, input { font: inherit; color: inherit; }
-button { cursor: pointer; border-radius: 0; }
+button { cursor: pointer; border-radius: 0; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 a { color: inherit; text-decoration: none; }
 :focus-visible { outline: 2px solid var(--ion); outline-offset: 3px; }
@@ -27,8 +28,12 @@ a { color: inherit; text-decoration: none; }
   box-shadow: 0 0 0 3px var(--void), 0 0 0 6px var(--flare), 0 6px 0 6px var(--drop), 0 0 26px #ffc46b4d;
   transition: transform .15s var(--spring), box-shadow .2s, background .2s;
 }
-.cta:hover:not(:disabled) { background: #16294a; transform: translateY(-2px);
-  box-shadow: 0 0 0 3px var(--void), 0 0 0 6px var(--flare), 0 8px 0 6px var(--drop), 0 0 34px #ffc46b66; }
+/* hover only where there is one: a tap left the button lifted until the next tap */
+@media (hover: hover) {
+  .cta:hover:not(:disabled) { background: #16294a; transform: translateY(-2px);
+    box-shadow: 0 0 0 3px var(--void), 0 0 0 6px var(--flare), 0 8px 0 6px var(--drop), 0 0 34px #ffc46b66; }
+  .chip:hover:not(:disabled), a.chip:hover { color: var(--ink); border-color: var(--ion); transform: translateY(-1px); }
+}
 .cta:active:not(:disabled) { transform: translateY(4px);
   box-shadow: 0 0 0 3px var(--void), 0 0 0 6px var(--flare), 0 2px 0 6px var(--drop), 0 0 26px #ffc46b4d; }
 .cta:disabled { opacity: 1; color: var(--mute); box-shadow: 0 0 0 3px var(--void), 0 0 0 6px #ffc46b66, 0 6px 0 6px #2a2114; }
@@ -37,7 +42,6 @@ a { color: inherit; text-decoration: none; }
   padding: 5px 12px 3px; border: 1px solid var(--line); background: var(--panel); color: var(--mute);
   transition: transform .15s var(--spring), color .2s, border-color .2s;
 }
-.chip:hover:not(:disabled), a.chip:hover { color: var(--ink); border-color: var(--ion); transform: translateY(-1px); }
 .chip[aria-pressed="true"] { color: var(--ink); border-color: var(--flare); background: #16294a; }
 .chip:disabled { opacity: .45; }
 

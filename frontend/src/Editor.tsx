@@ -1,7 +1,6 @@
 // The flight deck: where a moderator writes the day. Everything it talks to is in
 // moderator.ts; everything it decides without a DOM is in quizdraft.ts.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
 import { ApiError } from './api'
 import { QuizStats } from './Admin'
 import { navigate } from './routing'
@@ -25,7 +24,7 @@ import {
 import type { AnswerField, Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
 import { formatDate, monthGrid, monthLabel, parseDate, shiftDay, shiftMonth, weekday } from './flight'
-import { getSeeder, rerunSeeder } from './setup'
+import { getSeeder } from './setup'
 import type { SetupStatus } from './setup'
 
 /** The fields a song question will take more than one name for. Not the artist:
@@ -170,118 +169,34 @@ function DatePicker({ value, onPick, label = 'Open the calendar' }:
 
 // --- the day list ----------------------------------------------------------
 
-/** The seed takes hours on a real catalog. Keep run progress where staff plan
- * questions, and keep checking for another run started by an admin. */
-function SeederProgress({ token }: { token?: string }) {
+/** The catalog has its own screen now; the deck keeps the one line that says
+ *  whether it is worth going there. */
+function CatalogLine({ token }: { token?: string }) {
   const [status, setStatus] = useState<SetupStatus | null>(null)
-  const [error, setError] = useState('')
-  const [reload, setReload] = useState(0)
-  const [artistName, setArtistName] = useState('')
-  const [limit, setLimit] = useState<number | null>(null)
-  const [starting, setStarting] = useState(false)
 
   useEffect(() => {
     let live = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const check = () => {
       getSeeder(token)
-        .then(next => {
-          if (!live) return
-          setStatus(next)
-          setError('')
-          timer = setTimeout(check, 10_000)
-        })
-        .catch((cause: unknown) => {
-          if (!live) return
-          setError(wall(cause))
-          timer = setTimeout(check, 10_000)
-        })
+        .then(next => { if (live) setStatus(next) })
+        .catch(() => {})
+        .finally(() => { if (live) timer = setTimeout(check, 30_000) })
     }
     check()
     return () => { live = false; if (timer) clearTimeout(timer) }
-  }, [token, reload])
+  }, [token])
 
-  const progress = status?.progress
-  const running = Boolean(status?.seeding)
-  const percent = progress?.total ? Math.min(100, Math.round(progress.done / progress.total * 100)) : 0
-  const state = running ? 'Catalog is being built'
-    : progress?.state === 'interrupted' ? 'Catalog run stopped early'
-    : progress?.state === 'finished' ? 'Catalog run finished'
-    : 'Catalog status'
-
-  async function start(request: { artist: string } | { limit: number }) {
-    if (starting || running) return
-    setStarting(true)
-    setError('')
-    try {
-      const next = await rerunSeeder(request, token)
-      setStatus(next)
-      if ('artist' in request) setArtistName('')
-      setReload(n => n + 1)
-    } catch (cause) {
-      setError(wall(cause))
-    } finally { setStarting(false) }
-  }
-
-  function submitArtist(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const name = artistName.trim()
-    if (name) void start({ artist: name })
-  }
-
-  function submitChart(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const count = limit ?? status?.seed_target ?? 500
-    if (count >= 1 && count <= 2000) void start({ limit: count })
-  }
-
-  const disabled = !status || !status.configured || running || starting
+  const gaps = (status?.failures?.length ?? 0) + (status?.empty_artists?.length ?? 0)
   return (
-    <aside className="seeder-progress" aria-label="Catalog seeder progress">
-      <div className="seeder-head">
-        <div><span className="eyebrow">MUSIC CATALOG</span><h3>{state}</h3></div>
-        <button className="chip" type="button" onClick={() => setReload(n => n + 1)}>Refresh</button>
-      </div>
-      {status ? <>
-        {progress?.total ? <>
-          <div className="seeder-count" role="status" aria-live="polite">
-            <strong>{progress.done} of {progress.total}</strong> artists processed
-            <b>{percent}%</b>
-          </div>
-          <progress max={progress.total} value={progress.done} aria-label="Artists processed" />
-          {running && progress.artist && <p className="seeder-current">Working on <strong>{progress.artist}</strong>…</p>}
-          {progress.failed > 0 && <p className="seeder-note">{progress.failed} artist{progress.failed === 1 ? '' : 's'} could not be added. The run continued.</p>}
-          {Boolean(progress.failed_artists?.length) && <div className="seeder-failures">
-            <span>Retry a failed artist:</span>
-            {progress.failed_artists?.map(name =>
-              <button key={name} className="chip" type="button" disabled={disabled}
-                      onClick={() => void start({ artist: name })}>{name}</button>)}
-          </div>}
-        </> : running ? <p className="seeder-current" role="status">Preparing the artist list…</p> : null}
-        <p className="seeder-note">{status.artists} artists currently in the catalog.
-          {running && ' Updates automatically every 10 seconds.'}
-          {progress?.state === 'interrupted' && ' Check the seeder log before starting another run.'}
-        </p>
-        <div className="seeder-actions">
-          <form onSubmit={submitArtist}>
-            <label>Retry one artist
-              <input value={artistName} onChange={event => setArtistName(event.target.value)}
-                     placeholder="Artist name" maxLength={120} required disabled={disabled} /></label>
-            <button className="chip" type="submit" disabled={disabled || !artistName.trim()}>
-              {starting ? 'Starting…' : 'Run artist'}</button>
-          </form>
-          <form onSubmit={submitChart}>
-            <label>Rerun the chart
-              <input type="number" min="1" max="2000" required disabled={disabled}
-                     value={limit ?? (status.seed_target || 500)}
-                     onChange={event => setLimit(Number(event.target.value))} /></label>
-            <button className="chip" type="submit" disabled={disabled || (limit !== null && (limit < 1 || limit > 2000))}>
-              {starting ? 'Starting…' : 'Run top artists'}</button>
-          </form>
-        </div>
-        <p className="seeder-note">Runs one job at a time. A chart rerun may take hours; existing artists are updated.</p>
-      </> : <p role="status">{error || 'Checking catalog status…'}</p>}
-      {status && error && <p className="seeder-note" role="alert">Status could not refresh: {error}</p>}
+    <aside className="catalog-line" aria-label="Music catalog">
+      <span className="eyebrow">MUSIC CATALOG</span>
+      <p role="status">{status
+        ? <>{status.artists} artists{status.seeding
+            ? <> · a run is in the air{status.progress?.artist ? ` (${status.progress.artist})` : ''}</>
+            : gaps > 0 ? <> · {gaps} missing or empty</> : null}</>
+        : 'Checking the catalog…'}</p>
+      <a className="chip" href="/catalog">catalog dashboard</a>
     </aside>
   )
 }
@@ -324,7 +239,7 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
     <section className="editor" aria-labelledby="deck-heading">
       <p className="eyebrow">FLIGHT DECK</p>
       <h2 id="deck-heading">Which day are we writing?</h2>
-      <SeederProgress token={token} />
+      <CatalogLine token={token} />
       {error && <p className="notice" role="alert">{error}</p>}
 
       <div className="deck-open">
@@ -806,9 +721,9 @@ function SnippetPicker({ trackId, start, len, token, onChange }: {
   )
 }
 
-// --- the review queue ------------------------------------------------------
+// --- the answers of a flown day ------------------------------------------------------
 
-/** getQuiz already orders answers by guess_count, so this list is the queue. */
+/** getQuiz already orders answers by guess_count, most given first. */
 function Review({ answers, tiers, token, onDone }: {
   answers: ModAnswer[]; tiers: Tier[]; token?: string; onDone: () => void
 }) {
@@ -828,17 +743,16 @@ function Review({ answers, tiers, token, onDone }: {
 
   return (
     <div className="review">
-      <p className="fathom">the guesses <span>{note}</span></p>
-      <ul>
+      {note && <p className="meta" role="status">{note}</p>}
+      <ul className="answer-scroll">
         {answers.map(answer => (
-          <li key={answer.id} className={answer.is_correct === null ? 'awaiting' : undefined}>
+          <li key={answer.id}>
             <span className="said">{answer.display}
               <small>{answer.guess_count} guess{answer.guess_count === 1 ? '' : 'es'} · {
-                answer.is_correct === null ? 'awaiting review'
-                  : answer.is_correct ? 'accepted' : 'rejected'}</small>
+                answer.is_correct ? 'accepted' : 'rejected'}</small>
             </span>
             <span className="verdicts">
-              {([['✓', true], ['✗', false], ['?', null]] as const).map(([glyph, verdict]) => (
+              {([['✓', true], ['✗', false]] as const).map(([glyph, verdict]) => (
                 <button key={glyph} className="chip" type="button" disabled={busy > 0}
                         aria-pressed={answer.is_correct === verdict}
                         onClick={() => void act(() => reviewAnswer(answer.id, { is_correct: verdict }, token))}>
@@ -879,6 +793,15 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
   onReviewed: () => void
 }) {
   const [promptNote, setPromptNote] = useState('')
+  const scroller = useRef<HTMLDivElement>(null)
+  const filled = question.answers.filter(a => a.display.trim()).length
+  // A song or album key is a handful of rows, worth seeing at once; a rarest list
+  // or a long key stays folded. Decided per type, then the moderator's toggle wins,
+  // so typing the tenth answer does not snap the list shut under the cursor.
+  const few = question.qtype !== 'rarest' && question.answers.length < 10
+  const [answersOpen, setAnswersOpen] = useState(few)
+  const [openType, setOpenType] = useState(question.qtype)
+  if (openType !== question.qtype) { setOpenType(question.qtype); setAnswersOpen(few) }
   const set = (patch: Partial<DraftQuestion>) => onChange({ ...question, ...patch })
   const pick = question.qtype === 'song' ? question.track : question.qtype === 'album' ? question.album : null
   const entity: Entity = question.qtype === 'album' ? 'albums' : 'tracks'
@@ -934,6 +857,15 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
     set({ answers: rows })
   }
 
+  /** The new row is at the bottom of its own scroller, so go and put the cursor in it. */
+  function addAnswer() {
+    set({ answers: [...question.answers, { display: '', tier_id: null }] })
+    requestAnimationFrame(() => {
+      const inputs = scroller.current?.querySelectorAll('input')
+      inputs?.[inputs.length - 1]?.focus()
+    })
+  }
+
   const choose = (next: DraftPick) =>
     setAsked({ [question.qtype === 'song' ? 'track' : 'album']: next } as Partial<DraftQuestion>)
 
@@ -942,8 +874,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
       <summary>
         <span className="n">{slot + 1}</span>
         <span className="said">{question.prompt || <i>empty</i>}
-          <small>{question.qtype}{pick ? ` · ${pick.artist} — ${pick.title}` : ''} · {
-            question.answers.filter(a => a.display.trim()).length} answers</small>
+          <small>{question.qtype}{pick ? ` · ${pick.artist} — ${pick.title}` : ''} · {filled} answers</small>
         </span>
         <span className="more" aria-hidden="true" />
       </summary>
@@ -985,7 +916,11 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
           </p>
         )}
 
-        {question.qtype !== 'rarest' && !frozen && <>
+        {/* Four parts: the question above, then the pick, the answer key and the
+            guesses, each folded on its own so a card opens on just the question. */}
+        {question.qtype !== 'rarest' && !frozen && <details className="qpart">
+          <summary>the {question.qtype === 'song' ? 'track' : 'album'} <span>{pick
+            ? `${pick.artist} — ${pick.title}` : 'none picked yet'}</span></summary>
           {pick
             ? <p className="chosen">
                 {pick.cover && <img src={pick.cover} alt="" />}
@@ -1019,24 +954,55 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
                            len={question.snippet_len_sec} token={token}
                            onChange={(start, len) => set({ snippet_start_sec: start, snippet_len_sec: len })} />
           )}
-        </>}
+        </details>}
 
-        {/* On a flown day the review queue below lists the same answers with
+        {/* On a flown day the list below shows the same answers with
             controls that actually work, so this editor would only be a dead copy. */}
-        {!frozen && <div className="answers">
-          <p className="fathom">accepted answers <span>{question.qtype === 'rarest'
+        {!frozen && <details className="qpart answers" open={answersOpen}
+                             onToggle={e => setAnswersOpen(e.currentTarget.open)}>
+          <summary>accepted answers · {filled} <span>{question.qtype === 'rarest'
             ? 'a tier here beats the rarity'
-            : 'a player scores every field they get right, added up'}</span></p>
+            : 'a player scores every field they get right, added up'}</span></summary>
+          <div className="answer-tools">
+            <button className="chip" type="button" onClick={addAnswer}>+ custom answer</button>
+            {/* A song is one recording but not always one name: it can be titled two
+                ways, and it can sit on a single, an album and a compilation. An album
+                question is the record itself, so it has only the one. */}
+            {question.qtype === 'song' && ALT_FIELDS.filter(field => asksOf(question)[field]).map(field => (
+              <button key={field} className="chip" type="button" onClick={() => addName(field)}>
+                + another {field}
+              </button>
+            ))}
+            {/* Down the list as it reads: Nebula at the top, Supernova at the bottom.
+                Only where a ladder means anything -- a song question's fields are
+                three different questions, not one list from common to obscure. */}
+            {question.qtype === 'rarest' && question.answers.length > 1 && tiers.length > 0 && (
+              <button className="chip" type="button" onClick={spreadOverAnswers}
+                      title="Nebula at the top of the list, Supernova at the bottom, the rest evenly between">
+                spread the tiers
+              </button>
+            )}
+            {/* Twenty-five rows out of one query is one press; taking them back out
+                should be too. The seeded field rows are not "added", so they stay. */}
+            {loose > 0 && (
+              <button className="chip scrub" type="button"
+                      onClick={() => set({ answers: question.answers.filter(answer => answer.seeded || answer.field) })}>
+                remove all {loose}
+              </button>
+            )}
+          </div>
           {/* "Every Coldplay song over a million listens" is a query, not twenty
               lines of typing. Only on a rarest question: a song or album question
               writes its own key from the pick and the fields it asks for. */}
           {schema && question.qtype === 'rarest' && (
             <details className="qquery">
-              <summary>ask the catalog</summary>
+              <summary>browse the catalog</summary>
               <CatalogQuery schema={schema} entities={['tracks', 'albums', 'artists']}
                             token={token} onCollect={collect} />
             </details>
           )}
+          <div className="answer-scroll" ref={scroller}>
+          {question.answers.length === 0 && <p className="meta">no answers yet</p>}
           {question.answers.map((answer, index) => {
             const alt = !answer.seeded && answer.field    // another name for a field
             return (
@@ -1076,39 +1042,14 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
               <b>{total === undefined ? '—' : `${total} pts`}</b>
             </div>
           )}
-          <button className="chip" type="button"
-                  onClick={() => set({ answers: [...question.answers, { display: '', tier_id: null }] })}>
-            + answer
-          </button>
-          {/* A song is one recording but not always one name: it can be titled two
-              ways, and it can sit on a single, an album and a compilation. An album
-              question is the record itself, so it has only the one. */}
-          {question.qtype === 'song' && ALT_FIELDS.filter(field => asksOf(question)[field]).map(field => (
-            <button key={field} className="chip" type="button" onClick={() => addName(field)}>
-              + another {field}
-            </button>
-          ))}
-          {/* Down the list as it reads: Nebula at the top, Supernova at the bottom.
-              Only where a ladder means anything -- a song question's fields are
-              three different questions, not one list from common to obscure. */}
-          {question.qtype === 'rarest' && question.answers.length > 1 && tiers.length > 0 && (
-            <button className="chip" type="button" onClick={spreadOverAnswers}
-                    title="Nebula at the top of the list, Supernova at the bottom, the rest evenly between">
-              spread the tiers
-            </button>
-          )}
-          {/* Twenty-five rows out of one query is one press; taking them back out
-              should be too. The seeded field rows are not "added", so they stay. */}
-          {loose > 0 && (
-            <button className="chip scrub" type="button"
-                    onClick={() => set({ answers: question.answers.filter(answer => answer.seeded || answer.field) })}>
-              remove all {loose}
-            </button>
-          )}
-        </div>}
+          </div>
+        </details>}
 
         {saved && saved.answers.length > 0 && (
-          <Review answers={saved.answers} tiers={tiers} token={token} onDone={onReviewed} />
+          <details className="qpart" open={frozen}>
+            <summary>the answers · {saved.answers.length}</summary>
+            <Review answers={saved.answers} tiers={tiers} token={token} onDone={onReviewed} />
+          </details>
         )}
       </div>
     </details>

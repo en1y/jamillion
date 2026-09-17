@@ -1,7 +1,9 @@
 /* --- scene: the flight is the background, always ------------------------- */
 /* 100lvh, not inset: 0 -- a phone's URL bar showing and hiding on scroll resized
-   the scene, so the Sun and the rocket bobbed with it and the stars re-scattered. */
-.scene { --pin: 52%; position: fixed; inset: 0 0 auto; height: 100vh; height: 100lvh; z-index: 0; overflow: hidden; pointer-events: none; }
+   the scene, so the Sun and the rocket bobbed with it and the stars re-scattered.
+   The keyboard shrinks lvh too (interactive-widget=resizes-content), so --sky holds the
+   height from before it opened; Scene sets it. */
+.scene { --pin: 52%; position: fixed; inset: 0 0 auto; height: 100vh; height: max(100lvh, var(--sky, 0px)); z-index: 0; overflow: hidden; pointer-events: none; }
 .starfield { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 /* The camera is a point pinned --pin up the viewport, where the rocket is; the
@@ -149,7 +151,8 @@ summary:hover { color: var(--ion); }
 .tiers b { color: var(--flare); font-weight: 400; }
 .cta.big { width: min(600px, 100%); font-size: clamp(22px, 3.6vw, 30px); padding: 16px 20px 13px;
   animation: btn-bob 1.9s ease-in-out infinite; }   /* idles like Krillion's BEGIN DESCENT, so it reads as the thing to press */
-.cta.big:hover, .cta.big:disabled { animation-play-state: paused; }
+.cta.big:disabled { animation-play-state: paused; }
+@media (hover: hover) { .cta.big:hover { animation-play-state: paused; } }
 @keyframes btn-bob { 50% { translate: 0 5px; } }
 .preflight { font-size: 16px; letter-spacing: .1em; color: var(--mute); margin: 22px 0 0; }
 .dock { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; width: 100%; margin-top: auto; padding-top: 30px; }
@@ -178,7 +181,7 @@ input:focus { outline: 2px solid var(--ion); outline-offset: 0; border-color: va
 .dots i { width: 11px; height: 11px; border: 1px solid var(--line); background: var(--panel); }
 .dots i.done { background: var(--flare); border-color: var(--flare); }
 .dots i.cur { border-color: var(--ion); animation: dot-pulse 1.4s ease-in-out infinite; }
-@keyframes dot-pulse { 50% { transform: scale(1.35); background: #16294a; } }
+@keyframes dot-pulse { 50% { transform: scale(1.35); opacity: .6; } }   /* transform and opacity only: a background repainted every frame */
 .cover { display: block; width: min(240px, 60vw); margin: 14px auto 0; border: 2px solid var(--line);
   box-shadow: 0 0 0 3px var(--void), 0 0 30px #7fe9ff33; animation: bloom .6s ease-out; }
 @keyframes bloom { from { opacity: 0; filter: brightness(2.5); transform: scale(.6); } 60% { transform: scale(1.06); } }
@@ -206,7 +209,7 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .field { position: relative; flex: 1; min-width: 0; }
 /* the HUD sits on the bottom edge, so the catalog's completions open upward */
 .picks { position: absolute; bottom: 100%; left: 0; right: 0; z-index: 3; margin: 0 0 6px;
-  padding: 0; list-style: none; max-height: 15rem; overflow-y: auto;
+  padding: 0; list-style: none; max-height: min(15rem, var(--room, 45dvh)); overflow-y: auto; overscroll-behavior: contain;
   background: #0b1526f2; border: 2px solid #2c6d8cd7; box-shadow: 0 0 0 3px var(--void); }
 .picks li { padding: 8px 12px 6px; font-size: 19px; color: var(--ink); cursor: pointer;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -229,14 +232,14 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .reel-nav button:disabled { color: var(--line); cursor: default; }
 .slots { flex: 1; min-width: 0; list-style: none; margin: 0; padding: 0;
   background: #0b152699; border: 1px solid var(--line); }
-.slots li { display: grid; grid-template-columns: 1.6em 7em 1fr; align-items: center; gap: 8px;
+.slots > li { display: grid; grid-template-columns: 1.6em 7em 1fr; align-items: center; gap: 8px;
   padding: 4px 8px; border-bottom: 1px solid var(--line); }
-.slots li:last-child { border-bottom: 0; }
+.slots > li:last-child { border-bottom: 0; }
 .slot-n { font-size: 13px; color: var(--line); text-align: right; }
 .slot-label { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--mute);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slots li.here { background: #16294a80; }
-.slots li.here .slot-n, .slots li.here .slot-label { color: var(--ion); }
+.slots > li.here { background: #16294a80; }
+.slots > li.here .slot-n, .slots > li.here .slot-label { color: var(--ion); }
 /* a waiting box: what is in it, and a click to go back to it */
 .slot-said { min-width: 0; padding: 6px 4px 4px; font-size: 17px; text-align: left; color: var(--ink);
   background: none; border: 0; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -414,12 +417,14 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
   .hud form { flex-wrap: wrap; }
   .fields { flex-basis: 100%; order: -1; flex-direction: column; }
   .reel { flex-basis: 100%; order: -1; }          /* the song boxes get the whole row, like the single one */
-  .slots li { grid-template-columns: 1em 4.6em 1fr; gap: 6px; padding: 4px 6px; }
+  .slots > li { grid-template-columns: 1em 4.6em 1fr; gap: 6px; padding: 4px 6px; }
   .snippet { gap: 10px; }
   .snippet .volume { display: none; }             /* a phone has volume keys; the knob stays under the gear */
   .clock { min-width: 0; font-size: 14px; }
   .hud .cta { flex: 1; font-size: 20px; padding: 12px 14px 10px; }
   .panel { margin-top: 4vh; padding: 20px; }
+  .prompt, .verdict { margin-top: 12px; }        /* px, not vh: the keyboard shrinks vh, and the card jumped as it opened */
+  .hud { padding: 16px 10px 10px; }
   .dock { justify-content: center; padding-top: 16px; }
   .launchpad { padding-top: 2vh; }
   .howto { margin-bottom: 14px; }
@@ -427,6 +432,32 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
   .fathom { flex-direction: column; align-items: flex-start; gap: 2px; }
   .results-head { flex-direction: column; gap: 2px; }
   .idea div { flex-direction: column; align-items: stretch; }
+}
+
+/* --- typing on a phone: the keyboard takes half the screen ----------------- */
+@media (pointer: coarse) {
+  /* the list opens upward, so the best match sits right over the box, under the thumb */
+  .picks { display: flex; flex-direction: column-reverse; }
+  .picks li { flex: none; padding: 11px 14px 9px; }
+  .picks li + li { border-top: 0; border-bottom: 1px solid var(--line); }
+  /* on a song question the list hangs over all the boxes, as wide as them, not over the one narrow column */
+  .slots { position: relative; }
+  .slots .field { position: static; }
+  /* While a box has the focus: the gauges fold away and the card and the HUD tighten,
+     so the question and the box both fit over the keyboard. */
+  main.flying:has(.hud input:focus) { padding-top: 8px; }
+  main.flying:has(.hud input:focus) :is(.gauges, .legs, .reel-hint) { display: none; }
+  main.flying:has(.hud input:focus) .prompt { margin-top: 0; padding: 8px 14px 10px; }
+  main.flying:has(.hud input:focus) .prompt h2 { font-size: clamp(21px, 5.6vw, 28px); margin: 4px 0 2px; }
+  main.flying:has(.hud input:focus) .snippet { margin-top: 6px; }
+  main.flying:has(.hud input:focus) .play { width: 40px; height: 40px; }
+  main.flying:has(.hud input:focus) .cover { width: min(120px, 30vw); margin-top: 6px; }
+  main.flying:has(.hud input:focus) .hud { padding-top: 10px; padding-bottom: 8px; }
+  main.flying:has(.hud input:focus) .hud form { gap: 8px; }
+  main.flying:has(.hud input:focus) .ring { width: 44px; height: 44px; font-size: 20px; }
+  main.flying:has(.hud input:focus) .hud .cta { padding: 9px 12px 7px; }
+  main.flying:has(.hud input:focus) .slots > li { padding: 2px 6px; }
+  main.flying:has(.hud input:focus) .slots .field input { padding: 6px 8px 4px; }
 }
 
 /* --- flight deck: the quiz editor ---------------------------------------- */
@@ -537,7 +568,6 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
   accent-color: var(--flare); }
 .collect { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 4px; }
 .collect label { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
-.answers .scrub { margin-left: 8px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .chosen { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
 .chosen img { flex: none; width: 56px; height: 56px; object-fit: cover; border: 1px solid var(--line); }
@@ -559,8 +589,17 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 /* the clock, beside the prompt */
 .limit select { width: 100%; margin-top: 6px; }
 
-/* accepted answers and the review queue */
-.answers { margin-top: 16px; }
+/* accepted answers, and the same list on a flown day */
+/* a question card's parts after the question itself: the pick, the key, the guesses */
+.qpart { border: 1px solid var(--line); background: #0b152680; margin: 14px 0 0; padding: 6px 10px; }
+.qpart > summary { padding: 4px 0; cursor: pointer; color: var(--flare); letter-spacing: .1em; }
+.qpart > summary span { margin-left: 8px; font-size: 14px; color: var(--mute); letter-spacing: .06em; }
+.qpart[open] > summary { margin-bottom: 6px; }
+.answer-tools { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
+/* a long key or queue scrolls in its own box instead of stretching the page */
+.answer-scroll { max-height: 22rem; overflow-y: auto; overscroll-behavior: contain;
+  border-top: 1px solid var(--line); padding-right: 4px; }
+.qpart .review { margin-top: 0; border-top: 0; padding-top: 0; }
 .answer-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .answer-row input { flex: 1; min-width: 0; margin: 0; }
 /* what everything right is worth: a row, but a statement rather than a field */
@@ -579,7 +618,6 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
 .review ul { list-style: none; padding: 0; margin: 0; }
 .review li { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; padding: 7px 2px;
   border-bottom: 1px solid var(--line); }
-.review li.awaiting { background: #16294a80; }
 .review .said { flex: 1; min-width: 140px; overflow-wrap: anywhere; }
 .review .said small { display: block; font-size: 13px; color: var(--mute); }
 .verdicts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -598,12 +636,40 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
 .seeder-progress progress { display: block; width: 100%; height: 12px; margin: 8px 0 12px; accent-color: var(--ion); }
 .seeder-current, .seeder-note { margin: 6px 0 0; overflow-wrap: anywhere; }
 .seeder-note { color: var(--mute); font-size: 15px; }
-.seeder-failures { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin: 12px 0; color: var(--mute); font-size: 15px; }
 .seeder-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 15px 0 10px; }
 .seeder-actions form { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); background: #0b1526; }
 .seeder-actions label { margin: 0 0 10px; font-size: 15px; }
 .seeder-actions input { margin-top: 5px; }
 .seeder-actions .chip { width: 100%; }
+.seeder-actions textarea { width: 100%; margin-top: 5px; resize: vertical; }
+
+/* --- the catalog dashboard ------------------------------------------------ */
+/* One line of it on the flight deck; the rest lives on /catalog. */
+.catalog-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px;
+  margin: 0 0 22px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); }
+.catalog-line .eyebrow { margin: 0; font-size: 13px; }
+.catalog-line p { flex: 1; min-width: 160px; margin: 0; color: var(--mute); overflow-wrap: anywhere; }
+.catalog-counts { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 18px; padding: 0; }
+.catalog-counts div { flex: 1; min-width: 120px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); }
+.catalog-counts dt { color: var(--mute); font-size: 14px; letter-spacing: .1em; text-transform: uppercase; }
+.catalog-counts dd { margin: 4px 0 0; font-size: 23px; color: var(--flare); font-variant-numeric: tabular-nums; }
+/* the loose notes on this screen would otherwise sit on the bare sky, and on a
+   phone that sky is the Sun */
+.catalog-deck > .seeder-note { padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); }
+.catalog-gaps { margin-top: 22px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line); }
+.catalog-gaps h3 { margin: 0 0 12px; font-size: 23px; font-weight: 400; }
+.catalog-gaps h3 small { display: block; font-size: 15px; color: var(--mute); }
+.catalog-list { list-style: none; padding: 0; margin: 10px 0 0; }
+.catalog-list li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px;
+  padding: 7px 2px; border-bottom: 1px solid var(--line); font-size: 16px; }
+.catalog-list small { color: var(--mute); font-size: 14px; overflow-wrap: anywhere; }
+.catalog-list small.tries { margin-left: auto; white-space: nowrap; }
+.pick { display: flex; align-items: center; gap: 8px; flex: none; width: 15em; max-width: 100%; margin: 0;
+  color: var(--ink); overflow-wrap: anywhere; }
+/* the global input rule is display:block, width:100%: a tick box needs neither */
+.pick input { flex: none; display: inline-block; width: 18px; height: 18px; margin: 0; padding: 0;
+  accent-color: var(--flare); }
+.catalog-list li > small:not(.tries) { flex: 1; min-width: 140px; }
 
 /* --- ground control: the admin screen ------------------------------------- */
 /* .rule was written for bare selects; here each control wears its own label. */
@@ -629,6 +695,9 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
 
 @media (max-width: 640px) {
   .seeder-actions { grid-template-columns: 1fr; }
+  .catalog-counts div { min-width: 44%; }
+  .catalog-gaps .seeder-head { flex-wrap: wrap; }
+  .catalog-list small.tries { margin-left: 0; }
   .seeder-head { align-items: flex-start; }
   .qbody { padding: 4px 8px 14px; }
   .snip-row label { flex-basis: 100%; }
