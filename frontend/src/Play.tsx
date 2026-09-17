@@ -130,9 +130,17 @@ function Starfield({ au }: { au: number }) {
     const tctx = tile.getContext('2d')!
     let s = 1, cx = 0, cy = 0
     // The camera sits at a fixed point of the scene (CSS: left 50%, bottom --pin),
-    // so its position is arithmetic; measuring it forced a layout every frame.
+    // so its position is arithmetic; measuring it forced a layout every frame. Its
+    // scale is only read while a zoom or the trip is running, plus once after:
+    // getComputedStyle every frame was a style recalc a phone paid 60 times a second.
+    let moving = 0, settle = true
+    const start = () => { moving++ }
+    const stop = () => { moving = Math.max(0, moving - 1); settle = true }
+    const events = ['transitionrun', 'animationstart'] as const, ends = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'] as const
+    for (const e of events) cam?.addEventListener(e, start)
+    for (const e of ends) cam?.addEventListener(e, stop)
     function lens() {
-      s = Math.min(1, (cam && parseFloat(getComputedStyle(cam).scale)) || 1)
+      if (moving || settle) { s = Math.min(1, (cam && parseFloat(getComputedStyle(cam).scale)) || 1); settle = false }
       cx = width / 2
       cy = height * 0.48
     }
@@ -234,7 +242,11 @@ function Starfield({ au }: { au: number }) {
     }
     const watch = new ResizeObserver(resize)
     watch.observe(node)
-    return () => { cancelAnimationFrame(raf); watch.disconnect() }
+    return () => {
+      cancelAnimationFrame(raf); watch.disconnect()
+      for (const e of events) cam?.removeEventListener(e, start)
+      for (const e of ends) cam?.removeEventListener(e, stop)
+    }
   }, [])
   return <canvas className="starfield" ref={canvas} />
 }

@@ -489,6 +489,21 @@ The same flight, on a phone that can keep up with it.
       not under the gauges.
 - [x] A favicon: the ✦ from the header, in flare gold.
 
+## v1.0.2 — Phones, again
+
+- [x] The Sun's glow holds still. v1.0.1 faded a second glow in and out, which gave
+      it a GPU layer ~1600px square times the pixel ratio and made phones crawl in
+      Chrome as well as Firefox.
+- [x] The starfield reads the camera's scale only while a zoom or the trip runs,
+      not with a style recalc every frame.
+- [x] The launchpad fits the visible screen (`100dvh`, a smaller spacer on a phone),
+      so it does not scroll; the scanlines are `100lvh` like the scene, so
+      scrolling never uncovers a strip without them.
+- [x] The altitude and score gauges sit under the header, with the planet
+      distances under them, instead of pinned over the top of the page.
+- [x] Released images: v1.0.1's backend image was re-pushed with the
+      character-count fix, which this tag carries too.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).

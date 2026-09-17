@@ -164,15 +164,6 @@ function App() {
 
   return (<>
     <Scene au={au} mood={mood} zoom={zoom} />
-    {today && !away && (
-      // Krillion's depth and score gauges: pinned to the top corners, over everything.
-      // Keyed on the total so the jolt replays on every new score.
-      <div key={points} className={points ? 'gauges bump' : 'gauges'} role="status"
-           aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
-        <span className="gauge alt"><small>ALTITUDE</small><b>{altitudeAu(ticking, max).toFixed(1)} AU</b></span>
-        <span className="gauge score"><small>SCORE</small><b>{ticking}</b></span>
-      </div>
-    )}
     <main className={flying ? 'flying' : undefined}>
       <header>
         <a className="brand" href="/">✦ JAMILLION</a>
@@ -188,6 +179,15 @@ function App() {
             : <a className="chip" href="/account">{passport}</a>}
         </span>
       </header>
+      {today && !away && (
+        // Krillion's depth and score gauges, under the header with the legs under them.
+        // Keyed on the total so the jolt replays on every new score.
+        <div key={points} className={points ? 'gauges bump' : 'gauges'} role="status"
+             aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
+          <span className="gauge alt"><small>ALTITUDE</small><b>{altitudeAu(ticking, max).toFixed(1)} AU</b></span>
+          <span className="gauge score"><small>SCORE</small><b>{ticking}</b></span>
+        </div>
+      )}
       {today && !away && <Legs au={altitudeAu(ticking, max)} max={max} />}
       <Settings open={settings} onClose={() => setSettings(false)} />
 

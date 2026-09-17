@@ -23,11 +23,9 @@
   width: calc(2 * var(--r)); height: calc(2 * var(--r)); border-radius: 50%;
   background: url(/planets/sun.png) center / cover no-repeat, #ff8a3d;
   box-shadow: 0 0 120px 40px #ffb34766, 0 0 340px 150px #ff8a3d22; }
-/* The breath is the opacity of a second, brighter glow: animating the shadow itself
-   repainted a 700px blur every frame, which a phone could not keep up with. */
-.sun::after { content: ""; position: absolute; inset: 0; border-radius: 50%; opacity: 0;
-  box-shadow: 0 0 150px 50px #ffb34722, 0 0 400px 170px #ff8a3d0e; animation: breathe 5s ease-in-out infinite; }
-@keyframes breathe { 50% { opacity: 1; } }
+/* ponytail: the glow holds still. Animating the shadow repainted a 700px blur every
+   frame, and fading a second glow gave it a GPU layer ~1600px square times the
+   phone's pixel ratio; either one is what made phones crawl. */
 .landmark { position: absolute; bottom: var(--px); display: flex; align-items: center; gap: 14px; transform: translateY(50%);
   white-space: nowrap; font-size: 16px; letter-spacing: .12em; color: var(--mute); }
 .landmark.right { left: 34px; }
@@ -93,16 +91,16 @@ body.zap::after { animation: zap .28s steps(3) 1; }
   66% { opacity: .7; transform: translateY(-1px); } 100% { opacity: .45; } }
 
 /* --- page over the scene ------------------------------------------------- */
-main { position: relative; z-index: 1; max-width: 900px; min-height: 100vh; margin: auto; padding: 80px 26px 34px;
-  display: flex; flex-direction: column; }   /* the gauges own the top */
+main { position: relative; z-index: 1; max-width: 900px; min-height: 100vh; min-height: 100dvh; margin: auto; padding: 18px 26px 34px;
+  display: flex; flex-direction: column; }
 main.flying { padding-bottom: 150px; }        /* room under the HUD */
 header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 main.flying header { display: none; }         /* nothing but the flight while flying */
 .brand { letter-spacing: .2em; font-size: 21px; color: var(--mute); }
 .brand:hover { color: var(--ink); }
-/* --- the gauges: Krillion's depth and score panels, top corners, over everything */
-.gauges { position: fixed; top: 0; left: 0; right: 0; z-index: 4; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 14px;
-  padding: 10px 14px 0; pointer-events: none; animation: gauges-in .6s cubic-bezier(.2, .8, .2, 1) both; }
+/* --- the gauges: Krillion's depth and score panels, under the header ------ */
+.gauges { position: relative; z-index: 4; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 14px;
+  margin-top: 14px; pointer-events: none; animation: gauges-in .6s cubic-bezier(.2, .8, .2, 1) both; }
 /* what is behind and what is ahead, under the brand */
 .legs { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 22px; margin: 10px 0 0; font-size: 13px; letter-spacing: .12em;
   text-transform: uppercase; color: var(--mute); text-shadow: 0 1px 0 var(--void), 0 0 8px var(--void); }
@@ -130,7 +128,7 @@ p { line-height: 1.5; color: #c3d2e8; }
 
 /* --- launchpad ----------------------------------------------------------- */
 .launchpad { flex: 1; display: flex; flex-direction: column; align-items: center; text-align: center; padding-top: 5vh; }
-.launchpad .spacer { flex: 1; min-height: 24vh; }   /* the rocket and the Sun live here, behind the page */
+.launchpad .spacer { flex: 1; min-height: 10vh; }   /* the rocket and the Sun live here, behind the page */
 h1 { margin: 0; font-size: clamp(54px, 13vw, 124px); font-weight: 400; line-height: .95; letter-spacing: .04em; }
 .glitch { text-shadow: -4px 3px 0 var(--pink), 4px -3px 0 #7fe9ffd9, 0 0 30px #ffc46b59; animation: flicker 7s linear infinite; }
 @keyframes flicker { 0%, 91%, 94%, 100% { opacity: 1; } 91.8% { opacity: .68; } 92.6% { opacity: .95; } 93.4% { opacity: .6; } }
@@ -406,7 +404,7 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .idea input:focus { outline: 0; border-color: var(--ion); }
 
 @media (max-width: 640px) {
-  main { padding: 72px 14px 26px; }
+  main { padding: 14px 14px 26px; }
   main.flying { padding-bottom: 240px; }
   .gauge { min-width: 96px; padding: 6px 10px 5px; }
   .gauge b { font-size: 19px; }
@@ -422,7 +420,10 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
   .clock { min-width: 0; font-size: 14px; }
   .hud .cta { flex: 1; font-size: 20px; padding: 12px 14px 10px; }
   .panel { margin-top: 4vh; padding: 20px; }
-  .dock { justify-content: center; }
+  .dock { justify-content: center; padding-top: 16px; }
+  .launchpad { padding-top: 2vh; }
+  .howto { margin-bottom: 14px; }
+  .preflight { margin-top: 12px; }
   .fathom { flex-direction: column; align-items: flex-start; gap: 2px; }
   .results-head { flex-direction: column; gap: 2px; }
   .idea div { flex-direction: column; align-items: stretch; }
