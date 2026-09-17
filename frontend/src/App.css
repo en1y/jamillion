@@ -520,6 +520,7 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .qbody { padding: 4px 12px 16px; border-top: 1px solid var(--line); }
 .qbody .switch { margin: 12px 0 4px; }
 .asks { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.asks .meta { margin: 0; align-self: center; font-size: 15px; }
 
 /* the catalog query builder: stacked filters, stacked sorts, the rows they find */
 .day-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 14px; }

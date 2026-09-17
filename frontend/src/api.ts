@@ -46,6 +46,7 @@ export interface Question {
   ask_artist?: boolean          // song and album: which fields the moderator asks for
   ask_title?: boolean
   ask_album?: boolean           // song only: which record is it from
+  hints?: boolean               // song and album: catalog completions under the boxes
   snippet_start_sec?: number    // song
   snippet_len_sec?: number
   audio?: string

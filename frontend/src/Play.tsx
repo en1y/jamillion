@@ -496,11 +496,13 @@ function useSuggest(kind: SuggestKind | null, value: string, question: number, f
  *  this job, but browsers draw that one their own way or not at all, and on a
  *  three-field song question the player needs to see what is on offer. The list
  *  opens *upward*: these inputs live in the HUD along the bottom of the screen. */
-function Input({ question, field, value, onChange, autoFocus, invalid, hint, onLeave }: {
+function Input({ question, field, value, onChange, autoFocus, invalid, hint, help, onLeave }: {
   question: number; field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
-  hint?: 'next' | 'send'; onLeave?: (direction: -1 | 1) => void
+  hint?: 'next' | 'send'; help?: boolean; onLeave?: (direction: -1 | 1) => void
 }) {
-  const options = useSuggest(field.kind, value, question, field.key)
+  // help === false: the moderator wants this one typed from memory. The typo check
+  // stays -- only catalog names are accepted, and being told so beats a refusal.
+  const options = useSuggest(help === false ? null : field.kind, value, question, field.key)
   const [open, setOpen] = useState(true)
   const [cursor, setCursor] = useState(-1)
 
@@ -742,7 +744,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
                     <span className="slot-label">{slot.label}</span>
                     {i === step ? (
                       <Input key={slot.key} question={question.id} field={slot} value={values[slot.key] ?? ''} autoFocus
-                             invalid={!!unknown} hint={finale ? 'send' : 'next'}
+                             invalid={!!unknown} hint={finale ? 'send' : 'next'} help={question.hints}
                              onLeave={direction => void go(step + direction)}
                              onChange={value => { setUnknown(''); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
                     ) : (
@@ -758,7 +760,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
         ) : (
           <div className="fields">
             <Input key={field.key} question={question.id} field={field} value={values[field.key] ?? ''} autoFocus
-                   invalid={!!unknown}
+                   invalid={!!unknown} help={question.hints}
                    onChange={value => { setUnknown(''); setValues(prev => ({ ...prev, [field.key]: value })) }} />
           </div>
         )}

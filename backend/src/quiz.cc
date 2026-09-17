@@ -146,7 +146,7 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = a.id) AS answered, "
             "  q.id AS question_id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
             "  q.snippet_start_sec::float8 AS snippet_start_sec, q.snippet_len_sec::float8 AS snippet_len_sec, "
-            "  q.ask_artist, q.ask_title, q.ask_album, al.cover_url, "
+            "  q.ask_artist, q.ask_title, q.ask_album, q.hints, al.cover_url, "
             "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
             "  CASE WHEN q.time_limit_sec = 0 THEN NULL ELSE "
             "    to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
@@ -172,6 +172,8 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
                 question["ask_artist"] = row["ask_artist"].as<bool>();
                 question["ask_title"] = row["ask_title"].as<bool>();
                 question["ask_album"] = row["ask_album"].as<bool>();
+                // Off means the player types the name unaided: /api/suggest is never asked.
+                question["hints"] = row["hints"].as<bool>();
             }
             // An album question shows the cover. The Deezer URL is a content hash: it
             // names neither the album nor the artist.
@@ -249,6 +251,7 @@ const char *validate(const Json::Value &body) {
                 return "A song or album question must ask for at least one field";
             // On an album question the album title is what ask_title already means.
             if (type == "album" && album) return "ask_album is for song questions";
+            if (q.isMember("hints") && !q["hints"].isBool()) return "hints must be a boolean";
         }
         const auto &answers = q["answers"];
         if (!answers.isArray() || answers.empty()) return "Each question needs at least one answer";
@@ -313,13 +316,14 @@ Task<HttpResponsePtr> createQuiz(HttpRequestPtr req) {
             "qs AS ("
             "  INSERT INTO questions (quiz_id, position, qtype, prompt, time_limit_sec, "
             "                         track_id, snippet_start_sec, snippet_len_sec, album_id, "
-            "                         ask_artist, ask_title, ask_album) "
+            "                         ask_artist, ask_title, ask_album, hints) "
             "  SELECT qz.id, q.position, q.qtype::question_type, q.prompt, coalesce(q.time_limit_sec, 20), "
             "         q.track_id, q.snippet_start_sec, q.snippet_len_sec, q.album_id, "
-            "         coalesce(q.ask_artist, true), coalesce(q.ask_title, true), coalesce(q.ask_album, false) "
+            "         coalesce(q.ask_artist, true), coalesce(q.ask_title, true), coalesce(q.ask_album, false), "
+            "         coalesce(q.hints, true) "
             "  FROM qz, jsonb_to_recordset($4::jsonb) AS q(position int, qtype text, prompt text, "
             "       time_limit_sec int, track_id bigint, snippet_start_sec numeric, snippet_len_sec numeric, "
-            "       album_id bigint, ask_artist bool, ask_title bool, ask_album bool) "
+            "       album_id bigint, ask_artist bool, ask_title bool, ask_album bool, hints bool) "
             "  RETURNING id, position), "
             "ans AS ("
             "  INSERT INTO question_answers (question_id, normalized, display, is_correct, tier_id, points, field) "
@@ -1021,7 +1025,7 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                  "  q.snippet_start_sec::float8 AS snippet_start_sec, "
                  "  q.snippet_len_sec::float8 AS snippet_len_sec, "
                  "  t.id AS track_id, t.title AS track_title, ar.name AS artist, al.title AS track_album, "
-                 "  q.ask_artist, q.ask_title, q.ask_album, q.album_id, d.title AS album_title, dar.name AS album_artist, "
+                 "  q.ask_artist, q.ask_title, q.ask_album, q.hints, q.album_id, d.title AS album_title, dar.name AS album_artist, "
                  "  d.cover_url AS album_cover "
                  "FROM questions q LEFT JOIN tracks t ON t.id = q.track_id "
                  "LEFT JOIN albums al ON al.id = t.album_id LEFT JOIN artists ar ON ar.id = al.artist_id "
@@ -1069,6 +1073,8 @@ Task<HttpResponsePtr> getQuiz(HttpRequestPtr, std::string date) {
                 question["ask_artist"] = row["ask_artist"].as<bool>();
                 question["ask_title"] = row["ask_title"].as<bool>();
                 question["ask_album"] = row["ask_album"].as<bool>();
+                // Whether the player gets the catalog's completions under the boxes.
+                question["hints"] = row["hints"].as<bool>();
             }
             question["answers"] = Json::Value(Json::arrayValue);
             index[id] = questions.size();
@@ -1417,8 +1423,11 @@ Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
     try {
         // The moderator's own names for this box first -- the catalog may not hold
         // them at all -- then the catalog's, eight in all, no name twice.
+        // q.hints: with the help switched off the box offers nothing, neither the
+        // moderator's own names nor the catalog's. The catalog half is the client
+        // not asking; these rows are the answer key, so they are held back here.
         auto names = co_await customNames(req, req->getParameter("question"), req->getParameter("field"),
-                                          "qa.display ILIKE $5 || '%'", pattern);
+                                          "q.hints AND qa.display ILIKE $5 || '%'", pattern);
         for (const auto &row : co_await app().getDbClient()->execSqlCoro(sql, pattern))
             if (std::find(names.begin(), names.end(), row[0].as<std::string>()) == names.end())
                 names.push_back(row[0].as<std::string>());

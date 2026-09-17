@@ -45,6 +45,7 @@ export interface ModQuestion {
   ask_artist?: boolean
   ask_title?: boolean
   ask_album?: boolean
+  hints?: boolean
   answers: ModAnswer[]
 }
 

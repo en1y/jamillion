@@ -46,6 +46,9 @@ export interface DraftQuestion {
   ask_artist: boolean
   ask_title: boolean
   ask_album: boolean
+  /** Whether the player's boxes offer the catalog's completions. Song and album
+   *  questions only -- a rarest answer is typed blind either way. */
+  hints: boolean
   time_limit_sec: number
   /** A bonus on top of the fields, for getting every one of them right. null is
    *  no bonus, and is the default: a player who gets everything simply scores
@@ -65,7 +68,7 @@ export interface Draft { quiz_date: string; published: boolean; questions: Draft
 export const emptyQuestion = (): DraftQuestion => ({
   qtype: 'rarest', prompt: '', track: null, album: null,
   snippet_start_sec: 0, snippet_len_sec: 10,
-  ask_artist: true, ask_title: true, ask_album: false,
+  ask_artist: true, ask_title: true, ask_album: false, hints: true,
   time_limit_sec: defaultTimeLimit('rarest'), full_tier_id: null, answers: [],
 })
 
@@ -155,6 +158,7 @@ export function fromQuiz(quiz: ModQuiz): Draft {
       ask_artist: question.ask_artist ?? true,
       ask_title: question.ask_title ?? true,
       ask_album: question.ask_album ?? false,
+      hints: question.hints ?? true,
       time_limit_sec: question.time_limit_sec,
       full_tier_id: null,
       // The key is left off rather than set to undefined: a row that carries no
@@ -208,6 +212,7 @@ export function toPayload(draft: Draft, tiers: TierPoints[] = []) {
         // ask_album is a song question's third field; on an album question the
         // album title is what ask_title already means, and the backend rejects it.
         if (question.qtype === 'song') out.ask_album = question.ask_album
+        out.hints = question.hints
       }
       return out
     }),

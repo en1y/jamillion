@@ -949,6 +949,19 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
               ))}
           </div>
 
+          {/* The catalog's completions under the player's boxes. On unless the
+              moderator takes them away: three characters of a list of millions is
+              a strong hint, and on some questions it is the whole question. */}
+          <div className="asks">
+            <button className="chip" type="button" aria-pressed={question.hints}
+                    onClick={() => set({ hints: !question.hints })}>
+              suggest names from the catalog
+            </button>
+            <span className="meta">{question.hints
+              ? 'players see matching names as they type'
+              : 'players type the name with no list'}</span>
+          </div>
+
           {question.qtype === 'song' && question.track && (
             <SnippetPicker key={question.track.id} trackId={question.track.id} start={question.snippet_start_sec}
                            len={question.snippet_len_sec} token={token}

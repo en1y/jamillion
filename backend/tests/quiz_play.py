@@ -266,6 +266,14 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api(hint.replace('field=title', 'field=artist'), cookie=cookie)[1] == []
         assert api(hint.replace('suggest', 'known').replace('q=zqx', 'q=zqx%20moonbase%20TAPES!'),
                    cookie=cookie)[1] == {'known': True}
+        # hints off: the box offers nothing, not even the moderator's own name for it,
+        # while the same name still reads as known -- the help goes, the answer stands.
+        db.execute('UPDATE questions SET hints = false WHERE id = %s', (questions[6],))
+        assert api(hint, cookie=cookie)[1] == [], 'hints off still hinted'
+        assert api(hint.replace('suggest', 'known').replace('q=zqx', 'q=zqx%20moonbase%20TAPES!'),
+                   cookie=cookie)[1] == {'known': True}, 'hints off cost an accepted name'
+        db.execute('UPDATE questions SET hints = true WHERE id = %s', (questions[6],))
+        assert served['question']['hints'] is True, served['question']
         # Not a catalog name: refused, nothing stored, the question still open.
         status, body = answer_boxes(cookie, attempt_id, questions[6], [('title', 'zzz no such album zzz')])
         assert status == 422, (status, body)
