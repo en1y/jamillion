@@ -157,6 +157,14 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
 
 // ---------------------------------------------------------------- moderator
 
+// Characters, not bytes: the editor counts UTF-16 units and shows "over 100
+// characters" beside the field, so a title with an em dash or an accent has to
+// reach the same verdict here or the day is refused with nothing marked.
+// ponytail: code points, so an astral emoji counts 1 here and 2 in the editor.
+size_t chars(const std::string &text) {
+    return std::count_if(text.begin(), text.end(), [](unsigned char c) { return (c & 0xc0) != 0x80; });
+}
+
 const char *validate(const Json::Value &body) {
     if (!body.isObject()) return "Body must be a JSON object";
     if (!body["quiz_date"].isString()) return "quiz_date is required";
@@ -173,7 +181,7 @@ const char *validate(const Json::Value &body) {
         const auto type = q["qtype"].asString();
         if (type != "rarest" && type != "song" && type != "album") return "qtype must be rarest, song or album";
         if (!q["prompt"].isString() || q["prompt"].asString().empty() ||
-            q["prompt"].asString().size() > 500) return "prompt must be 1 to 500 characters";
+            chars(q["prompt"].asString()) > 500) return "prompt must be 1 to 500 characters";
         // 0 is "no clock", which is what a song question wants; anything else is a
         // real timer and stays inside the range the ring can draw.
         if (q.isMember("time_limit_sec") &&
@@ -199,7 +207,7 @@ const char *validate(const Json::Value &body) {
         if (!answers.isArray() || answers.empty()) return "Each question needs at least one answer";
         for (const auto &a : answers) {
             if (!a.isObject() || !a["display"].isString() || a["display"].asString().empty() ||
-                a["display"].asString().size() > 100) return "Each answer needs a display of 1 to 100 characters";
+                chars(a["display"].asString()) > 100) return "Each answer needs a display of 1 to 100 characters";
             if (a.isMember("tier_id") && !a["tier_id"].isIntegral()) return "tier_id must be a number";
             // What a combination of fields adds up to, when that is not any one
             // tier's own number. 700 is a perfect run, so nothing above it.
@@ -809,7 +817,7 @@ Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
         co_return auth::error(k400BadRequest, "Nothing to change");
     // The same wording validate() uses, so the editor renders one vocabulary.
     if (hasPrompt && (!(*body)["prompt"].isString() || (*body)["prompt"].asString().empty()
-                      || (*body)["prompt"].asString().size() > 500))
+                      || chars((*body)["prompt"].asString()) > 500))
         co_return auth::error(k400BadRequest, "prompt must be 1 to 500 characters");
     if (hasLimit && (!(*body)["time_limit_sec"].isIntegral() ||
                      ((*body)["time_limit_sec"].asInt() != 0 &&

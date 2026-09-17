@@ -32,6 +32,12 @@ MUSIC = {2: 'Name a Coldplay album', 3: 'Name a Queen song', 4: 'Name a member o
          5: 'Name a Nirvana album', 6: 'Name a Michael Jackson album', 7: 'Name a Radiohead song'}
 
 
+# The 100 is characters, not bytes: the editor counts characters and only
+# enables Save when it sees no problem, so a byte count here refuses a day the
+# moderator was told was fine, and marks nothing.
+LONG_ANSWER = 'é' * 100
+
+
 def build_quiz(track_id):
     """Six rarest questions plus one song question, positions 1..7. Unpublished."""
     questions = [{
@@ -41,7 +47,7 @@ def build_quiz(track_id):
     for position in range(2, 7):
         questions.append({
             'position': position, 'qtype': 'rarest', 'prompt': MUSIC[position],
-            'answers': [{'display': f'Answer {position}'}],
+            'answers': [{'display': LONG_ANSWER if position == 6 else f'Answer {position}'}],
         })
     questions.append({
         'position': 7, 'qtype': 'song', 'prompt': 'Artist and title?', 'track_id': track_id,
@@ -100,6 +106,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         track = db.execute('SELECT id FROM tracks WHERE preview_url IS NOT NULL '
                            'ORDER BY deezer_rank DESC NULLS LAST LIMIT 1').fetchone()
         assert track, 'The catalog has no track with a preview; seed one first'
+        over = build_quiz(track[0])
+        over['questions'][5]['answers'][0]['display'] = LONG_ANSWER + 'é'
+        assert api('/api/quizzes', over, token=TOKEN)[0] == 400   # 101 characters, over the limit
         status, created, _ = api('/api/quizzes', build_quiz(track[0]), token=TOKEN)
         assert status == 201, (status, created)
         quiz_id = created['id']
