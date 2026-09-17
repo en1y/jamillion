@@ -77,7 +77,7 @@ test('the last landmark below you', () => {
 test('share text is a flight id, an altitude and one glyph per question', () => {
   const answers = [flew(1, 'Main Sequence', 30), flew(2, null, 0), flew(3, 'Supernova', 100)]
   assert.equal(shareText(12, 130, answers, TIERS, 700),
-    'JAMILLION #12\n7.3 AU\n\n⭐⬛💥')
+    'Jamillion #12\n7.3 AU\n\n⭐⬛💥')
 })
 
 test('quiz dates display as dd.mm.yyyy', () => {

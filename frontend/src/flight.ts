@@ -150,7 +150,7 @@ export const monthLabel = (iso: string) =>
 export function shareText(flight: number, points: number, answers: OwnAnswer[],
                           tiers: Tier[], max: number): string {
   const grid = answers.map(answer => emojiFor(answer, tiers)).join('')
-  return `JAMILLION #${flight}\n${altitudeAu(points, max).toFixed(1)} AU\n\n${grid}`
+  return `Jamillion #${flight}\n${altitudeAu(points, max).toFixed(1)} AU\n\n${grid}`
 }
 
 export const DIST_BINS = 36
