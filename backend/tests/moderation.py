@@ -179,8 +179,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api('/api/questions/99999999', {'prompt': 'x'}, token=TOKEN, method='PATCH')[0] == 404
         assert api(f'/api/questions/{song_id}', {'prompt': 'x'}, method='PATCH')[0] == 401
 
-        # -------------------------------------------------- guesses to review
-        # Three guests give an answer the moderator never approved, one gives a known one.
+        # -------------------------------------------------- verdicts on the key
+        # A guess outside the key leaves no row (quiz_play.py), so a rejected answer is
+        # written straight in; three guests give it, one gives a known one.
+        db.execute("INSERT INTO question_answers (question_id, normalized, display, is_correct) "
+                   "VALUES (%s, 'the bends', 'The Bends', false)", (questions[1],))
         bends_players = [guess('The Bends', questions[1]) for _ in range(3)]
         okc_player, okc_attempt = guess('OK Computer', questions[1])
         assert db.execute('SELECT total_points FROM attempts WHERE id = %s',
@@ -189,7 +192,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         preview = api(f'/api/quizzes/{QUIZ_DATE}', token=TOKEN)[1]
         first = answers_of(preview, 1)
         bends, okc = first['The Bends'], first['OK Computer']
-        assert bends['is_correct'] is None and bends['guess_count'] == 3
+        assert bends['is_correct'] is False and bends['guess_count'] == 3
         assert preview['attempts_started'] == 4
 
         def totals(players):
@@ -208,15 +211,14 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert totals(bends_players) == [60, 60, 60]      # Red Giant override
 
         status, body, _ = api(f"/api/answers/{bends['id']}", {'is_correct': False}, token=TOKEN, method='PATCH')
-        assert status == 200 and body['rescored'] == 3
+        assert status == 200 and body["rescored"] == 3, (status, body)
         assert body['is_correct'] is False and body['tier_id'] == 4, 'an absent key keeps its value'
         assert totals(bends_players) == [0, 0, 0]
 
-        status, body, _ = api(f"/api/answers/{bends['id']}", {'is_correct': None, 'tier_id': None},
-                              token=TOKEN, method='PATCH')
+        status, body, _ = api(f"/api/answers/{bends['id']}", {'tier_id': None}, token=TOKEN, method='PATCH')
         assert status == 200 and body['rescored'] == 0, (status, body)
-        assert body['is_correct'] is None and body['tier_id'] is None
-        assert totals(bends_players) == [0, 0, 0]
+        assert body['is_correct'] is False and body['tier_id'] is None
+        assert api(f"/api/answers/{bends['id']}", {'is_correct': None}, token=TOKEN, method='PATCH')[0] == 400
 
         # "accepted, and worth nothing" is a verdict of its own, and it survives a
         # verdict change; setting a tier by hand puts the answer back on the ladder.
@@ -230,7 +232,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert body['points'] is None, 'a hand-set tier takes the override away'
         assert totals(bends_players) == [60, 60, 60]
         status, body, _ = api(f"/api/answers/{bends['id']}",
-                              {'points': None, 'is_correct': None, 'tier_id': None},
+                              {'points': None, 'is_correct': False, 'tier_id': None},
                               token=TOKEN, method='PATCH')
         assert body['points'] is None and totals(bends_players) == [0, 0, 0]
 
@@ -243,6 +245,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api(f"/api/answers/{bends['id']}", {'is_correct': True}, method='PATCH')[0] == 401
 
         # -------------------------------------------------- merge duplicates
+        db.execute("INSERT INTO question_answers (question_id, normalized, display, is_correct) "
+                   "VALUES (%s, 'ok computer album', 'OK Computer album', false)", (questions[1],))
         album_player, album_attempt = guess('OK Computer album', questions[1])
         assert totals([(None, album_attempt)]) == [0]
         preview = api(f'/api/quizzes/{QUIZ_DATE}', token=TOKEN)[1]

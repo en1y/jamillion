@@ -131,15 +131,19 @@ export const submitField = (attemptId: number, question_id: number, field: strin
 
 export type SuggestKind = 'artist' | 'title' | 'album'
 
+/** Where a box sits: with it, the names the moderator accepted for that box count
+ *  alongside the catalog's -- only ever for the player's own current question. */
+export interface Box { question: number; field: string }
+
 /** Catalog completions for the artist, song title and album title fields. */
-export const suggest = (kind: SuggestKind, q: string) =>
-  call<string[]>(`/api/suggest?kind=${kind}&q=${encodeURIComponent(q)}`)
+export const suggest = (kind: SuggestKind, q: string, box?: Box) =>
+  call<string[]>(`/api/suggest${query({ kind, q, ...box })}`)
 
 /** Is this a real name in the music catalog? Used to nudge a player off a typo
  *  before it costs them the guess. Catalog only, so it says nothing about the
  *  answer key; public for the same reason /api/suggest is. */
-export const isKnown = (kind: SuggestKind, q: string) =>
-  call<{ known: boolean }>(`/api/known?kind=${kind}&q=${encodeURIComponent(q)}`)
+export const isKnown = (kind: SuggestKind, q: string, box?: Box) =>
+  call<{ known: boolean }>(`/api/known${query({ kind, q, ...box })}`)
 
 export interface RevealedAnswer { display: string; tier: string | null; points: number; yours: boolean }
 export interface RevealedQuestion { position: number; prompt: string; qtype: string; answers: RevealedAnswer[] }

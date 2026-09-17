@@ -35,6 +35,15 @@ std::string trimmed(std::string text) {
     return text.substr(first, text.find_last_not_of(" \t\n\r") - first + 1);
 }
 
+// Does the catalog hold this name? Through normalize_answer(), the scorer's own
+// collapse, so casing and punctuation never make a real name look unknown.
+const char *knownSql(const std::string &kind) {
+    return kind == "artist" ? "SELECT EXISTS (SELECT 1 FROM artists WHERE normalize_answer(name) = normalize_answer($1))"
+         : kind == "title"  ? "SELECT EXISTS (SELECT 1 FROM tracks WHERE normalize_answer(title) = normalize_answer($1))"
+         : kind == "album"  ? "SELECT EXISTS (SELECT 1 FROM albums WHERE normalize_answer(title) = normalize_answer($1))"
+         : nullptr;
+}
+
 std::string compact(const Json::Value &value) {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";
@@ -77,6 +86,44 @@ Task<std::string> playerFor(HttpRequestPtr req) {
     } catch (const orm::DrogonDbException &) {
         co_return {};
     }
+}
+
+// Names the moderator accepted for one box that the catalog may not hold, so they
+// can be hinted and typed like catalog names. This is the answer key, so only for
+// the question the player has in front of them: served, unsettled, their own. On a
+// one-box question the key's hand-typed rows (field NULL) are names for that box;
+// on more boxes those rows are combinations, and only field-tagged rows count.
+// `filter` compares display with q, which is $5.
+Task<std::vector<std::string>> customNames(HttpRequestPtr req, const std::string &question,
+                                           const std::string &field, const char *filter, const std::string &q) {
+    std::vector<std::string> out;
+    if (question.empty() || question.size() > 18 || question.find_first_not_of("0123456789") != std::string::npos ||
+        (field != "artist" && field != "title" && field != "album"))
+        co_return out;
+    const auto player = co_await playerFor(req);
+    if (player.empty()) co_return out;
+    const auto &who = req->attributes()->get<auth::Identity>("identity");
+    try {
+        for (const auto &row : co_await app().getDbClient()->execSqlCoro(
+                 "SELECT DISTINCT qa.display FROM question_answers qa "
+                 "JOIN questions q ON q.id = qa.question_id AND q.qtype <> 'rarest' "
+                 "JOIN attempts a ON a.quiz_id = q.quiz_id AND a.finished_at IS NULL "
+                 "  AND a.question_started_at IS NOT NULL "
+                 "JOIN players p ON p.id = a.player_id "
+                 "WHERE qa.question_id = $1::bigint AND qa.is_correct "
+                 "  AND (a.player_id = $3::uuid OR p.user_id = nullif($4, '')::uuid) "
+                 "  AND q.position = (SELECT count(*) + 1 FROM attempt_answers aa WHERE aa.attempt_id = a.id) "
+                 "  AND CASE $2 WHEN 'artist' THEN q.ask_artist WHEN 'title' THEN q.ask_title "
+                 "      ELSE q.qtype = 'song' AND q.ask_album END "
+                 "  AND (qa.field = $2 OR (qa.field IS NULL AND "
+                 "       q.ask_artist::int + q.ask_title::int + (q.qtype = 'song' AND q.ask_album)::int = 1)) "
+                 "  AND " + std::string(filter) + " ORDER BY qa.display LIMIT 8",
+                 question, field, player, who.id, q))
+            out.push_back(row[0].as<std::string>());
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();   // a hint lost, not a guess: the catalog still answers
+    }
+    co_return out;
 }
 
 // Report the attempt's progress and, when serve is set, hand over its current
@@ -567,6 +614,15 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
 
         std::map<std::string, std::string> typed;
         std::string incoming = late ? std::string{} : text;
+        // A box takes a catalog name, one the moderator accepted for it, or nothing: the player picks from /api/suggest.
+        // Blank is a skip, and past the clock the box arrives blank anyway.
+        if (!field.empty() && !trimmed(incoming).empty()) {
+            const auto kind = field == "title" && qtype == "album" ? std::string("album") : field;
+            if (!(co_await db->execSqlCoro(knownSql(kind), incoming))[0][0].as<bool>() &&
+                (co_await customNames(req, std::to_string(questionId), field,
+                                      "normalize_answer(qa.display) = normalize_answer($5)", incoming)).empty())
+                co_return auth::error(k422UnprocessableEntity, "Not in the catalog: pick a name from the list");
+        }
         if (!asked.empty()) {
             // Past the timer the box being typed arrives blank -- the clock takes it,
             // not the ones already in the envelope. A box can be retyped until the
@@ -1078,7 +1134,7 @@ Task<Json::Value> answerRow(long long answerId) {
     co_return out;
 }
 
-// Mark an answer correct, incorrect or back to awaiting review, and override its
+// Mark an answer correct or incorrect, and override its
 // tier. Only the players who gave this very answer are re-scored: everyone else
 // keeps the tier they were shown (docs/ROADMAP.md, v0.3 decisions).
 // A key left out of the body keeps its current value, which is why the row is
@@ -1090,8 +1146,8 @@ Task<HttpResponsePtr> patchAnswer(HttpRequestPtr req, long long answerId) {
                hasPoints = body->isMember("points");
     if (!hasCorrect && !hasTier && !hasPoints)
         co_return auth::error(k400BadRequest, "is_correct, tier_id or points is required");
-    if (hasCorrect && !(*body)["is_correct"].isBool() && !(*body)["is_correct"].isNull())
-        co_return auth::error(k400BadRequest, "is_correct must be true, false or null");
+    if (hasCorrect && !(*body)["is_correct"].isBool())
+        co_return auth::error(k400BadRequest, "is_correct must be true or false");
     if (hasTier && !(*body)["tier_id"].isIntegral() && !(*body)["tier_id"].isNull())
         co_return auth::error(k400BadRequest, "tier_id must be a number or null");
     // null puts the answer back on its tier; 0 is "accepted, worth nothing".
@@ -1113,11 +1169,10 @@ Task<HttpResponsePtr> patchAnswer(HttpRequestPtr req, long long answerId) {
         if (current.empty()) co_return auth::error(k404NotFound, "No such answer");
         if (!current[0]["tier_ok"].as<bool>()) co_return auth::error(k400BadRequest, "No such tier_id");
         // Empty string is the null: nullif() in the statement turns it back into one.
-        std::string correct = current[0]["is_correct"].isNull() ? std::string{}
-                                                                : (current[0]["is_correct"].as<bool>() ? "true" : "false");
+        std::string correct = current[0]["is_correct"].as<bool>() ? "true" : "false";
         std::string tier = current[0]["tier_id"].isNull() ? std::string{} : current[0]["tier_id"].as<std::string>();
         if (hasCorrect)
-            correct = (*body)["is_correct"].isNull() ? std::string{} : ((*body)["is_correct"].asBool() ? "true" : "false");
+            correct = (*body)["is_correct"].asBool() ? "true" : "false";
         if (hasTier)
             tier = (*body)["tier_id"].isNull() ? std::string{} : std::to_string((*body)["tier_id"].asInt());
 
@@ -1132,7 +1187,7 @@ Task<HttpResponsePtr> patchAnswer(HttpRequestPtr req, long long answerId) {
             points.clear();
 
         const auto scored = co_await db->execSqlCoro(
-            "SELECT review_answer($1::bigint, nullif($2, '')::bool, nullif($3, '')::smallint, "
+            "SELECT review_answer($1::bigint, $2::bool, nullif($3, '')::smallint, "
             "                     nullif($4, '')::smallint) AS rescored",
             answerId, correct, tier, points);
         auto out = co_await answerRow(answerId);
@@ -1298,24 +1353,23 @@ Task<HttpResponsePtr> getPlayer(HttpRequestPtr, std::string playerId) {
 // GET /api/known?kind=artist|title|album&q=   is this a real catalog name?
 // The answer fields nudge a player away from a typo before it costs them the
 // guess. It compares through normalize_answer(), the same collapse the scorer
-// uses, so case and punctuation never make a real name look unknown. Catalog
-// only, never the answer key: what is on the list for a question stays shut.
+// uses, so case and punctuation never make a real name look unknown. With
+// question= and field=, the moderator's own names for the player's current box
+// count too (customNames); nothing else of the answer key is consulted.
 Task<HttpResponsePtr> known(HttpRequestPtr req) {
     const auto kind = req->getParameter("kind");
     auto q = req->getParameter("q");
     if (q.size() > 100) q.resize(100);
-    const char *sql =
-        kind == "artist" ? "SELECT EXISTS (SELECT 1 FROM artists WHERE normalize_answer(name) = normalize_answer($1))"
-      : kind == "title"  ? "SELECT EXISTS (SELECT 1 FROM tracks WHERE normalize_answer(title) = normalize_answer($1))"
-      : kind == "album"  ? "SELECT EXISTS (SELECT 1 FROM albums WHERE normalize_answer(title) = normalize_answer($1))"
-      : nullptr;
+    const char *sql = knownSql(kind);
     if (!sql) co_return auth::error(k400BadRequest, "kind must be artist, title or album");
     Json::Value out;
     // Nothing to judge yet, and an empty field is a deliberate skip: never unknown.
     if (q.empty()) { out["known"] = true; co_return json(out); }
     try {
         const auto rows = co_await app().getDbClient()->execSqlCoro(sql, q);
-        out["known"] = rows[0][0].as<bool>();
+        out["known"] = rows[0][0].as<bool>() ||
+            !(co_await customNames(req, req->getParameter("question"), req->getParameter("field"),
+                                   "normalize_answer(qa.display) = normalize_answer($5)", q)).empty();
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {
         LOG_ERROR << e.base().what();
@@ -1323,29 +1377,43 @@ Task<HttpResponsePtr> known(HttpRequestPtr req) {
     }
 }
 
-// GET /api/suggest?kind=artist|title|album&q=   completions for the answer fields
+// GET /api/suggest?kind=artist|title|album&q=[&question=&field=]   names starting with q, 3+ characters
 // of song and album questions. Catalog names only, never the answer key, so it
 // needs no passport.
 Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
     const auto kind = req->getParameter("kind");
     auto q = req->getParameter("q");
     if (q.size() > 100) q.resize(100);
-    // A prefix match ranks first, then the bigger name; ILIKE scans are fine at this size.
+    // Starts with, never contains: the bigger name first. ILIKE scans are fine at this size.
     const char *sql =
-        kind == "artist" ? "SELECT name FROM artists WHERE name ILIKE '%' || $1::text || '%' "
-                           "ORDER BY name ILIKE $1::text || '%' DESC, global_rank NULLS LAST, name LIMIT 8"
+        kind == "artist" ? "SELECT name FROM artists WHERE name ILIKE $1::text || '%' "
+                           "ORDER BY global_rank NULLS LAST, name LIMIT 8"
       : kind == "title"  ? "SELECT title FROM (SELECT DISTINCT ON (norm_title) title, deezer_rank FROM tracks "
-                           "  WHERE title ILIKE '%' || $1::text || '%' ORDER BY norm_title, deezer_rank DESC NULLS LAST) t "
-                           "ORDER BY title ILIKE $1::text || '%' DESC, deezer_rank DESC NULLS LAST, title LIMIT 8"
-      : kind == "album"  ? "SELECT title FROM albums WHERE title ILIKE '%' || $1::text || '%' GROUP BY title "
-                           "ORDER BY title ILIKE $1::text || '%' DESC, max(deezer_fans) DESC NULLS LAST, title LIMIT 8"
+                           "  WHERE title ILIKE $1::text || '%' ORDER BY norm_title, deezer_rank DESC NULLS LAST) t "
+                           "ORDER BY deezer_rank DESC NULLS LAST, title LIMIT 8"
+      : kind == "album"  ? "SELECT title FROM albums WHERE title ILIKE $1::text || '%' GROUP BY title "
+                           "ORDER BY max(deezer_fans) DESC NULLS LAST, title LIMIT 8"
       : nullptr;
     if (!sql) co_return auth::error(k400BadRequest, "kind must be artist, title or album");
     Json::Value out(Json::arrayValue);
-    if (q.size() < 2) co_return json(out);   // two letters before the catalog is scanned
+    // Three characters, not bytes, before the catalog is scanned.
+    const auto chars = std::count_if(q.begin(), q.end(), [](unsigned char c) { return (c & 0xC0) != 0x80; });
+    if (chars < 3) co_return json(out);
+    // What is typed is a literal prefix: % and _ must not turn it back into contains.
+    std::string pattern;
+    for (const char c : q) {
+        if (c == '%' || c == '_' || c == '\\') pattern += '\\';
+        pattern += c;
+    }
     try {
-        for (const auto &row : co_await app().getDbClient()->execSqlCoro(sql, q))
-            out.append(row[0].as<std::string>());
+        // The moderator's own names for this box first -- the catalog may not hold
+        // them at all -- then the catalog's, eight in all, no name twice.
+        auto names = co_await customNames(req, req->getParameter("question"), req->getParameter("field"),
+                                          "qa.display ILIKE $5 || '%'", pattern);
+        for (const auto &row : co_await app().getDbClient()->execSqlCoro(sql, pattern))
+            if (std::find(names.begin(), names.end(), row[0].as<std::string>()) == names.end())
+                names.push_back(row[0].as<std::string>());
+        for (std::size_t i = 0; i < names.size() && i < 8; ++i) out.append(names[i]);
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {
         LOG_ERROR << e.base().what();
@@ -1401,8 +1469,8 @@ void registerRoutes() {
     app().registerHandler("/api/attempts", &startAttempt, {Post, "auth::Optional"});
     app().registerHandler("/api/attempts/{1}/answers", &answer, {Post, "auth::Optional"});
     app().registerHandler("/api/audio/{1}", &audio, {Get, "auth::Optional"});
-    app().registerHandler("/api/suggest", &suggest, {Get});
-    app().registerHandler("/api/known", &known, {Get});
+    app().registerHandler("/api/suggest", &suggest, {Get, "auth::Optional"});
+    app().registerHandler("/api/known", &known, {Get, "auth::Optional"});
     app().registerHandler("/api/ideas", &idea, {Post, "auth::Optional"});
     app().registerHandler("/api/quizzes", &listQuizzes, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quizzes/{1}", &getQuiz, {Get, "auth::Optional", "auth::Moderator"});

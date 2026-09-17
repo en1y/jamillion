@@ -19,16 +19,16 @@ export interface QuizDay {
   attempts_finished: number
 }
 
-/** One answer as the moderator sees it. `is_correct` is tri-state: null is the
- *  review queue -- a guess nobody has ruled on yet. */
+/** One answer of the key as the moderator sees it. Players' guesses outside the
+ *  key are never stored, so there is nothing awaiting review. */
 export interface ModAnswer {
   id: number; display: string; normalized: string
-  is_correct: boolean | null; tier_id: number | null; guess_count: number
+  is_correct: boolean; tier_id: number | null; guess_count: number
   /** Set, this is what the answer scores instead of its tier's own number: the
    *  sum of a combination of fields, or a 0 meaning accepted but worth nothing. */
   points: number | null
   /** Which of a song question's fields this row is a name for, when it is one.
-   *  null on the combinations, on answers typed by hand and on players' guesses. */
+   *  null on the combinations and on answers typed by hand. */
   field: AnswerField | null
 }
 
@@ -90,7 +90,7 @@ export const patchQuestion = (id: number, body: Record<string, unknown>, token?:
   call<ModQuestion>(`/api/questions/${id}`, token, { method: 'PATCH', body: JSON.stringify(body) })
 
 export const reviewAnswer = (id: number,
-                             body: { is_correct?: boolean | null; tier_id?: number | null
+                             body: { is_correct?: boolean; tier_id?: number | null
                                      points?: number | null },
                              token?: string) =>
   call<Reviewed>(`/api/answers/${id}`, token, { method: 'PATCH', body: JSON.stringify(body) })

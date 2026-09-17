@@ -32,7 +32,7 @@ MUSIC = {2: 'Name a Coldplay album', 3: 'Name a Queen song', 4: 'Name a member o
          5: 'Name a Nirvana album', 6: 'Name a Michael Jackson album', 7: 'Name a Radiohead song'}
 
 
-def build_quiz(track_id, album_id=None):
+def build_quiz(track_id, album_id=None, names=('Radiohead', 'Creep', 'Answer 6')):
     """Five rarest questions, an album question (title only) and a song question."""
     questions = [{
         'position': 1, 'qtype': 'rarest', 'prompt': 'Name a Radiohead album',
@@ -43,8 +43,10 @@ def build_quiz(track_id, album_id=None):
             'position': position, 'qtype': 'rarest', 'prompt': MUSIC[position],
             'answers': [{'display': f'Answer {position}'}],
         })
+    artist, title, album = names
     if album_id:   # the album behind the track: its title is the only field asked for
-        questions[5].update(qtype='album', prompt='Whose album is this?', album_id=album_id, ask_artist=False)
+        questions[5].update(qtype='album', prompt='Whose album is this?', album_id=album_id, ask_artist=False,
+                            answers=[{'display': album}, {'display': 'Zqx Moonbase Tapes'}])
     # time_limit_sec 0 is "no clock", and ask_album is the song question's third
     # field: which record is this from.
     questions.append({
@@ -53,8 +55,8 @@ def build_quiz(track_id, album_id=None):
         # points overrides the tier's own value: the artist is worth its tier, and
         # both fields together are worth the two added up plus a bonus, which is
         # not a number any single tier names.
-        'answers': [{'display': 'Radiohead Creep', 'tier_id': 6, 'points': 45},
-                    {'display': 'Radiohead', 'tier_id': 2}],
+        'answers': [{'display': f'{artist} {title}', 'tier_id': 6, 'points': 45},
+                    {'display': artist, 'tier_id': 2}],
     })
     return {'quiz_date': QUIZ_DATE, 'published': True, 'questions': questions}
 
@@ -124,9 +126,14 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                            'ORDER BY deezer_rank DESC NULLS LAST LIMIT 1').fetchone()
         assert track, 'The catalog has no track with a preview; seed one first'
         track_id = track[0]
-        album_id, artist_name = db.execute(
-            'SELECT t.album_id, ar.name FROM tracks t JOIN albums al ON al.id = t.album_id '
+        album_id, artist_name, track_title, album_title = db.execute(
+            'SELECT t.album_id, ar.name, t.title, al.title FROM tracks t JOIN albums al ON al.id = t.album_id '
             'JOIN artists ar ON ar.id = al.artist_id WHERE t.id = %s', (track_id,)).fetchone()
+        # Song and album boxes take catalog names only, so the key is the real track's.
+        names = (artist_name, track_title, album_title)
+        other_album = db.execute('SELECT title FROM albums WHERE normalize_answer(title) <> normalize_answer(%s) '
+                                 'LIMIT 1', (album_title,)).fetchone()
+        assert other_album, "The catalog needs a second album for the wrong-box check"
         assert api('/api/quizzes', build_quiz(track_id), token=TOKEN)[0] == 403
         assert api('/api/quizzes', build_quiz(track_id))[0] == 401
         db.execute("UPDATE profiles SET role = 'moderator' WHERE id = %s", (uid,))
@@ -158,7 +165,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api('/api/quizzes', album_asks_album, token=TOKEN)[0] == 400
 
         # -------------------------------------------------- create the quiz
-        status, created, _ = api('/api/quizzes', build_quiz(track_id, album_id), token=TOKEN)
+        status, created, _ = api('/api/quizzes', build_quiz(track_id, album_id, names), token=TOKEN)
         assert status == 201, (status, created)
         quiz_id = created['id']
         audio_path = db.execute('SELECT audio_path FROM tracks WHERE id = %s', (track_id,)).fetchone()[0]
@@ -218,9 +225,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         # -------------------------------------------------- unknown, skip, timeout
         status, body = answer(cookie, attempt_id, questions[2], 'Something nobody wrote')
         assert body['result']['points'] == 0 and body['result']['correct'] is False, body
-        row = db.execute('SELECT is_correct, guess_count FROM question_answers WHERE question_id = %s'
-                         ' AND normalized = %s', (questions[2], 'something nobody wrote')).fetchone()
-        assert row == (None, 1), row
+        assert not db.execute('SELECT 1 FROM question_answers WHERE question_id = %s AND normalized = %s',
+                              (questions[2], 'something nobody wrote')).fetchone(), 'a wrong guess is not stored'
 
         status, body = answer(cookie, attempt_id, questions[3], '')            # deliberate skip
         assert body['result']['points'] == 0 and body['result']['timed_out'] is False
@@ -240,12 +246,25 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['qtype'] == 'album' and served['question']['cover'], served['question']
         assert served['question']['ask_artist'] is False and served['question']['ask_title'] is True
         assert 'album_id' not in served['question'] and 'track_id' not in served['question']
-        status, body = answer_boxes(cookie, attempt_id, questions[6], [('title', 'Answer 6')])
+        # A name the moderator accepted that the catalog does not hold is hinted and
+        # taken like a catalog name -- but only to this player, on this box, now.
+        hint = f'/api/suggest?kind=album&q=zqx&question={questions[6]}&field=title'
+        assert api(hint, cookie=cookie)[1] == ['Zqx Moonbase Tapes'], api(hint, cookie=cookie)
+        assert api(hint)[1] == [], 'no passport, no answer key'
+        _, stranger = me()
+        assert api(hint, cookie=stranger)[1] == [], 'not their question'
+        assert api(hint.replace('field=title', 'field=artist'), cookie=cookie)[1] == []
+        assert api(hint.replace('suggest', 'known').replace('q=zqx', 'q=zqx%20moonbase%20TAPES!'),
+                   cookie=cookie)[1] == {'known': True}
+        # Not a catalog name: refused, nothing stored, the question still open.
+        status, body = answer_boxes(cookie, attempt_id, questions[6], [('title', 'zzz no such album zzz')])
+        assert status == 422, (status, body)
+        status, body = answer_boxes(cookie, attempt_id, questions[6], [('title', album_title.upper())])
         assert body['result']['points'] == 10 and body['total_points'] == 50
         # v0.9.x added what each box was worth: a field with no tier of its own
         # reports points 0 and tier None, and the question's own points stand.
         assert body['result']['fields'] == [
-            {'field': 'title', 'text': 'Answer 6', 'correct': True, 'points': 0, 'tier': None}], body
+            {'field': 'title', 'text': album_title.upper(), 'correct': True, 'points': 0, 'tier': None}], body
         song_id = questions[7]
         status, served = serve(cookie)
         assert served['question']['id'] == song_id and served['question']['qtype'] == 'song'
@@ -257,9 +276,10 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['time_limit_sec'] == 0, served['question']
         assert served['question']['deadline'] is None, served['question']
         # Artist and title right, album wrong: the boxes that landed still pay, so this
-        # scores the 'Radiohead Creep' rung, not zero, and says which box missed.
+        # scores the artist+title rung, not zero, and says which box missed.
         status, body = answer_boxes(cookie, attempt_id, song_id,
-                                    [('artist', 'radiohead'), ('title', 'creep'), ('album', 'Pablo Honey?')])
+                                    [('artist', artist_name.lower()), ('title', track_title.lower()),
+                                     ('album', other_album[0])])
         # the tier still names the star; points is what the moderator added up
         assert body['result']['points'] == 45 and body['result']['correct'] is True, body['result']
         assert body['result']['tier'] == 'Supernova' and body['result']['timed_out'] is False, body['result']
@@ -302,7 +322,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert q1['answers'][0]['yours'] is True and q1['answers'][1]['yours'] is False
         assert q1['answers'][0]['tier'] == 'Main Sequence' and q1['answers'][1]['tier'] == 'Nebula'
         song = sheet['questions'][6]
-        assert [a['display'] for a in song['answers']] == ['Radiohead Creep', 'Radiohead'], song['answers']
+        assert [a['display'] for a in song['answers']] == [f'{artist_name} {track_title}', artist_name], song['answers']
         assert song['answers'][0]['tier'] == 'Supernova' and song['answers'][0]['yours'] is True
         # A song key is a ladder of how much you named, so it reveals what each rung
         # is worth -- the moderator's 45, not the Supernova tier's 100.
@@ -317,7 +337,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         # -------------------------------------------------- completions
         status, names, _ = api('/api/suggest?kind=artist&q=' + urllib.parse.quote(artist_name[:3]))
         assert status == 200 and artist_name in names, (artist_name, names)
-        assert api('/api/suggest?kind=artist&q=x')[1] == []                 # one letter: nothing scanned
+        assert all(n.lower().startswith(artist_name[:3].lower()) for n in names), names   # starts with, not contains
+        assert api('/api/suggest?kind=artist&q=' + urllib.parse.quote(artist_name[:2]))[1] == []   # under three: nothing scanned
+        assert api('/api/suggest?kind=artist&q=%25%25%25')[1] == []         # % is a letter, not a wildcard
         assert api('/api/suggest?kind=bogus&q=abc')[0] == 400
         assert 'OK Computer' not in str(api('/api/suggest?kind=album&q=ok%20co')[1]) or \
                db.execute("SELECT 1 FROM albums WHERE title = 'OK Computer'").fetchone()   # catalog only

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { getFlights, getReveal, isKnown, sendIdea, startAttempt, submitAnswer, submitField, suggest } from './api'
+import { ApiError, getFlights, getReveal, isKnown, sendIdea, startAttempt, submitAnswer, submitField, suggest } from './api'
 import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
 import {
   altitudeAu, bandFor, countdown, curveGeom, EMPTY_LOG,
@@ -90,7 +90,8 @@ function Starfield({ au }: { au: number }) {
 
     // A phone paints the sky at 1x: a canvas redrawn every frame at 2-3x is what
     // made mobile Firefox stutter, and a star is a dot either way.
-    const dpr = matchMedia('(pointer: coarse)').matches ? 1 : Math.min(devicePixelRatio || 1, 2)
+    const touch = matchMedia('(pointer: coarse)').matches
+    const dpr = touch ? 1 : Math.min(devicePixelRatio || 1, 2)
     function resize() {
       if (node!.clientWidth === width && node!.clientHeight === height) return
       width = node!.clientWidth
@@ -185,6 +186,11 @@ function Starfield({ au }: { au: number }) {
     }
 
     function frame(now: number) {
+      raf = requestAnimationFrame(frame)
+      // ponytail: a phone drifts the sky at ~30 fps, and at the full rate only while
+      // it streams or zooms. A full-screen canvas every frame fought the keyboard and
+      // the page's own animations for the main thread; a drifting dot needs half that.
+      if (touch && now - last < 30 && !moving && surge(now) === 0) return
       const dt = Math.min(3, (now - last) / 16.67)
       last = now
       const boost = surge(now) * 70   // near stars fly ~50 px a frame at full rush
@@ -231,7 +237,6 @@ function Starfield({ au }: { au: number }) {
           wait = rand(5000, 14000)
         }
       }
-      raf = requestAnimationFrame(frame)
     }
 
     resize()
@@ -261,6 +266,23 @@ export type Mood = 'boost' | 'tumble' | null
 export function Scene({ au, mood, zoom = 1 }: { au: number; mood?: Mood; zoom?: number }) {
   const skin = usePrefs().planets   // rendered spheres, flat discs, or a bare chart
   const camera = useRef<HTMLDivElement>(null)
+  const scene = useRef<HTMLDivElement>(null)
+  // The keyboard takes height, never width: the sky's height is measured again only
+  // when the width changes (a rotation), so opening the keyboard moves nothing behind
+  // the HUD -- no Sun jump, no canvas realloc, no re-scattered stars.
+  useEffect(() => {
+    const root = document.documentElement
+    let width = 0
+    function pin() {
+      if (innerWidth === width || !scene.current) return
+      width = innerWidth
+      root.style.removeProperty('--sky')
+      root.style.setProperty('--sky', `${scene.current.offsetHeight}px`)
+    }
+    pin()
+    addEventListener('resize', pin)
+    return () => removeEventListener('resize', pin)
+  }, [])
   const was = useRef(au)
   useEffect(() => {
     if (au > was.current && camera.current) {
@@ -272,7 +294,7 @@ export function Scene({ au, mood, zoom = 1 }: { au: number; mood?: Mood; zoom?: 
     was.current = au
   }, [au])
   return (
-    <div className={`scene planets-${skin} ${mood ?? ''}`} aria-hidden="true" style={{ '--y': `${trackPx(au)}px`, '--zoom': zoom } as CSSProperties}>
+    <div ref={scene} className={`scene planets-${skin} ${mood ?? ''}`} aria-hidden="true" style={{ '--y': `${trackPx(au)}px`, '--zoom': zoom } as CSSProperties}>
       <Starfield au={au} />
       <div className="camera" ref={camera}>
       <div className="track" style={{ height: `${trackPx(PLUTO_AU) + 300}px` }}>
@@ -451,32 +473,34 @@ function fieldsFor(question: Question): Field[] {
   return fields
 }
 
-/** Catalog completions, debounced; the browser's own datalist draws them. */
-function useSuggest(kind: SuggestKind | null, value: string) {
+/** Catalog names, and the moderator's for this box, starting with what is typed, from the third character, debounced. */
+function useSuggest(kind: SuggestKind | null, value: string, question: number, field: string) {
   const [options, setOptions] = useState<string[]>([])
   const q = value.trim()
+  const long = [...q].length >= 3     // characters, not UTF-16 units
   useEffect(() => {
-    if (!kind || q.length < 2) return
+    if (!kind || !long) return
     let live = true
     const timer = setTimeout(() => {
-      suggest(kind, q).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
+      suggest(kind, q, { question, field }).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
     }, 150)
     return () => { live = false; clearTimeout(timer) }
-  }, [kind, q])
-  // Options from an earlier query linger until the next reply; the datalist only
-  // shows the ones that match what is typed, so nothing stale is offered.
-  return kind && q.length >= 2 ? options : []
+  }, [kind, q, long, question, field])
+  // Options from an earlier query linger until the next reply; only the ones that
+  // still start with what is typed are offered, so nothing stale shows.
+  const prefix = q.toLocaleLowerCase()
+  return kind && long ? options.filter(option => option.toLocaleLowerCase().startsWith(prefix)) : []
 }
 
 /** One field, with the catalog's completions under it. A <datalist> was doing
  *  this job, but browsers draw that one their own way or not at all, and on a
  *  three-field song question the player needs to see what is on offer. The list
  *  opens *upward*: these inputs live in the HUD along the bottom of the screen. */
-function Input({ field, value, onChange, autoFocus, invalid, hint, onLeave }: {
-  field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
+function Input({ question, field, value, onChange, autoFocus, invalid, hint, onLeave }: {
+  question: number; field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
   hint?: 'next' | 'send'; onLeave?: (direction: -1 | 1) => void
 }) {
-  const options = useSuggest(field.kind, value)
+  const options = useSuggest(field.kind, value, question, field.key)
   const [open, setOpen] = useState(true)
   const [cursor, setCursor] = useState(-1)
 
@@ -485,6 +509,24 @@ function Input({ field, value, onChange, autoFocus, invalid, hint, onLeave }: {
   // Typing resets the highlight; this only catches completions that arrive from
   // the debounce while one is up, and keeps it inside the list that is drawn.
   const at = Math.min(cursor, shown.length - 1)
+
+  // The list gets the room between the question card and this box, so with a phone
+  // keyboard up it neither covers the question nor runs off the top. Measured again
+  // on resize: the keyboard slides in after the focus.
+  const list = useRef<HTMLUListElement>(null)
+  const listed = shown.length > 0
+  useLayoutEffect(() => {
+    const ul = list.current
+    if (!ul) return
+    function fit() {
+      const card = document.querySelector('.prompt')?.getBoundingClientRect().bottom ?? 0
+      const room = (ul!.offsetParent ?? ul!.parentElement!).getBoundingClientRect().top - Math.max(0, card) - 10
+      ul!.style.setProperty('--room', `${Math.max(96, room)}px`)
+    }
+    fit()
+    addEventListener('resize', fit)
+    return () => removeEventListener('resize', fit)
+  }, [listed])
 
   function pick(option: string) {
     onChange(option)
@@ -533,11 +575,13 @@ function Input({ field, value, onChange, autoFocus, invalid, hint, onLeave }: {
              aria-activedescendant={at >= 0 ? `${field.key}-pick-${at}` : undefined}
              onChange={event => { setOpen(true); setCursor(-1); onChange(event.target.value) }}
              onKeyDown={keys}
+             // a phone: the question is at the top of the page, keep it on screen
+             onFocus={() => { if (matchMedia('(pointer: coarse)').matches) scrollTo(0, 0) }}
              autoFocus={autoFocus} autoComplete="off" autoCapitalize="off" spellCheck={false}
              enterKeyHint={hint ?? 'send'} maxLength={100} aria-label={field.label} placeholder={field.label}
              aria-invalid={invalid || undefined} />
       {shown.length > 0 && (
-        <ul className="picks" id={`${field.key}-picks`} role="listbox" aria-label={`${field.label} from the catalog`}>
+        <ul className="picks" ref={list} id={`${field.key}-picks`} role="listbox" aria-label={`${field.label} from the catalog`}>
           {shown.map((option, index) => (
             // mousedown is swallowed so the input keeps focus and the click lands
             // on a list that is still open.
@@ -570,8 +614,6 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   const [unknown, setUnknown] = useState(false)
   const [leaving, setLeaving] = useState(false)   // the card drifts off and the HUD sinks while the tower answers
   const sent = useRef(false)
-  // What was already queried and refused, so pressing ANSWER again sends it.
-  const queried = useRef<string | null>(null)
   // The fields are asked one at a time: three boxes at once was three questions
   // wearing one coat, and the catalog can only vet the box in front of you.
   const [step, setStep] = useState(0)
@@ -608,6 +650,12 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     } catch (cause) {
       sent.current = false
       setLeaving(false)
+      // Not a catalog name. The clock does not wait for a fix: the box goes blank.
+      if (cause instanceof ApiError && cause.status === 422) {
+        if (expired) return post({ ...all, [field.key]: '' }, settle, expired)
+        setUnknown(true)
+        return false
+      }
       // A refresh that raced the timer: the server has moved on, so ask it where we are.
       if (cause instanceof Error && cause.message.includes('current question')) { onLost(); return false }
       setError(cause instanceof Error ? cause.message : 'That answer did not reach the tower.')
@@ -623,10 +671,10 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
 
   /** True when this field holds something the music catalog does not know. False on
    *  a rarest question (no kind to check), on an empty field (a deliberate skip), and
-   *  whenever the check itself fails: a catalog hiccup must never eat a guess. */
+   *  whenever the check itself fails -- the server checks again on the way in. */
   async function unrecognised(value: string): Promise<boolean> {
     if (!field.kind || !value) return false
-    try { return !(await isKnown(field.kind, value)).known } catch { return false }
+    try { return !(await isKnown(field.kind, value, { question: question.id, field: field.key })).known } catch { return false }
   }
 
   /** Move to another box of the same question, parking the one being left. Nothing
@@ -636,8 +684,8 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     if (fields.length < 2 || to === step || to < 0 || to >= fields.length) return
     const all = { ...values, [field.key]: (values[field.key] ?? '').trim() }
     setValues(all)
+    if (await unrecognised(all[field.key])) return setUnknown(true)
     setUnknown(false)
-    queried.current = null
     if (await post(all, false)) setStep(to)
   }
 
@@ -645,7 +693,6 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   async function advance(all: Record<string, string>) {
     setValues(all)
     setUnknown(false)
-    queried.current = null
     if (await post(all, finale) && !finale) setStep(step + 1)
   }
 
@@ -653,13 +700,8 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     event.preventDefault()
     if (sent.current) return
     const value = (values[field.key] ?? '').trim()
-    // Checked once. Pressing the button again sends it anyway, because the catalog is
-    // the top artists rather than every recording, and a right answer it has never
-    // heard of must not be trapped behind this.
-    if (queried.current !== value) {
-      queried.current = value
-      if (await unrecognised(value)) return setUnknown(true)
-    }
+    // Only catalog names go: pick one from the list. The server refuses the rest too.
+    if (await unrecognised(value)) return setUnknown(true)
     void advance({ ...values, [field.key]: value })
   }
 
@@ -671,7 +713,10 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
       {question.qtype === 'album' && question.cover && <img className="cover" src={question.cover} alt="Album cover" />}
     </section>
     <div className={leaving ? 'hud sunk' : 'hud'}>
-      <form onSubmit={submit}>
+      {/* A press on a button would take the focus from the box, and on a phone that
+          drops the keyboard only for the next box to raise it again: the buttons
+          still click, the focus stays put. */}
+      <form onSubmit={submit} onMouseDown={event => { if ((event.target as Element).closest('button')) event.preventDefault() }}>
         <Countdown question={question} onExpire={expire} />
         {/* Every box of the question at once, the one being typed open and the rest
             waiting under it: a single box gave no sign that two more were coming,
@@ -692,7 +737,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
                     <span className="slot-n" aria-hidden="true">{i + 1}</span>
                     <span className="slot-label">{slot.label}</span>
                     {i === step ? (
-                      <Input key={slot.key} field={slot} value={values[slot.key] ?? ''} autoFocus
+                      <Input key={slot.key} question={question.id} field={slot} value={values[slot.key] ?? ''} autoFocus
                              invalid={unknown} hint={finale ? 'send' : 'next'}
                              onLeave={direction => void go(step + direction)}
                              onChange={value => { setUnknown(false); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
@@ -708,7 +753,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
           </div>
         ) : (
           <div className="fields">
-            <Input key={field.key} field={field} value={values[field.key] ?? ''} autoFocus invalid={unknown}
+            <Input key={field.key} question={question.id} field={field} value={values[field.key] ?? ''} autoFocus invalid={unknown}
                    onChange={value => { setUnknown(false); setValues(prev => ({ ...prev, [field.key]: value })) }} />
           </div>
         )}
@@ -724,8 +769,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
       )}
       {unknown && (
         <p className="notice" role="alert">
-          No {field.label} by that name in the catalog
-          — check the spelling, or press {finale ? 'ANSWER' : 'NEXT'} again to send it as is.
+          No {field.label} by that name in the catalog — pick one from the list, or skip.
         </p>
       )}
       {error && <p className="notice" role="alert">{error}</p>}
