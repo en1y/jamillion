@@ -13,8 +13,19 @@ export interface SetupStatus {
     total: number
     failed: number
     artist: string
-    failed_artists?: string[]
   }
+  // /api/seeder only: what the catalog holds and what it is still missing.
+  catalog?: { albums: number; tracks: number; previews: number; last_seeded: string }
+  empty_artists?: string[]
+  failures?: CatalogFailure[]
+}
+
+/** An artist the seeder could not add, kept in the DB between runs. */
+export interface CatalogFailure {
+  name: string
+  reason: string
+  attempts: number
+  last_try: string
 }
 
 export const getSetup = () => call<SetupStatus>('/api/setup')
@@ -23,8 +34,14 @@ export const getSetup = () => call<SetupStatus>('/api/setup')
  * counts and state only; catalog keys never leave the server. */
 export const getSeeder = (token?: string) => call<SetupStatus>('/api/seeder', token)
 
-export const rerunSeeder = (request: { artist: string } | { limit: number }, token?: string) =>
+/** A list of names in one run, not one run per name: the seeder takes one job at a
+ *  time, so retrying forty artists one press at a time would take forty presses. */
+export const rerunSeeder = (request: { artists: string[] } | { limit: number }, token?: string) =>
   call<SetupStatus>('/api/seeder', token, { method: 'POST', body: JSON.stringify(request) })
+
+/** Drop failures nobody intends to chase; seeding one again puts it back. */
+export const forgetFailures = (artists: string[], token?: string) =>
+  call<SetupStatus>('/api/seeder/failures', token, { method: 'DELETE', body: JSON.stringify({ artists }) })
 
 /** Needs the setup page: nobody can administer it yet, or it has no catalog keys. */
 export const needsSetup = (status: SetupStatus) => !status.admin || !status.configured

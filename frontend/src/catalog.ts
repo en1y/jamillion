@@ -173,3 +173,11 @@ export function spreadTiers(count: number, ladder: number[]): (number | null)[] 
   return Array.from({ length: count }, (_, i) =>
     ladder[count === 1 ? 0 : Math.round((i * last) / (count - 1))])
 }
+
+// --- the catalog dashboard --------------------------------------------------
+
+/** A pasted retry list: one artist per line, or comma-separated, either way.
+ *  Blanks and repeats go, and the backend takes 200 names in one run. */
+export const namesFrom = (text: string) =>
+  [...new Map(text.split(/[\n,]/).map(name => name.trim())
+    .filter(Boolean).map(name => [name.toLowerCase(), name])).values()].slice(0, 200)

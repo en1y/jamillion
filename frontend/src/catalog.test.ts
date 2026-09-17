@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  answerText, cell, columnsFor, defaultOp, fieldGroups, fieldLabel, firstInGroup, groupOf,
+  answerText, cell, columnsFor, defaultOp, fieldGroups, fieldLabel, firstInGroup, groupOf, namesFrom,
   splitField, spreadTiers, toPick, usable,
 } from './catalog.ts'
 import type { CatalogField, Row } from './catalog.ts'
@@ -110,4 +110,11 @@ test('tiers spread down the ladder in the order the results are shown', () => {
   assert.deepEqual(spreadTiers(0, ladder), [])
   // no tiers loaded yet: everything stays on rarity
   assert.deepEqual(spreadTiers(2, []), [null, null])
+})
+
+test('a pasted retry list is split, trimmed and de-duplicated', () => {
+  assert.deepEqual(namesFrom('Radiohead\n Coldplay ,Adele\n\n'), ['Radiohead', 'Coldplay', 'Adele'])
+  assert.deepEqual(namesFrom('Muse\nmuse'), ['muse'])          // one run per artist, the last spelling wins
+  assert.deepEqual(namesFrom('  ,\n '), [])
+  assert.equal(namesFrom(Array.from({ length: 300 }, (_, n) => `A${n}`).join('\n')).length, 200)
 })

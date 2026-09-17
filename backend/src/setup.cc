@@ -73,13 +73,17 @@ bool save(const Json::Value &settings) {
 // seed_music.py in the background, logging to CONFIG_DIR/seed.log. Its
 // environment is built before fork(), because between fork and exec a
 // multithreaded process may only make async-signal-safe calls.
-bool startSeeder(const Json::Value &settings, int artists, const std::string &artist = "") {
+bool startSeeder(const Json::Value &settings, int artists, const std::vector<std::string> &named = {}) {
     const auto venv = rootDir / ".venv/bin/python";
     const std::string python = std::filesystem::exists(venv) ? venv.string() : "python3";
     const auto limit = std::to_string(artists);
     const auto log = (configDir / "seed.log").string();
     const auto progress = (configDir / "seed-progress.json").string();
     std::error_code ignored;
+    // The log and the progress file are the only trace a run leaves. Without the
+    // directory the child's open() fails and the run goes dark: no log, and the
+    // progress file the dashboard polls never appears.
+    std::filesystem::create_directories(configDir, ignored);
     std::filesystem::remove(progress, ignored);
 
     std::vector<std::string> env;
@@ -91,12 +95,12 @@ bool startSeeder(const Json::Value &settings, int artists, const std::string &ar
     envp.push_back(nullptr);
 
     std::vector<std::string> args{python, "-u", "scripts/seed_music.py", "--progress-file", progress};
-    if (artist.empty()) {
+    if (named.empty()) {
         args.emplace_back("--limit");
         args.push_back(limit);
     } else {
         args.emplace_back("--artists");
-        args.push_back(artist);
+        args.insert(args.end(), named.begin(), named.end());
     }
     if (value(settings, kKeys[2]).empty()) args.emplace_back("--no-spotify");
     std::vector<char *> argv;
@@ -117,7 +121,8 @@ bool startSeeder(const Json::Value &settings, int artists, const std::string &ar
     seeder = pid;
     // Reaped here, so a finished seeder is not left a zombie that still looks alive.
     std::thread([pid] { waitpid(pid, nullptr, 0); seeder = 0; }).detach();
-    LOG_INFO << "seeding " << (artist.empty() ? limit + " chart artists" : "artist " + artist)
+    LOG_INFO << "seeding " << (named.empty() ? limit + " chart artists"
+                                             : std::to_string(named.size()) + " named artists")
              << " (pid " << pid << "), log in " << log;
     return true;
 }
@@ -134,7 +139,45 @@ Task<HttpResponsePtr> status(HttpRequestPtr req) {
         out["seeding"] = seeder.load() != 0;
         out["artists"] = static_cast<Json::Int64>(rows[0]["artists"].as<long>());
         out["seed_target"] = settings["seed_target"].asInt();
-        if (req->path() == "/api/seeder") {
+        if (req->path().rfind("/api/seeder", 0) == 0) {   // the staff view: also the run state
+            // What the catalog actually holds, and what it is missing. An artist row
+            // with no tracks is a half-seeded artist: it exists, and the editor can
+            // find nothing to ask about, so it belongs beside the outright failures.
+            const auto counts = co_await app().getDbClient()->execSqlCoro(
+                "SELECT (SELECT count(*) FROM albums) AS albums, "
+                "       (SELECT count(*) FROM tracks) AS tracks, "
+                "       (SELECT count(*) FROM tracks WHERE preview_url IS NOT NULL) AS previews, "
+                "       (SELECT max(updated_at) FROM artists) AS last_seeded");
+            Json::Value catalog;
+            catalog["albums"] = static_cast<Json::Int64>(counts[0]["albums"].as<long>());
+            catalog["tracks"] = static_cast<Json::Int64>(counts[0]["tracks"].as<long>());
+            catalog["previews"] = static_cast<Json::Int64>(counts[0]["previews"].as<long>());
+            catalog["last_seeded"] = counts[0]["last_seeded"].isNull() ? ""
+                                                                      : counts[0]["last_seeded"].as<std::string>();
+            out["catalog"] = catalog;
+
+            // Named, not counted: an artist whose row exists with nothing under it is
+            // retried by name like any failure, so the dashboard needs the names.
+            const auto empty = co_await app().getDbClient()->execSqlCoro(
+                "SELECT ar.name FROM artists ar WHERE NOT EXISTS "
+                "  (SELECT 1 FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id) "
+                "ORDER BY ar.global_rank NULLS LAST, ar.name LIMIT 200");
+            out["empty_artists"] = Json::Value(Json::arrayValue);
+            for (const auto &row : empty) out["empty_artists"].append(row["name"].as<std::string>());
+
+            const auto failures = co_await app().getDbClient()->execSqlCoro(
+                "SELECT name, reason, attempts, last_try FROM catalog_failures "
+                "ORDER BY attempts DESC, last_try DESC LIMIT 500");
+            out["failures"] = Json::Value(Json::arrayValue);
+            for (const auto &row : failures) {
+                Json::Value one;
+                one["name"] = row["name"].as<std::string>();
+                one["reason"] = row["reason"].as<std::string>();
+                one["attempts"] = row["attempts"].as<int>();
+                one["last_try"] = row["last_try"].as<std::string>();
+                out["failures"].append(one);
+            }
+
             Json::Value progress;
             std::ifstream progressFile(configDir / "seed-progress.json");
             if (progressFile) {
@@ -198,26 +241,35 @@ Task<HttpResponsePtr> apply(HttpRequestPtr req) {
     co_return co_await status(req);
 }
 
-// Staff can rerun the configured chart size or refresh one named artist. These
-// runs use the already stored keys and the same single-child lock as setup.
+// Staff can rerun the configured chart size or a list of named artists -- the ones
+// that failed, typically, which is why a whole list goes in one run. These runs use
+// the already stored keys and the same single-child lock as setup.
 Task<HttpResponsePtr> rerun(HttpRequestPtr req) {
     const auto body = req->getJsonObject();
     if (!body || !body->isObject()) co_return auth::error(k400BadRequest, "JSON body required");
-    const bool named = body->isMember("artist");
+    const bool named = body->isMember("artists");
     if (named == body->isMember("limit"))
-        co_return auth::error(k400BadRequest, "Provide either artist or limit");
+        co_return auth::error(k400BadRequest, "Provide either artists or limit");
 
-    std::string artist;
+    std::vector<std::string> artists;
     int count = 0;
     if (named) {
-        if (!(*body)["artist"].isString())
-            co_return auth::error(k400BadRequest, "artist must be a name");
-        artist = (*body)["artist"].asString();
-        while (!artist.empty() && std::isspace(static_cast<unsigned char>(artist.back()))) artist.pop_back();
-        while (!artist.empty() && std::isspace(static_cast<unsigned char>(artist.front()))) artist.erase(artist.begin());
-        if (artist.empty() || artist.size() > 120 ||
-            std::any_of(artist.begin(), artist.end(), [](unsigned char c) { return c < 32 || c == 127; }))
-            co_return auth::error(k400BadRequest, "artist must be 1-120 characters without control characters");
+        const auto &given = (*body)["artists"];
+        // One process per run, so a whole retry list goes in one argv rather than
+        // one press per name. 200 is well inside any argv limit and hours of work.
+        if (!given.isArray() || given.empty() || given.size() > 200)
+            co_return auth::error(k400BadRequest, "artists must be a list of 1 to 200 names");
+        for (const auto &entry : given) {
+            if (!entry.isString()) co_return auth::error(k400BadRequest, "artists must be names");
+            auto name = entry.asString();
+            while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+            while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.erase(name.begin());
+            if (name.empty() || name.size() > 120 || name.front() == '-' ||
+                std::any_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+                co_return auth::error(k400BadRequest,
+                                      "Each artist must be 1-120 characters, without control characters or a leading dash");
+            artists.push_back(name);
+        }
     } else {
         const auto &given = (*body)["limit"];
         if (!given.isIntegral() || given.asInt() < 1 || given.asInt() > 2000)
@@ -232,8 +284,28 @@ Task<HttpResponsePtr> rerun(HttpRequestPtr req) {
         std::lock_guard guard(lock);
         if (seeder.load() != 0)
             co_return auth::error(k409Conflict, "A catalog run is already in progress");
-        if (!startSeeder(settings, count, artist))
+        if (!startSeeder(settings, count, artists))
             co_return auth::error(k500InternalServerError, "Could not start the seeder");
+    }
+    co_return co_await status(req);
+}
+
+// DELETE /api/seeder/failures, body { artists: [...] }: drop names the staff have
+// given up on, so the list stays the work that is left. Seeding one again puts it
+// back if it fails again.
+Task<HttpResponsePtr> forget(HttpRequestPtr req) {
+    const auto body = req->getJsonObject();
+    if (!body || !(*body)["artists"].isArray() || (*body)["artists"].empty())
+        co_return auth::error(k400BadRequest, "artists must be a list of names");
+    std::vector<std::string> names;
+    for (const auto &entry : (*body)["artists"])
+        if (entry.isString()) names.push_back(entry.asString());
+    try {
+        for (const auto &name : names)
+            co_await app().getDbClient()->execSqlCoro("DELETE FROM catalog_failures WHERE name = $1", name);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "The catalog is not answering");
     }
     co_return co_await status(req);
 }
@@ -254,6 +326,7 @@ void registerRoutes() {
     // the same non-secret catalog count is for the people writing its questions.
     app().registerHandler("/api/seeder", &status, {Get, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/seeder", &rerun, {Post, "auth::Optional", "auth::Moderator"});
+    app().registerHandler("/api/seeder/failures", &forget, {Delete, "auth::Optional", "auth::Moderator"});
 }
 
 }  // namespace setup

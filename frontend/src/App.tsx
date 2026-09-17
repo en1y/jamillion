@@ -11,6 +11,7 @@ import { useCountUp } from './count'
 import { Flights } from './Flights'
 import { Editor } from './Editor'
 import { Admin } from './Admin'
+import { Catalog } from './Catalog'
 import { altitudeAu, ceilingFor, legs, passed } from './flight'
 import { setPrefs, sfx, usePrefs } from './prefs'
 import { Settings } from './Settings'
@@ -63,7 +64,8 @@ function App() {
   const onFlights = screen === 'flights'
   const onEditor = screen === 'editor'
   const onAdmin = screen === 'admin'
-  const away = setup || onAccount || onFlights || onEditor || onAdmin
+  const onCatalog = screen === 'catalog'
+  const away = setup || onAccount || onFlights || onEditor || onAdmin || onCatalog
   // The wheel over bare sky pulls the camera out, on the play page only, and only
   // when nothing of the page is under the cursor: cards, HUD, buttons and text
   // keep their scroll. The gauges are pointer-transparent, so they count as sky.
@@ -195,6 +197,8 @@ function App() {
         <Setup token={token} player={player ?? null} onDone={() => { setSetup(false); navigate('/') }} />
       ) : onEditor ? (
         <Editor date={arg} token={token} admin={player?.role === 'admin'} />
+      ) : onCatalog ? (
+        <Catalog token={token} />
       ) : onAdmin ? (
         <Admin tab={arg} token={token} me={player?.profile?.id} />
       ) : onFlights ? (
@@ -274,7 +278,8 @@ function App() {
                 <a className="chip" href="/account">passport</a>
                 <a className="chip" href="/flights">flight log</a>
                 {(player?.role === 'moderator' || player?.role === 'admin') &&
-                  <a className="chip" href="/editor">flight deck</a>}
+                  <><a className="chip" href="/editor">flight deck</a>
+                   <a className="chip" href="/catalog">catalog</a></>}
                 {player?.role === 'admin' &&
                   <a className="chip" href="/admin">ground control</a>}
                 <button className="chip" type="button" disabled>archive</button>

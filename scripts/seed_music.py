@@ -122,6 +122,30 @@ def norm_title(t):
     t = re.sub(r"\s+-\s+.*$|\s*[(\[].*$", "", t)
     return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
 
+def same_name(a, b):
+    """'Tyler, The Creator' == 'tyler the creator'. Punctuation and case only."""
+    strip = lambda n: re.sub(r"[^a-z0-9]+", "", (n or "").lower())
+    return bool(strip(a)) and strip(a) == strip(b)
+
+# ---------------------------------------------------------------- failures
+
+def note_failure(conn, name, reason):
+    """Kept in the DB, not in the progress file: a failure has to still be there
+    next week, when someone opens the catalog dashboard to aim a rerun at it."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO catalog_failures (name, reason) VALUES (%s, %s) "
+                        "ON CONFLICT (name) DO UPDATE SET reason = EXCLUDED.reason, "
+                        "attempts = catalog_failures.attempts + 1, last_try = now()",
+                        (name[:120], reason[:400]))
+        conn.commit()
+    except Exception as e:      # a dead connection must not end a run three hours in
+        conn.rollback()
+        print(f"  ! could not record the failure of {name}: {e}", flush=True)
+
+def clear_failure(cur, name):
+    cur.execute("DELETE FROM catalog_failures WHERE lower(name) = lower(%s)", (name,))
+
 # ---------------------------------------------------------------- steps
 
 def top_artists(limit):
@@ -151,6 +175,9 @@ def seed_artist(cur, sp, mb, name, rank):
     if not d:
         print(f"  ! not on deezer: {name}"); return None
 
+    # Deezer spells it its own way ("JAY-Z" for "JAŸ-Z", "che" for "Che"), and that
+    # spelling is what the catalog stores: say so, or the artist looks missing.
+    if d["name"].casefold() != name.casefold(): print(f"      stored as {d['name']}", flush=True)
     row = dict(name=d["name"], deezer_id=d["id"], deezer_fans=d.get("nb_fan"),
                image_url=d.get("picture_xl"))
     # rank comes from the chart position; --artists runs have no chart, so leave
@@ -176,7 +203,12 @@ def seed_artist(cur, sp, mb, name, rank):
     if sp:
         try:
             r = sp.search(q=f'artist:"{d["name"]}"', type="artist", limit=1)["artists"]["items"]
-            if r: row["spotify_id"] = r[0]["id"]
+            # Spotify always answers something: "Che" comes back as My Chemical Romance,
+            # "XG" as RAC, "¥$" as Arctic Monkeys. spotify_id is UNIQUE, so storing a
+            # stolen id makes its real owner fail on a unique violation for good -- the
+            # artist is rolled back and every rerun repeats it. The id is a
+            # cross-reference, not data: when the name does not match, go without it.
+            if r and same_name(r[0]["name"], d["name"]): row["spotify_id"] = r[0]["id"]
         except Exception as e:
             print(f"  ! spotify {name}: {e}")
     return upsert(cur, "artists", "deezer_id", row), d["id"]
@@ -435,6 +467,9 @@ def selftest():
     assert not is_original("In Utero (20th Anniversary Remaster)")            # the catalog side is unchanged
     assert not is_original("Creep (Remastered Live)", remaster_ok=True)
     assert song_table([]) == {}
+    # the guard that keeps one artist's Spotify id off another's row
+    assert same_name("Tyler, The Creator", "tyler the creator") and same_name("blink-182", "Blink 182")
+    assert not same_name("Che", "My Chemical Romance") and not same_name("", "")
     print("ok")
 
 def main():
@@ -460,7 +495,7 @@ def main():
             json.dump(fields, out)
         os.replace(path, args.progress_file)
 
-    progress(state="preparing", done=0, total=0, failed=0, artist="", failed_artists=[])
+    progress(state="preparing", done=0, total=0, failed=0, artist="")
 
     mb = musicbrainz()
     sp = None if args.no_spotify else spotify()
@@ -472,20 +507,22 @@ def main():
             print("! YOUTUBE_API_KEY is not set; play counts still come, exact views do not", flush=True)
 
     names = args.artists or top_artists(args.limit)
+    # The Last.fm chart repeats a name now and then (The Cranberries sits at 69 and
+    # 70), and a rerun of hand-picked names is easy to paste twice.
+    names = list({name.lower(): name for name in reversed(names)}.values())[::-1]
     ranked = not args.artists      # only a chart run knows the global ranking
     print(f"seeding {len(names)} artists" + (f" from rank {args.start}" if ranked else " (rank left unchanged)"), flush=True)
 
     total = max(0, len(names) - args.start + 1)
     done = failed = 0
-    failed_artists = []
-    progress(state="running", done=done, total=total, failed=failed, artist="", failed_artists=failed_artists)
+    progress(state="running", done=done, total=total, failed=failed, artist="")
 
     with psycopg.connect(DB) as conn, conn.cursor() as cur:
         for rank, name in enumerate(names, 1):
             if rank < args.start: continue
             t0 = time.time()
             print(f"[{rank}/{len(names)}] {name}", flush=True)
-            progress(state="running", done=done, total=total, failed=failed, artist=name, failed_artists=failed_artists)
+            progress(state="running", done=done, total=total, failed=failed, artist=name)
             try:
                 got = seed_artist(cur, sp, mb, name, rank if ranked else None)
                 if got:
@@ -493,21 +530,24 @@ def main():
                     tracks = seed_albums(cur, aid, dzid, args.detail_cap)
                     if yt: seed_youtube(cur, yt, aid, tracks, args.yt_albums, args.yt_refresh)
                     seed_lastfm_tracks(cur, tracks, args.lastfm_cap)
+                    if not tracks: raise RuntimeError("Deezer has the artist but no original tracks")
+                    clear_failure(cur, name)
+                    conn.commit()      # per artist, so --start resumes cleanly
+                    print(f"      {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
                 else:
+                    conn.rollback()
                     failed += 1
-                    failed_artists = (failed_artists + [name])[-20:]
+                    note_failure(conn, name, "no Deezer artist found under that name")
                     print("      SKIPPED: no Deezer artist found", flush=True)
-                conn.commit()          # per artist, so --start resumes cleanly
-                if got: print(f"      {len(tracks)} tracks in {time.time()-t0:.0f}s", flush=True)
             except Exception as e:
                 conn.rollback()        # an aborted tx would poison every later artist
                 failed += 1
-                failed_artists = (failed_artists + [name])[-20:]
+                note_failure(conn, name, f"{type(e).__name__}: {e}")
                 print(f"      FAILED {type(e).__name__}: {e}", flush=True)
             done += 1
-            progress(state="running", done=done, total=total, failed=failed, artist="", failed_artists=failed_artists)
+            progress(state="running", done=done, total=total, failed=failed, artist="")
 
-    progress(state="finished", done=done, total=total, failed=failed, artist="", failed_artists=failed_artists)
+    progress(state="finished", done=done, total=total, failed=failed, artist="")
 
 if __name__ == "__main__":
     main()

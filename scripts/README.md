@@ -23,7 +23,12 @@ Builds the artist / album / track catalog in Postgres.
   exact views and likes for those videos if `YOUTUBE_API_KEY` is set.
 - Only originals are kept: `is_original` drops live / remix / demo / acoustic
   titles, `norm_title` collapses remaster and deluxe duplicates into one row.
-- One commit per artist, a failure rolls back that artist and the run continues.
+- One commit per artist, a failure rolls back that artist and the run continues;
+  the name, the reason and the attempt count go to `catalog_failures`, which the
+  `/catalog` dashboard lists and which clears itself when the artist finally lands.
+- Spotify's id is only stored when the name it returns matches: its search always
+  answers something ("Che" comes back as My Chemical Romance), and `spotify_id` is
+  UNIQUE, so a stolen id made the real owner fail on every rerun for good.
 
 `seed.sh` loads `.env`, starts the seeder in the background inside `.venv`,
 and returns at once. Output goes to `data/seed.log` (previous run kept as
