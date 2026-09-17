@@ -176,7 +176,11 @@ Task<HttpResponsePtr> quizStats(HttpRequestPtr req, std::string date) {
     auto db = app().getDbClient();
     try {
         const auto quizzes = co_await db->execSqlCoro(
-            "SELECT id, quiz_date::text AS quiz_date, published FROM quizzes WHERE quiz_date::text = $1",
+            "SELECT id, quiz_date::text AS quiz_date, published, "
+            "  (SELECT count(*) FROM attempts a WHERE a.quiz_id = z.id) AS started, "
+            "  (SELECT round(avg(a.total_points), 1)::text FROM attempts a "
+            "     WHERE a.quiz_id = z.id AND a.finished_at IS NOT NULL) AS avg_points "
+            "FROM quizzes z WHERE quiz_date::text = $1",
             date);
         if (quizzes.empty()) co_return auth::error(k404NotFound, "No quiz on that date");
         const auto quizId = quizzes[0]["id"].as<long long>();
@@ -185,6 +189,8 @@ Task<HttpResponsePtr> quizStats(HttpRequestPtr req, std::string date) {
         out["id"] = static_cast<Json::Int64>(quizId);
         out["quiz_date"] = quizzes[0]["quiz_date"].as<std::string>();
         out["published"] = quizzes[0]["published"].as<bool>();
+        out["started"] = quizzes[0]["started"].as<int>();
+        out["avg_points"] = nullable(quizzes[0]["avg_points"]);
 
         // The histogram is the view from v0.0.1: one row per distinct score.
         Json::Value heights(Json::arrayValue);
@@ -206,7 +212,8 @@ Task<HttpResponsePtr> quizStats(HttpRequestPtr req, std::string date) {
                  "SELECT q.id, q.position, q.qtype::text AS qtype, q.prompt, "
                  "  count(aa.id) AS answered, "
                  "  count(aa.id) FILTER (WHERE aa.raw_text = '') AS skipped, "
-                 "  count(aa.id) FILTER (WHERE qa.is_correct) AS correct "
+                 "  count(aa.id) FILTER (WHERE qa.is_correct) AS correct, "
+                 "  round(avg(aa.points), 1)::text AS avg_points "
                  "FROM questions q LEFT JOIN attempt_answers aa ON aa.question_id = q.id "
                  "LEFT JOIN question_answers qa ON qa.id = aa.answer_id "
                  "WHERE q.quiz_id = $1::bigint GROUP BY q.id ORDER BY q.position",
@@ -220,6 +227,7 @@ Task<HttpResponsePtr> quizStats(HttpRequestPtr req, std::string date) {
             question["answered"] = row["answered"].as<int>();
             question["skipped"] = row["skipped"].as<int>();
             question["correct"] = row["correct"].as<int>();
+            question["avg_points"] = nullable(row["avg_points"]);
             question["top_answers"] = Json::Value(Json::arrayValue);
             index[id] = questions.size();
             questions.append(question);
@@ -251,6 +259,96 @@ Task<HttpResponsePtr> quizStats(HttpRequestPtr req, std::string date) {
             questions[slot->second]["top_answers"].append(answer);
         }
         out["questions"] = questions;
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        co_return unavailable(e);
+    }
+}
+
+// GET /api/stats?from=YYYY-MM-DD&to=YYYY-MM-DD&top=
+// Every day in the range at once: who flew, who landed, what they scored, and the
+// answers given most across all of it. Averages are over finished flights only;
+// an abandoned flight's total is just where it stopped.
+Task<HttpResponsePtr> rangeStats(HttpRequestPtr req) {
+    const auto from = req->getParameter("from"), to = req->getParameter("to");
+    if (!isIsoDate(from) || !isIsoDate(to))
+        co_return auth::error(k400BadRequest, "from and to must be YYYY-MM-DD");
+    const int top = clampParam(req, "top", 20, 1, 100);
+    auto db = app().getDbClient();
+    try {
+        // isIsoDate lets 2026-02-31 through; a failed ::date cast would read as a 503.
+        const auto span = co_await db->execSqlCoro(
+            "SELECT CASE WHEN pg_input_is_valid($1, 'date') AND pg_input_is_valid($2, 'date') "
+            "  THEN $2::date - $1::date END AS days",
+            from, to);
+        if (span[0]["days"].isNull()) co_return auth::error(k400BadRequest, "from and to must be real days");
+        const auto days = span[0]["days"].as<int>();
+        // ponytail: a year per request keeps every query here a small scan. Page by
+        // year, or roll the numbers up nightly, if a longer view is ever wanted.
+        if (days < 0 || days > 366)
+            co_return auth::error(k400BadRequest, "from must be on or before to, at most 366 days apart");
+
+        Json::Value out;
+        out["from"] = from;
+        out["to"] = to;
+
+        const auto totals = co_await db->execSqlCoro(
+            "SELECT (SELECT count(*) FROM quizzes WHERE quiz_date BETWEEN $1::date AND $2::date) AS days, "
+            "  count(a.id) AS started, count(a.finished_at) AS finished, "
+            "  count(DISTINCT a.player_id) AS players, count(DISTINCT pl.user_id) AS accounts, "
+            "  round(avg(a.total_points) FILTER (WHERE a.finished_at IS NOT NULL), 1)::text AS avg_points "
+            "FROM attempts a JOIN quizzes z ON z.id = a.quiz_id JOIN players pl ON pl.id = a.player_id "
+            "WHERE z.quiz_date BETWEEN $1::date AND $2::date",
+            from, to);
+        out["days"] = totals[0]["days"].as<int>();
+        out["started"] = totals[0]["started"].as<int>();
+        out["finished"] = totals[0]["finished"].as<int>();
+        out["players"] = totals[0]["players"].as<int>();
+        out["accounts"] = totals[0]["accounts"].as<int>();
+        out["avg_points"] = nullable(totals[0]["avg_points"]);
+
+        Json::Value perDay(Json::arrayValue);
+        for (const auto &row : co_await db->execSqlCoro(
+                 "SELECT z.quiz_date::text AS quiz_date, z.published, quiz_max_points(z.id) AS max_points, "
+                 "  count(a.id) AS started, count(a.finished_at) AS finished, "
+                 "  round(avg(a.total_points) FILTER (WHERE a.finished_at IS NOT NULL), 1)::text AS avg_points, "
+                 "  max(a.total_points) FILTER (WHERE a.finished_at IS NOT NULL) AS best "
+                 "FROM quizzes z LEFT JOIN attempts a ON a.quiz_id = z.id "
+                 "WHERE z.quiz_date BETWEEN $1::date AND $2::date "
+                 "GROUP BY z.id ORDER BY z.quiz_date DESC",
+                 from, to)) {
+            Json::Value day;
+            day["quiz_date"] = row["quiz_date"].as<std::string>();
+            day["published"] = row["published"].as<bool>();
+            day["max_points"] = row["max_points"].as<int>();
+            day["started"] = row["started"].as<int>();
+            day["finished"] = row["finished"].as<int>();
+            day["avg_points"] = nullable(row["avg_points"]);
+            day["best"] = nullableInt(row["best"]);
+            perDay.append(day);
+        }
+        out["per_day"] = perDay;
+
+        // Grouped by the normalised text, so "Radiohead" given to three different
+        // questions is one row with three questions behind it.
+        Json::Value answers(Json::arrayValue);
+        for (const auto &row : co_await db->execSqlCoro(
+                 "SELECT mode() WITHIN GROUP (ORDER BY qa.display) AS display, "
+                 "  sum(qa.guess_count)::int AS guesses, count(*) AS questions, "
+                 "  count(*) FILTER (WHERE qa.is_correct) AS accepted "
+                 "FROM question_answers qa JOIN questions q ON q.id = qa.question_id "
+                 "JOIN quizzes z ON z.id = q.quiz_id "
+                 "WHERE z.quiz_date BETWEEN $1::date AND $2::date AND qa.guess_count > 0 "
+                 "GROUP BY qa.normalized ORDER BY guesses DESC, qa.normalized LIMIT $3::int",
+                 from, to, top)) {
+            Json::Value answer;
+            answer["display"] = row["display"].as<std::string>();
+            answer["guesses"] = row["guesses"].as<int>();
+            answer["questions"] = row["questions"].as<int>();
+            answer["accepted"] = row["accepted"].as<int>();
+            answers.append(answer);
+        }
+        out["top_answers"] = answers;
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {
         co_return unavailable(e);
@@ -389,6 +487,7 @@ void registerRoutes() {
     app().registerHandler("/api/users/{1}", &deleteUser, {Delete, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/quizzes/{1}", &deleteQuiz, {Delete, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/quizzes/{1}/stats", &quizStats, {Get, "auth::Optional", "auth::Admin"});
+    app().registerHandler("/api/stats", &rangeStats, {Get, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/tables", &listTables, {Get, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/tables/{1}", &readTable, {Get, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/tiers/{1}", &patchTier, {Patch, "auth::Optional", "auth::Admin"});

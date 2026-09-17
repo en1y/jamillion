@@ -34,20 +34,40 @@ export interface UserQuery {
 export interface Height { total_points: number; height_au: string; players: number }
 
 export interface TopAnswer {
-  id: number; display: string; is_correct: boolean | null
+  id: number; display: string; is_correct: boolean
   tier_id: number | null; guess_count: number; share: string
 }
 
 export interface QuestionStat {
   id: number; position: number; qtype: Qtype; prompt: string
   answered: number; skipped: number; correct: number
+  /** Over every answer stored, skips as 0; null before the first. Text, like height_au. */
+  avg_points: string | null
   top_answers: TopAnswer[]
 }
 
 /** `heights` is empty until somebody finishes the day, which is most of a day. */
 export interface Stats {
   id: number; quiz_date: string; published: boolean
+  /** Flights begun, finished or not; avg_points is over finished ones only. */
+  started: number; avg_points: string | null
   heights: Height[]; questions: QuestionStat[]
+}
+
+/** One quiz day inside a range. `best` and `avg_points` are null until someone lands. */
+export interface DayStat {
+  quiz_date: string; published: boolean; max_points: number
+  started: number; finished: number; avg_points: string | null; best: number | null
+}
+
+/** One answer text across the range: `questions` it was given to, `accepted` on how many. */
+export interface RangeAnswer { display: string; guesses: number; questions: number; accepted: number }
+
+/** `players` counts browsers, `accounts` the signed-in people behind them. */
+export interface RangeStats {
+  from: string; to: string; days: number
+  started: number; finished: number; players: number; accounts: number; avg_points: string | null
+  per_day: DayStat[]; top_answers: RangeAnswer[]
 }
 
 /** Whatever columns the table has, typed by Postgres. An empty page carries no
@@ -67,6 +87,10 @@ export const removeUser = (id: string, token?: string) =>
 
 export const getStats = (date: string, top: number, token?: string) =>
   call<Stats>(`/api/quizzes/${date}/stats` + query({ top }), token)
+
+/** At most 366 days apart; the backend refuses more. */
+export const getRangeStats = (from: string, to: string, top: number, token?: string) =>
+  call<RangeStats>('/api/stats' + query({ from, to, top }), token)
 
 export const listTables = (token?: string) => call<string[]>('/api/tables', token)
 

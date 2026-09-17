@@ -4,15 +4,15 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from './api'
 import { cell } from './catalog'
-import { formatDate, parseDate } from './flight'
+import { formatDate, parseDate, shiftDay } from './flight'
 import { navigate } from './routing'
 import { getTiers } from './moderator'
 import type { Tier } from './moderator'
 import {
-  getStats, listTables, listUsers, patchTier, readTable, removeUser, rowRange, seedEdit,
+  getRangeStats, getStats, listTables, listUsers, patchTier, readTable, removeUser, rowRange, seedEdit,
   setRole, tierPatch,
 } from './admin'
-import type { AdminUser, Role, Stats, TierEdit, UserSort } from './admin'
+import type { AdminUser, RangeStats, Role, Stats, TierEdit, UserSort } from './admin'
 
 const TABS = ['users', 'stats', 'tiers', 'tables'] as const
 const ROLES: Role[] = ['user', 'moderator', 'admin']
@@ -197,8 +197,7 @@ function Users({ token, me }: { token?: string; me?: string }) {
 
 // --- per-question stats (the editor's day screen shows this too) -------------
 
-const VERDICT = (is_correct: boolean | null) =>
-  is_correct === null ? 'awaiting' : is_correct ? 'accepted' : 'rejected'
+const VERDICT = (is_correct: boolean) => is_correct ? 'accepted' : 'rejected'
 
 export function QuizStats({ date, token }: { date: string; token?: string }) {
   const [result, setResult] = useState<{ key: string; stats: Stats | null; error: string } | null>(null)
@@ -221,7 +220,9 @@ export function QuizStats({ date, token }: { date: string; token?: string }) {
 
   return (<>
     <div className="stats logbook-stats">
+      <span className="stat"><small>STARTED</small>{stats.started}</span>
       <span className="stat"><small>FINISHED</small>{finished}</span>
+      <span className="stat"><small>AVG POINTS</small>{stats.avg_points ?? '—'}</span>
       <span className="stat"><small>QUESTIONS</small>{stats.questions.length}</span>
       <span className="stat"><small>STATUS</small>{stats.published ? 'live' : 'draft'}</span>
     </div>
@@ -243,7 +244,7 @@ export function QuizStats({ date, token }: { date: string; token?: string }) {
         <summary>
           <span className="said">{question.position}. {question.prompt}
             <small>{question.answered} answered · {question.skipped} skipped
-              · {question.correct} correct</small>
+              · {question.correct} correct · {question.avg_points ?? '—'} pts avg</small>
           </span>
           <span className="more" aria-hidden="true" />
         </summary>
@@ -274,20 +275,117 @@ export function QuizStats({ date, token }: { date: string; token?: string }) {
   </>)
 }
 
-/** The admin screen's own way in: a typed date rather than the editor's calendar,
- *  which lives in Editor.tsx and would make the two files circle each other. */
+/** A range of days at once, newest first; picking a day opens its per-question
+ *  numbers underneath. Dates are typed rather than the editor's calendar, which
+ *  lives in Editor.tsx and would make the two files circle each other. */
 function StatsTab({ token }: { token?: string }) {
-  const [typed, setTyped] = useState('')
-  const date = parseDate(typed)
+  const now = new Date().toISOString().slice(0, 10)
+  const [typedFrom, setTypedFrom] = useState(formatDate(shiftDay(now, -29)))
+  const [typedTo, setTypedTo] = useState(formatDate(now))
+  const [day, setDay] = useState('')
+  const [result, setResult] = useState<{ key: string; stats: RangeStats | null; error: string } | null>(null)
+  const from = parseDate(typedFrom), to = parseDate(typedTo)
+  const key = from && to ? `${from}:${to}` : ''
+
+  useEffect(() => {
+    if (!key) return
+    let live = true
+    const timer = setTimeout(() => {
+      getRangeStats(from, to, 20, token)
+        .then(stats => { if (live) setResult({ key, stats, error: '' }) })
+        .catch((cause: unknown) => { if (live) setResult({ key, stats: null, error: wall(cause) }) })
+    }, 250)
+    return () => { live = false; clearTimeout(timer) }
+  }, [key, from, to, token])
+
+  const stats = result?.key === key ? result.stats : null
+  const error = result?.key === key ? result.error : ''
+
   return (<>
     <div className="rule">
-      <label className="grow">Which day
-        <input value={typed} onChange={e => setTyped(e.target.value)} inputMode="numeric"
+      <label className="grow">From
+        <input value={typedFrom} onChange={e => setTypedFrom(e.target.value)} inputMode="numeric"
                placeholder="dd.mm.yyyy" maxLength={10}
-               aria-invalid={!typed || date ? undefined : true} /></label>
+               aria-invalid={from ? undefined : true} /></label>
+      <label className="grow">To
+        <input value={typedTo} onChange={e => setTypedTo(e.target.value)} inputMode="numeric"
+               placeholder="dd.mm.yyyy" maxLength={10}
+               aria-invalid={to ? undefined : true} /></label>
     </div>
-    {date ? <QuizStats date={date} token={token} />
-          : <p className="meta">Type a date as dd.mm.yyyy to read its numbers.</p>}
+
+    {!key && <p className="meta">Type both dates as dd.mm.yyyy, at most a year apart.</p>}
+    {error && <p className="notice" role="alert">{error}</p>}
+    {key && !stats && !error && <p role="status">Reading the flight recorder…</p>}
+
+    {stats && (<>
+      <div className="stats logbook-stats">
+        <span className="stat"><small>DAYS</small>{stats.days}</span>
+        <span className="stat"><small>PLAYERS</small>{stats.players}</span>
+        <span className="stat"><small>SIGNED IN</small>{stats.accounts}</span>
+        <span className="stat"><small>STARTED</small>{stats.started}</span>
+        <span className="stat"><small>FINISHED</small>{stats.finished}</span>
+        <span className="stat"><small>AVG POINTS</small>{stats.avg_points ?? '—'}</span>
+      </div>
+
+      {stats.per_day.length === 0
+        ? <p className="meta">No quiz days in that range.</p>
+        : <div className="rows-scroll">
+            <table className="rows">
+              <thead><tr>
+                <th className="plain">day</th><th className="plain">started</th>
+                <th className="plain">finished</th><th className="plain">avg pts</th>
+                <th className="plain">best</th><th className="plain">ceiling</th>
+              </tr></thead>
+              <tbody>
+                {stats.per_day.map(one => (
+                  <tr key={one.quiz_date}>
+                    <td>
+                      <button className="chip" type="button" aria-pressed={day === one.quiz_date}
+                              onClick={() => setDay(day === one.quiz_date ? '' : one.quiz_date)}>
+                        {formatDate(one.quiz_date)}{one.published ? '' : ' · draft'}
+                      </button>
+                    </td>
+                    <td>{one.started}</td>
+                    <td>{one.finished}</td>
+                    <td>{one.avg_points ?? '—'}</td>
+                    <td>{one.best ?? '—'}</td>
+                    <td>{one.max_points}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>}
+
+      {day && (<>
+        <h3>{formatDate(day)}</h3>
+        <QuizStats date={day} token={token} />
+      </>)}
+
+      <h3>Most given answers</h3>
+      {stats.top_answers.length === 0
+        ? <p className="meta">Nobody answered anything in that range.</p>
+        : <div className="rows-scroll">
+            <table className="rows">
+              <thead><tr>
+                <th className="plain">answer</th><th className="plain">guesses</th>
+                <th className="plain">questions</th><th className="plain">accepted on</th>
+              </tr></thead>
+              <tbody>
+                {stats.top_answers.map(answer => (
+                  <tr key={answer.display}>
+                    <td>{answer.display}</td>
+                    <td>{answer.guesses}</td>
+                    <td>{answer.questions}</td>
+                    <td>{answer.accepted}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>}
+      <p className="meta">Players count browsers; signed in counts the accounts behind them.
+        Averages are over finished flights. Answers are grouped by their spelling once
+        accents, case and punctuation are dropped.</p>
+    </>)}
   </>)
 }
 

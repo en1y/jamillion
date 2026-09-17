@@ -193,6 +193,26 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert api('/api/quizzes/1999-01-01/stats', token=ADMIN)[0] == 404
         assert api(f'/api/quizzes/{QUIZ_DATE}/stats', token=MOD)[0] == 403
         assert api(f'/api/quizzes/{QUIZ_DATE}/stats')[0] == 401
+        assert (stats['started'], stats['avg_points']) == (3, '20.0'), stats
+        assert one['avg_points'] == '20.0', one          # 30 + 30 + a skip
+
+        # -------------------------------------------------- stats over a range
+        status, span, _ = api(f'/api/stats?from={QUIZ_DATE}&to={QUIZ_DATE}', token=ADMIN)
+        assert status == 200, (status, span)
+        assert (span['days'], span['started'], span['finished'], span['players'], span['accounts'],
+                span['avg_points']) == (1, 3, 3, 3, 1, '20.0'), span
+        assert span['per_day'] == [{'quiz_date': QUIZ_DATE, 'published': False, 'max_points': 700,
+                                    'started': 3, 'finished': 3, 'avg_points': '20.0', 'best': 30}], span
+        assert span['top_answers'] == [{'display': 'OK Computer', 'guesses': 2, 'questions': 1,
+                                        'accepted': 1}], span['top_answers']
+        _, empty_span, _ = api('/api/stats?from=1999-01-01&to=1999-01-31', token=ADMIN)
+        assert (empty_span['days'], empty_span['started'], empty_span['avg_points'],
+                empty_span['per_day'], empty_span['top_answers']) == (0, 0, None, [], [])
+        for bad in ('from=2026-02-01', 'from=2026-02-02&to=2026-02-01', 'from=2026-02-01&to=2026-02-31',
+                    'from=2026-01-01&to=2027-01-03', 'from=nope&to=2026-01-01'):
+            assert api('/api/stats?' + bad, token=ADMIN)[0] == 400, bad
+        assert api(f'/api/stats?from={QUIZ_DATE}&to={QUIZ_DATE}', token=MOD)[0] == 403
+        assert api(f'/api/stats?from={QUIZ_DATE}&to={QUIZ_DATE}')[0] == 401
 
         # -------------------------------------------------- raw table view
         status, tables, _ = api('/api/tables', token=ADMIN)
@@ -283,6 +303,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
 
         print('PASS: user listing with filters, role changes taking effect at once, the last admin'
               ' protected from demotion and deletion, per-question stats with the height histogram,'
+              ' stats over a date range,'
               ' the allowlisted table dump, tier editing that leaves awarded points alone,'
               ' account deletion keeping the flights and releasing the quiz,'
               ' and an admin-only day deletion that cascades')
