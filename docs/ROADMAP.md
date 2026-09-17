@@ -115,7 +115,7 @@ Decisions worth carrying forward:
 
 - [x] Post-flight screen matches Krillion's landing: score curve of today's pilots, a 7-question flight log, the bearing (what the total points mean), copy result by flight number not date, the haul with every accepted answer and its rarity blurb, a local logbook, a countdown to the 04:00 UTC next flight, a GitHub bug link, and a prompt-idea field.
 - [x] Long answers wrap; the page never scrolls sideways.
-- [x] `GET /api/quiz/today` carries `flight_no` (count of published quizzes up to today). Share text is `JAMILLION #N`.
+- [x] `GET /api/quiz/today` carries `flight_no` (count of published quizzes up to today). Share text is `Jamillion #N`.
 - [x] Reveal adds the day's score histogram (`dist`, 36 bins of 20 points) and `better_than`.
 - [x] `POST /api/ideas` stores a prompt idea (3–160 characters, three per game day). `question_ideas` is service-role only.
 
@@ -518,6 +518,29 @@ The same flight, on a phone that can keep up with it.
 - [x] No review queue. `submit_answer()` only bumps `guess_count` on a row the key
       already holds; a guess outside it scores 0 and leaves no `question_answers` row.
       The old `is_correct IS NULL` rows are deleted and the column is `NOT NULL`.
+- [x] A rarest answer is one of the key's answers or none: `match_answer()` corrects
+      a slip in the spelling to the answer it meant, and an answer it cannot place
+      is refused with 422 instead of landing as a guess worth nothing.
+
+Decisions worth carrying forward:
+
+- **The typo is corrected, the stranger is refused.** One slip per six characters,
+  exact under four, so "blue oyester cult" scores Blue Oyster Cult while a neighbour
+  on the same key stays out of reach. `submit_answer()` runs the same match, so what
+  the player is told and what they are paid agree.
+- **The card leaves only once the answer is in.** The exit used to start with the
+  press and be reversed on a refusal, so the question and the box flew out and came
+  back. The half-second exit now runs after the tower takes the answer, which costs
+  a local round trip before the animation and keeps a refusal completely still. The
+  notice is not cleared on the press either: it stands until something changes it --
+  the text, a box that got through, an answer the tower took, or the clock -- because
+  clearing it first made it blink once per press.
+- **A refusal costs nothing.** No `attempt_answers` row, no guess count, the question
+  is still the current one, and the clock still ends the question with whatever is in
+  the box -- an unplaceable answer then lands blank, like a skip.
+- **This does tell a player their answer is not on the list**, which v0.8.1 refused to
+  do for the catalog check. It is what Krillion does and what was asked for: a 0-point
+  guess nobody could review is worse than knowing.
 
 Decisions worth carrying forward:
 

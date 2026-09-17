@@ -85,7 +85,7 @@ No secrets go into any file. The JWT secret and database password are generated 
 
 **The scene is the page.** A persistent solar system sits behind everything, the camera follows the rocket as it climbs, the planets scroll past, and the whole thing is drawn with rendered planets, flat discs or a bare chart, your choice in the cabin. The sounds are synthesised in the browser: a blip when a question arrives, an arpeggio that climbs as far as the tier you hit, a fanfare on landing.
 
-**After landing** you get the day's score curve, a seven-row flight log, your bearing, a share text keyed by flight number (`JAMILLION #12`), a logbook with your streak, and a countdown to the next flight.
+**After landing** you get the day's score curve, a seven-row flight log, your bearing, a share text keyed by flight number (`Jammillion #12`), a logbook with your streak, and a countdown to the next flight.
 
 ## The flight deck
 
@@ -93,6 +93,7 @@ Everything a moderator or admin needs lives in the app. No curl, no SQL.
 
 - **The editor** (`/editor`) writes a day as seven cards. A song question is picked out of the catalog, its clip decoded into a waveform, and the snippet window dragged straight onto it. Picking a track writes the answer key for you: one row per field the question asks for, every combination generated on the way out and folded back up on the way in.
 - **The catalog query** answers the questions a moderator actually writes. "Every Adele song over a million listens" and "British bands formed before 1980" are a stack of filters and sorts over 35 allowlisted columns, and the results become accepted answers in one press. Spread the rarity ladder over the list, take it back out, set any answer to zero points.
+- **Answers are matched, not just compared.** A typo lands on the answer it meant; something the day's answer list does not hold at all is refused on the spot, so it never becomes a guess worth nothing.
 - **The answers list** appears once a day has been flown. Points are frozen at answer time, so the day freezes too: every accepted answer with how many gave it, accept, reject, retier, merge one spelling into another. A guess outside the key is never stored, so there is nothing to review. A ruling re-scores only the pilots who gave that answer.
 - **Ground control** (`/admin`) is the admin's: everyone aboard with roles, the day's numbers, the rarity ladder edited in place, and a read-only window on the tables.
 

@@ -223,10 +223,17 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert answer(cookie, attempt_id, questions[1], 'Kid A')[0] == 409     # already answered
 
         # -------------------------------------------------- unknown, skip, timeout
+        # An answer the key cannot place is refused outright, and costs no guess:
+        # nothing is stored, and the question is still the current one afterwards.
         status, body = answer(cookie, attempt_id, questions[2], 'Something nobody wrote')
-        assert body['result']['points'] == 0 and body['result']['correct'] is False, body
+        assert status == 422, (status, body)
+        assert not db.execute('SELECT 1 FROM attempt_answers WHERE attempt_id = %s AND question_id = %s',
+                              (attempt_id, questions[2])).fetchone(), 'a refused answer costs no guess'
         assert not db.execute('SELECT 1 FROM question_answers WHERE question_id = %s AND normalized = %s',
                               (questions[2], 'something nobody wrote')).fetchone(), 'a wrong guess is not stored'
+
+        status, body = answer(cookie, attempt_id, questions[2], '')            # deliberate skip
+        assert body['result']['points'] == 0 and body['result']['timed_out'] is False
 
         status, body = answer(cookie, attempt_id, questions[3], '')            # deliberate skip
         assert body['result']['points'] == 0 and body['result']['timed_out'] is False
@@ -240,8 +247,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert body['total_points'] == 30
 
         # -------------------------------------------------- finish, with the song
-        status, body = answer(cookie, attempt_id, questions[5], 'Answer 5')
-        assert body['result']['points'] == 10 and body['total_points'] == 40
+        # One slip in the spelling is corrected to the answer it meant, and scores it.
+        status, body = answer(cookie, attempt_id, questions[5], 'Answr 5')
+        assert body['result']['points'] == 10 and body['total_points'] == 40, body
+        assert db.execute('SELECT guess_count FROM question_answers WHERE question_id = %s AND normalized = %s',
+                          (questions[5], 'answer 5')).fetchone()[0] == 1, 'the typo counted as the answer'
         status, served = serve(cookie)                                    # the album question
         assert served['question']['qtype'] == 'album' and served['question']['cover'], served['question']
         assert served['question']['ask_artist'] is False and served['question']['ask_title'] is True

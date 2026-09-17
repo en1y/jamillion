@@ -611,7 +611,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   const fields = fieldsFor(question)
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
-  const [unknown, setUnknown] = useState(false)
+  const [unknown, setUnknown] = useState('')   // what the tower would not take, in its own words
   const [leaving, setLeaving] = useState(false)   // the card drifts off and the HUD sinks while the tower answers
   const sent = useRef(false)
   // The fields are asked one at a time: three boxes at once was three questions
@@ -634,26 +634,30 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
    *  when the box was parked and the next one is due. */
   async function post(all: Record<string, string>, settle: boolean, expired = false): Promise<boolean> {
     if (sent.current) return false
-    if (settle) { sent.current = true; setLeaving(true) }
+    if (settle) sent.current = true          // one press settles it; the rest bounce off
     sfx(settle ? 'send' : 'type')
     const value = (all[field.key] ?? '').trim()
     try {
-      // The exit takes half a second whether or not the server is quicker; parking a
-      // box has no exit to wait for.
-      const [reply] = await Promise.all([
-        question.qtype === 'rarest' ? submitAnswer(attemptId, question.id, join(all), token)
-                                    : submitField(attemptId, question.id, field.key, value, settle, token),
-        settle ? new Promise(done => setTimeout(done, 500)) : Promise.resolve(),
-      ])
-      if ('result' in reply) { onAnswered(reply, join(all), expired); return false }
+      const reply = question.qtype === 'rarest'
+        ? await submitAnswer(attemptId, question.id, join(all), token)
+        : await submitField(attemptId, question.id, field.key, value, settle, token)
+      // The card leaves once the answer is in, never before: an answer the tower
+      // will not take has to find the question and the box still there. The exit
+      // then takes its half second, whether or not the tower was quicker.
+      if ('result' in reply) {
+        setLeaving(true)
+        await new Promise(done => setTimeout(done, 500))
+        onAnswered(reply, join(all), expired)
+        return false
+      }
+      setUnknown('')          // the box got through: nothing is refused any more
       return true
     } catch (cause) {
       sent.current = false
-      setLeaving(false)
       // Not a catalog name. The clock does not wait for a fix: the box goes blank.
       if (cause instanceof ApiError && cause.status === 422) {
         if (expired) return post({ ...all, [field.key]: '' }, settle, expired)
-        setUnknown(true)
+        setUnknown(cause.message)
         return false
       }
       // A refresh that raced the timer: the server has moved on, so ask it where we are.
@@ -672,6 +676,8 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   /** True when this field holds something the music catalog does not know. False on
    *  a rarest question (no kind to check), on an empty field (a deliberate skip), and
    *  whenever the check itself fails -- the server checks again on the way in. */
+  const unknownName = `No ${field.label} by that name in the catalog — pick one from the list, or skip.`
+
   async function unrecognised(value: string): Promise<boolean> {
     if (!field.kind || !value) return false
     try { return !(await isKnown(field.kind, value, { question: question.id, field: field.key })).known } catch { return false }
@@ -684,15 +690,13 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     if (fields.length < 2 || to === step || to < 0 || to >= fields.length) return
     const all = { ...values, [field.key]: (values[field.key] ?? '').trim() }
     setValues(all)
-    if (await unrecognised(all[field.key])) return setUnknown(true)
-    setUnknown(false)
+    if (await unrecognised(all[field.key])) return setUnknown(unknownName)
     if (await post(all, false)) setStep(to)
   }
 
   /** This field is settled: park it, then on to the next one or off to the verdict. */
   async function advance(all: Record<string, string>) {
     setValues(all)
-    setUnknown(false)
     if (await post(all, finale) && !finale) setStep(step + 1)
   }
 
@@ -701,7 +705,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     if (sent.current) return
     const value = (values[field.key] ?? '').trim()
     // Only catalog names go: pick one from the list. The server refuses the rest too.
-    if (await unrecognised(value)) return setUnknown(true)
+    if (await unrecognised(value)) return setUnknown(unknownName)
     void advance({ ...values, [field.key]: value })
   }
 
@@ -738,9 +742,9 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
                     <span className="slot-label">{slot.label}</span>
                     {i === step ? (
                       <Input key={slot.key} question={question.id} field={slot} value={values[slot.key] ?? ''} autoFocus
-                             invalid={unknown} hint={finale ? 'send' : 'next'}
+                             invalid={!!unknown} hint={finale ? 'send' : 'next'}
                              onLeave={direction => void go(step + direction)}
-                             onChange={value => { setUnknown(false); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
+                             onChange={value => { setUnknown(''); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
                     ) : (
                       <button type="button" className="slot-said" onClick={() => void go(i)}>
                         {said || <i>empty</i>}
@@ -753,8 +757,9 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
           </div>
         ) : (
           <div className="fields">
-            <Input key={field.key} question={question.id} field={field} value={values[field.key] ?? ''} autoFocus invalid={unknown}
-                   onChange={value => { setUnknown(false); setValues(prev => ({ ...prev, [field.key]: value })) }} />
+            <Input key={field.key} question={question.id} field={field} value={values[field.key] ?? ''} autoFocus
+                   invalid={!!unknown}
+                   onChange={value => { setUnknown(''); setValues(prev => ({ ...prev, [field.key]: value })) }} />
           </div>
         )}
         <button className="cta" type="submit">{finale ? 'ANSWER ▲' : 'NEXT ▼'}</button>
@@ -767,11 +772,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
           {finale ? ' · ANSWER sends the question' : ` · ${fields.length - step - 1} more before it is sent`}
         </p>
       )}
-      {unknown && (
-        <p className="notice" role="alert">
-          No {field.label} by that name in the catalog — pick one from the list, or skip.
-        </p>
-      )}
+      {unknown && <p className="notice" role="alert">{unknown}</p>}
       {error && <p className="notice" role="alert">{error}</p>}
     </div>
   </>)
@@ -825,7 +826,6 @@ function Verdict({ result, raw, expired, points, max, tiers, last, leaving, onNe
             ))}
           </ul>
         )}
-        {result.correct && result.tier && TIER_META[result.tier] && <p className="meta">{TIER_META[result.tier].blurb}</p>}
         {!result.correct && said && <p className="meta">A moderator may still accept it.</p>}
         <button className="cta" type="button" autoFocus onClick={() => { sfx('click'); onNext() }}>{last ? 'SEE RESULTS ▲' : 'NEXT ▲'}</button>
       </div>

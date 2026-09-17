@@ -623,6 +623,15 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
                                       "normalize_answer(qa.display) = normalize_answer($5)", incoming)).empty())
                 co_return auth::error(k422UnprocessableEntity, "Not in the catalog: pick a name from the list");
         }
+        // A rarest answer is one of the key's answers or none: match_answer() corrects
+        // a slip in the spelling to the answer it meant, and what it cannot place at
+        // all is said so instead of landing as a guess worth nothing.
+        if (asked.empty() && !trimmed(incoming).empty()) {
+            const auto placed = co_await db->execSqlCoro(
+                "SELECT match_answer($1::bigint, $2) IS NOT NULL AS placed", questionId, incoming);
+            if (!placed[0]["placed"].as<bool>())
+                co_return auth::error(k422UnprocessableEntity, "No such answer — check the spelling, or skip");
+        }
         if (!asked.empty()) {
             // Past the timer the box being typed arrives blank -- the clock takes it,
             // not the ones already in the envelope. A box can be retyped until the
