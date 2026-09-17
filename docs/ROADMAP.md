@@ -504,6 +504,30 @@ The same flight, on a phone that can keep up with it.
 - [x] Released images: v1.0.1's backend image was re-pushed with the
       character-count fix, which this tag carries too.
 
+## v1.0.3 — Picked, not typed
+
+- [x] Song and album boxes take catalog names only. The client refuses an unknown
+      name every time (no second press sends it), and `POST /api/attempts/{id}/answers`
+      answers 422 for a box that is not an artist, track or album title in the catalog.
+      Blank is still a skip; at zero the clock sends an unknown box blank.
+- [x] `/api/suggest` matches names that start with what is typed, not ones that
+      contain it, from the third character; `%` and `_` are literal.
+- [x] Names the moderator accepted for a box count as known and are hinted first,
+      even when the catalog does not hold them: `/api/suggest` and `/api/known` take
+      `question=` and `field=`, and the answer route checks the same list.
+- [x] No review queue. `submit_answer()` only bumps `guess_count` on a row the key
+      already holds; a guess outside it scores 0 and leaves no `question_answers` row.
+      The old `is_correct IS NULL` rows are deleted and the column is `NOT NULL`.
+
+Decisions worth carrying forward:
+
+- **This reverses v0.8.1's "refuses once, not forever".** A right answer the catalog
+  lacks is still reachable, because the moderator's accepted names are on the list.
+- **Custom names are the answer key, so they are scoped hard.** Only to the player
+  holding the passport, only for the question they have been served and not settled,
+  only for a box that question asks. They cost a guess of three letters to surface,
+  which is the price of making them typeable at all. Rarest questions are unchanged.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).

@@ -241,8 +241,11 @@ The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST
 tail -f data/seed.log
 ```
 
-Signed-in moderators and admins see a run progress card in the flight deck: artists processed, current artist, failures and catalog size. It refreshes every ten seconds. `GET /api/seeder` is the staff-only status endpoint behind the card and returns counts and run state, never catalog keys or raw logs.
-From the same card, staff can retry a failed artist, enter any artist name to refresh it, or rerun the top-N chart. `POST /api/seeder` accepts either `{"artist":"Radiohead"}` or `{"limit":500}`. A second run is refused while one is active. Artist runs leave chart rank unchanged.
+Signed-in moderators and admins get a **catalog dashboard** at `/catalog` (the `catalog` chip in the dock, and a one-line link from the flight deck): catalog size, the state of the current or last run, and the gaps -- artists that failed, with the reason and how many attempts they have had, and artists whose row exists with no tracks under it. It refreshes every twenty seconds, every five while a run is moving. `GET /api/seeder` is the staff-only endpoint behind it and returns counts, run state, failures and empty artists, never catalog keys or raw logs.
+
+From the dashboard, staff tick any of those gaps and retry them **in one run**, paste a list of names to run, or rerun the top-N chart. `POST /api/seeder` accepts either `{"artists":["Radiohead","Bjork"]}` (1-200 names) or `{"limit":500}`. A second run is refused while one is active. Artist runs leave chart rank unchanged. `DELETE /api/seeder/failures` with the same `artists` list drops failures nobody intends to chase; seeding one again puts it back if it fails again.
+
+Failures live in `catalog_failures` (name, reason, attempts, last try), written by the seeder and deleted the moment that artist lands, so the list survives restarts and reruns instead of vanishing with the run that produced it.
 
 Each run starts a fresh log and keeps the previous one as `data/seed.log.prev`. If the seeder dies in its first seconds (bad flag, missing key, database down) the script prints the log and exits 1 instead of leaving it to be discovered later. It also refuses to start a second seeder while one is running:
 
@@ -599,7 +602,7 @@ curl 'localhost:8080/api/known?kind=artist&q=Radiohed'
 {"known": false}
 ```
 
-On a song or album question the client checks each filled field with this before spending the guess. An unrecognised name is refused once, with the field outlined and a line under the fields saying to check the spelling **or press ANSWER again to send it as is**. The second press goes through unchanged, because the catalog is the top artists rather than every recording and a correct answer it has never heard of must not be trapped; the guess still lands in the moderator review queue with `is_correct` null. Rarest questions are never checked (there is nothing to check them against), an empty field is still a skip, and the timer is untouched: when it reaches zero whatever is typed is submitted, checked or not. If `/api/known` itself fails the answer goes through — a catalog hiccup must never eat a guess.
+On a song or album question the client checks each filled field with this before spending the guess. An unrecognised name is refused every time, with the field outlined: pick a name from the list or skip. The answer route refuses it too (422). Names the moderator accepted for the box count as known, so a right answer the catalog lacks is still reachable. Rarest questions are never checked (there is nothing to check them against), an empty field is still a skip, and the timer is untouched: when it reaches zero whatever is typed is submitted, checked or not. If `/api/known` itself fails the answer goes through — a catalog hiccup must never eat a guess.
 
 **Audio.** `GET /api/audio/{question_id}` streams the cached clip for a song question, and takes a question id rather than a track id on purpose: `tracks` is readable with the anon key, so publishing a track id would give the answer away. It serves the whole 30 s preview and the client plays the `snippet_start_sec` window. Seeking to that offset needs the clip's metadata first, so the frontend waits for `loadedmetadata` before it seeks and plays; setting `currentTime` earlier is silently dropped and the clip would start at zero and give the intro away. It answers 404 for anything that is not a published song question from today or earlier.
 
@@ -625,7 +628,7 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080/api/quizzes/2026-09
                 "is_correct": null, "tier_id": null, "guess_count": 2}]}]}
 ```
 
-`is_correct` is `null` for a guess nobody has ruled on yet, which is exactly the review queue. A malformed date is 400, an unused one 404.
+The answers are the key the editor wrote; a player's guess outside it is never stored. A malformed date is 400, an unused one 404.
 
 **Publish or unpublish.** Question edits still go through re-POSTing an unplayed quiz; this route only flips the switch.
 
@@ -634,7 +637,7 @@ curl -X PATCH localhost:8080/api/quizzes/2026-09-08 -H "Authorization: Bearer $A
   -H 'Content-Type: application/json' -d '{"published": false}'
 ```
 
-**Rule on an answer.** `is_correct` takes `true`, `false` or `null` (back to awaiting review), and `tier_id` sets or clears the override that beats the computed share. A key left out of the body keeps its current value, so `{"tier_id": 4}` alone does not disturb the verdict.
+**Rule on an answer.** `is_correct` takes `true` or `false`, and `tier_id` sets or clears the override that beats the computed share. A key left out of the body keeps its current value, so `{"tier_id": 4}` alone does not disturb the verdict.
 
 ```bash
 curl -X PATCH localhost:8080/api/answers/408 -H "Authorization: Bearer $ACCESS_TOKEN" \
