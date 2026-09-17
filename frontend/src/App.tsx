@@ -171,7 +171,6 @@ function App() {
            aria-label={`${au.toFixed(1)} AU, past ${passed(au)}, ${points} points`}>
         <span className="gauge alt"><small>ALTITUDE</small><b>{altitudeAu(ticking, max).toFixed(1)} AU</b></span>
         <span className="gauge score"><small>SCORE</small><b>{ticking}</b></span>
-        <Legs au={altitudeAu(ticking, max)} max={max} />
       </div>
     )}
     <main className={flying ? 'flying' : undefined}>
@@ -189,6 +188,7 @@ function App() {
             : <a className="chip" href="/account">{passport}</a>}
         </span>
       </header>
+      {today && !away && <Legs au={altitudeAu(ticking, max)} max={max} />}
       <Settings open={settings} onClose={() => setSettings(false)} />
 
       {setup ? (

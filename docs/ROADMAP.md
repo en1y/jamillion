@@ -473,6 +473,22 @@ Decisions worth carrying forward:
 - **`docs/README.md` is gone.** GitHub shows the root README and nothing else,
   and two READMEs is two places for one sentence to go stale.
 
+## v1.0.1 — Phones
+
+The same flight, on a phone that can keep up with it.
+
+- [x] The scene is `100lvh` tall instead of `inset: 0`: the URL bar showing and
+      hiding on scroll no longer moves the Sun and the rocket or re-scatters the stars.
+- [x] Mobile Firefox stops stuttering: the Sun breathes through the opacity of a
+      second glow instead of an animated 700px shadow, the starfield paints at 1x on
+      a touch screen and no longer measures the camera every frame, the prompt card
+      and its exit lose their blurs, the flame flickers by scale instead of height.
+- [x] Song questions fit a phone: the artist and title boxes take the whole row,
+      and the snippet drops its volume knob (the phone has keys; the gear has the knob).
+- [x] The distance to the planet behind and the one ahead sits under the header,
+      not under the gauges.
+- [x] A favicon: the ✦ from the header, in flare gold.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).

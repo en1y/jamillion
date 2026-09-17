@@ -43,12 +43,12 @@ docker compose down                 # remove the containers, keep the data
 docker compose down -v              # wipe: database, secrets, keys, audio, certificates
 ```
 
-An update pulls new images and restarts; the `migrate` one-shot applies whatever migrations the new database image carries, and the data, secrets and keys stay where they are. Pin a release with `JAMILLION_VERSION=1.0.0 docker compose up -d` instead of following `latest`.
+An update pulls new images and restarts; the `migrate` one-shot applies whatever migrations the new database image carries, and the data, secrets and keys stay where they are. Pin a release with `JAMILLION_VERSION=1.0.1 docker compose up -d` instead of following `latest`.
 
 The backend's startup summary is the first thing to read when something looks wrong:
 
 ```
-jamillion 1.0.0 is up
+jamillion 1.0.1 is up
 
     open         http://localhost:8000
     first run    nobody has set it up yet -- open http://localhost:8000 to create the admin account and start the catalog
@@ -164,7 +164,7 @@ docker compose -f compose.yaml -f compose.build.yaml up --build -d
 
 # publish a release: the version from backend/CMakeLists.txt, and latest
 docker login
-for tag in 1.0.0 latest; do
+for tag in 1.0.1 latest; do
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
 done

@@ -88,8 +88,11 @@ function Starfield({ au }: { au: number }) {
     let width = 0, height = 0, far: Star[] = [], mid: Star[] = [], near: Star[] = []
     let comet: Comet | null = null, wait = rand(400, 1800), last = performance.now(), raf = 0
 
+    // A phone paints the sky at 1x: a canvas redrawn every frame at 2-3x is what
+    // made mobile Firefox stutter, and a star is a dot either way.
+    const dpr = matchMedia('(pointer: coarse)').matches ? 1 : Math.min(devicePixelRatio || 1, 2)
     function resize() {
-      const dpr = Math.min(devicePixelRatio || 1, 2)
+      if (node!.clientWidth === width && node!.clientHeight === height) return
       width = node!.clientWidth
       height = node!.clientHeight
       node!.width = Math.max(1, Math.round(width * dpr))
@@ -126,11 +129,12 @@ function Starfield({ au }: { au: number }) {
     const tile = document.createElement('canvas')
     const tctx = tile.getContext('2d')!
     let s = 1, cx = 0, cy = 0
+    // The camera sits at a fixed point of the scene (CSS: left 50%, bottom --pin),
+    // so its position is arithmetic; measuring it forced a layout every frame.
     function lens() {
       s = Math.min(1, (cam && parseFloat(getComputedStyle(cam).scale)) || 1)
-      const at = cam?.getBoundingClientRect(), box = node!.getBoundingClientRect()
-      cx = at ? at.left - box.left : width / 2
-      cy = at ? at.top - box.top : height / 2
+      cx = width / 2
+      cy = height * 0.48
     }
     function paint(g: CanvasRenderingContext2D, stars: Star[], now: number, boost: number) {
       const floor = 0.4 / s   // a star never paints under 0.4 screen px
@@ -161,7 +165,6 @@ function Starfield({ au }: { au: number }) {
     function sky(now: number, boost: number) {
       lens()
       if (s > 0.999) { paint(ctx!, far, now, boost); paint(ctx!, mid, now, boost); paint(ctx!, near, now, boost); return }
-      const dpr = Math.min(devicePixelRatio || 1, 2)
       const tw = Math.max(1, Math.round(width * s * dpr)), th = Math.max(1, Math.round(height * s * dpr))
       if (tile.width !== tw || tile.height !== th) { tile.width = tw; tile.height = th }
       tctx.setTransform(tw / width, 0, 0, th / height, 0, 0)
