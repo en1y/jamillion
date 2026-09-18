@@ -628,6 +628,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const [unknown, setUnknown] = useState('')   // what the tower would not take, in its own words
+  const [meant, setMeant] = useState('')       // the key's nearest answer to what was typed
   const [leaving, setLeaving] = useState(false)   // the card drifts off and the HUD sinks while the tower answers
   const sent = useRef(false)
   // The fields are asked one at a time: three boxes at once was three questions
@@ -655,7 +656,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     const value = (all[field.key] ?? '').trim()
     try {
       const reply = free
-        ? await submitAnswer(attemptId, question.id, join(all), token)
+        ? await submitAnswer(attemptId, question.id, join(all), token, expired)
         : await submitField(attemptId, question.id, field.key, value, settle, token)
       // The card leaves once the answer is in, never before: an answer the tower
       // will not take has to find the question and the box still there. The exit
@@ -670,10 +671,11 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
       return true
     } catch (cause) {
       sent.current = false
-      // Not a catalog name. The clock does not wait for a fix: the box goes blank.
+      // Not a catalog name, or a free answer the key nearly holds. The clock does
+      // not wait for a fix: past it the box goes blank, or goes as it stands.
       if (cause instanceof ApiError && cause.status === 422) {
         if (expired) return post({ ...all, [field.key]: '' }, settle, expired)
-        setUnknown(cause.message)
+        if (cause.meant) setMeant(cause.meant); else setUnknown(cause.message)
         return false
       }
       // A refresh that raced the timer: the server has moved on, so ask it where we are.
@@ -760,7 +762,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
                       <Input key={slot.key} question={question.id} field={slot} value={values[slot.key] ?? ''} autoFocus
                              invalid={!!unknown} hint={finale ? 'send' : 'next'} help={question.hints}
                              onLeave={direction => void go(step + direction)}
-                             onChange={value => { setUnknown(''); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
+                             onChange={value => { setUnknown(''); setMeant(''); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
                     ) : (
                       <button type="button" className="slot-said" onClick={() => void go(i)}>
                         {said || <i>empty</i>}
@@ -775,7 +777,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
           <div className="fields">
             <Input key={field.key} question={question.id} field={field} value={values[field.key] ?? ''} autoFocus
                    invalid={!!unknown} help={question.hints}
-                   onChange={value => { setUnknown(''); setValues(prev => ({ ...prev, [field.key]: value })) }} />
+                   onChange={value => { setUnknown(''); setMeant(''); setValues(prev => ({ ...prev, [field.key]: value })) }} />
           </div>
         )}
         <button className="cta" type="submit">{finale ? 'ANSWER ▲' : 'NEXT ▼'}</button>
@@ -786,6 +788,19 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
         <p className="reel-hint">
           box {step + 1} of {fields.length} · ↑↓ or ▲▼ to move
           {finale ? ' · ANSWER sends the question' : ` · ${fields.length - step - 1} more before it is sent`}
+        </p>
+      )}
+      {/* The box was refused, but the key holds something close to what was typed, so
+          the tower asks instead of just saying no: take it, or go back to the box and
+          fix it. Only the clock can send an answer the key cannot place. */}
+      {meant && (
+        <p className="notice meant" role="alert">
+          Did you mean <b>{meant}</b>?
+          <button className="chip" type="button"
+                  onClick={() => { setMeant(''); void advance({ ...values, [field.key]: meant }) }}>
+            yes, {meant}
+          </button>
+          <button className="chip" type="button" onClick={() => setMeant('')}>no, let me fix it</button>
         </p>
       )}
       {unknown && <p className="notice" role="alert">{unknown}</p>}

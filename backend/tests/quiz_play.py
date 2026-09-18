@@ -259,18 +259,39 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['started_at'] and served['question']['deadline'] > served['question']['started_at']
         assert answer(cookie, attempt_id, questions[1], 'Kid A')[0] == 409     # already answered
 
-        # -------------------------------------------------- unknown, skip, timeout
-        # An answer the key cannot place is refused outright, and costs no guess:
-        # nothing is stored, and the question is still the current one afterwards.
+        # -------------------------------------------------- did you mean, skip, timeout
+        # While the clock runs, an answer the key cannot place is refused and costs
+        # nothing: no row, no guess count, the question stays current. A spelling the
+        # key nearly holds is refused with that spelling, so the player is asked
+        # rather than told.
         status, body = answer(cookie, attempt_id, questions[2], 'Something nobody wrote')
-        assert status == 422, (status, body)
+        assert status == 422 and 'did_you_mean' not in body, (status, body)
         assert not db.execute('SELECT 1 FROM attempt_answers WHERE attempt_id = %s AND question_id = %s',
                               (attempt_id, questions[2])).fetchone(), 'a refused answer costs no guess'
         assert not db.execute('SELECT 1 FROM question_answers WHERE question_id = %s AND normalized = %s',
                               (questions[2], 'something nobody wrote')).fetchone(), 'a wrong guess is not stored'
-
-        status, body = answer(cookie, attempt_id, questions[2], '')            # deliberate skip
-        assert body['result']['points'] == 0 and body['result']['timed_out'] is False
+        near = db.execute('SELECT near_answer(%s, %s), match_answer(%s, %s)',
+                          (questions[2], 'Answerr 22', questions[2], 'Answerr 22')).fetchone()
+        assert near == ('Answer 2', None), near        # close enough to ask, too far to assume
+        status, body = answer(cookie, attempt_id, questions[2], 'Answerr 22')
+        assert status == 422 and body['did_you_mean'] == 'Answer 2', (status, body)
+        assert not db.execute('SELECT 1 FROM attempt_answers WHERE attempt_id = %s AND question_id = %s',
+                              (attempt_id, questions[2])).fetchone(), 'the question is not over yet'
+        # The clock is the one thing that sends an answer the key cannot place: it
+        # lands as what it is, a wrong answer worth nothing, with what was typed kept.
+        serve(cookie)
+        status, body, _ = api(f'/api/attempts/{attempt_id}/answers',
+                              {'question_id': questions[2], 'text': 'Answerr 22', 'expired': True}, cookie=cookie)
+        assert status == 200, (status, body)
+        assert {k: v for k, v in body['result'].items() if k != 'answers'} == \
+               {'timed_out': False, 'correct': False, 'tier': None, 'points': 0}, body['result']
+        assert db.execute('SELECT raw_text FROM attempt_answers WHERE attempt_id = %s AND question_id = %s',
+                          (attempt_id, questions[2])).fetchone()[0] == 'Answerr 22'
+        assert not db.execute('SELECT 1 FROM question_answers WHERE question_id = %s AND normalized = %s',
+                              (questions[2], 'answerr 22')).fetchone(), 'a wrong guess is not stored'
+        # The verdict carries the key, so a player learns what would have counted.
+        assert [a['display'] for a in body['result']['answers']] == ['Answer 2'], body['result']['answers']
+        assert body['result']['answers'][0]['yours'] is False, body['result']['answers']
 
         status, body = answer(cookie, attempt_id, questions[3], '')            # deliberate skip
         assert body['result']['points'] == 0 and body['result']['timed_out'] is False

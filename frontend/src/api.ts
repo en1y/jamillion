@@ -76,7 +76,11 @@ export interface Answered extends Progress { result: Result }
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) { super(message); this.status = status }
+  /** 422 on a free box: the key holds this, and it is close to what was typed. */
+  meant?: string
+  constructor(status: number, message: string, meant?: string) {
+    super(message); this.status = status; this.meant = meant
+  }
 }
 
 /** The one fetch wrapper. Exported so moderator.ts reuses it rather than growing
@@ -92,7 +96,8 @@ export async function call<T>(path: string, token?: string, init?: RequestInit):
     },
   })
   const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new ApiError(response.status, body.error || 'The flight deck is not answering. Please retry.')
+  if (!response.ok) throw new ApiError(response.status, body.error || 'The flight deck is not answering. Please retry.',
+                                       body.did_you_mean)
   return body as T
 }
 
@@ -123,10 +128,12 @@ export const startAttempt = (token?: string) =>
   call<Progress>('/api/attempts', token, { method: 'POST' })
 
 /** The one free box of a rarest question, or of a song or album question that asks
- *  for neither name. */
-export const submitAnswer = (attemptId: number, question_id: number, text: string, token?: string) =>
+ *  for neither name. `expired` is the clock sending the box as it stands: nothing is
+ *  refused then, so what the key cannot place lands as the wrong answer it is. */
+export const submitAnswer = (attemptId: number, question_id: number, text: string, token?: string,
+                             expired = false) =>
   call<Answered>(`/api/attempts/${attemptId}/answers`, token,
-    { method: 'POST', body: JSON.stringify({ question_id, text }) })
+    { method: 'POST', body: JSON.stringify({ question_id, text, expired }) })
 
 /** One box of a song or album question. The tower keeps it until `settle` -- the
  *  player's last press -- so a box can be retyped, and nothing is scored or given

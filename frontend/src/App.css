@@ -384,6 +384,10 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .key .sheet { padding-left: 8px; max-height: 13rem; }
 .key .sheet li { font-size: 15px; }
 
+/* "did you mean X?" -- the key nearly holds what was typed */
+.meant { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.meant b { color: var(--ion); font-weight: 400; }
+
 /* --- flight log: the same row vocabulary as .haul, opened by <details> ---- */
 .logbook-stats { flex-wrap: wrap; margin: 4px 0 12px; }
 .flights { list-style: none; width: 100%; min-width: 0; padding: 0; margin: 0 0 12px; }
