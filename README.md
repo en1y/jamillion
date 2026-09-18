@@ -10,12 +10,21 @@
 </p>
 
 <p align="center">
+  <a href="https://jamillion.en1y.qzz.io"><img src="https://img.shields.io/badge/%E2%9C%A6%20PLAY%20TODAY'S%20FLIGHT-jamillion.en1y.qzz.io-f5a623?style=for-the-badge&labelColor=0b0e1a" alt="Play at jamillion.en1y.qzz.io" height="38"></a>
+</p>
+
+<p align="center">
+  <b>Live at <a href="https://jamillion.en1y.qzz.io">jamillion.en1y.qzz.io</a></b> — seven questions, one launch window a day.
+</p>
+
+<p align="center">
   <a href="https://github.com/en1y/jamillion/actions/workflows/ci.yml"><img src="https://github.com/en1y/jamillion/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/en1y/jamillion/tags"><img src="https://img.shields.io/github/v/tag/en1y/jamillion?label=release&sort=semver&color=f5a623" alt="Release"></a>
   <a href="https://hub.docker.com/r/en1y/jamillion-backend"><img src="https://img.shields.io/docker/v/en1y/jamillion-backend?label=docker&sort=semver&color=2496ed" alt="Docker Hub"></a>
 </p>
 
 <p align="center">
+  <a href="https://jamillion.en1y.qzz.io">Play</a> ·
   <a href="#run-it">Run it</a> ·
   <a href="#how-it-plays">How it plays</a> ·
   <a href="#the-flight-deck">The flight deck</a> ·
