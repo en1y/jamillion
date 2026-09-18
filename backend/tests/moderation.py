@@ -80,12 +80,14 @@ def audio_status(path, token=None):
         return failure.status
 
 
-def guess(text, question_id):
-    """A fresh guest plays one question and answers it. Returns (player id, attempt id)."""
+def guess(text, question_id, expired=False):
+    """A fresh guest plays one question and answers it. Returns (player id, attempt id).
+    `expired` is the clock sending the box: since v1.0.5 that is the only way an answer
+    the key does not hold reaches the scorer at all -- pressed by hand it is refused."""
     body, cookie = me()
     _, attempt, _ = api('/api/attempts', {}, cookie=cookie)
     status, result, _ = api(f"/api/attempts/{attempt['id']}/answers",
-                            {'question_id': question_id, 'text': text}, cookie=cookie)
+                            {'question_id': question_id, 'text': text, 'expired': expired}, cookie=cookie)
     assert status == 200, (status, result)
     return body['player_id'], attempt['id']
 
@@ -186,10 +188,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
 
         # -------------------------------------------------- verdicts on the key
         # A guess outside the key leaves no row (quiz_play.py), so a rejected answer is
-        # written straight in; three guests give it, one gives a known one.
+        # written straight in; three guests give it on the clock -- by hand it would be
+        # refused -- and one gives a known one.
         db.execute("INSERT INTO question_answers (question_id, normalized, display, is_correct) "
                    "VALUES (%s, 'the bends', 'The Bends', false)", (questions[1],))
-        bends_players = [guess('The Bends', questions[1]) for _ in range(3)]
+        bends_players = [guess('The Bends', questions[1], expired=True) for _ in range(3)]
         okc_player, okc_attempt = guess('OK Computer', questions[1])
         assert db.execute('SELECT total_points FROM attempts WHERE id = %s',
                           (okc_attempt,)).fetchone()[0] == 15       # 1 guess in 4 -> Protostar
@@ -252,7 +255,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         # -------------------------------------------------- merge duplicates
         db.execute("INSERT INTO question_answers (question_id, normalized, display, is_correct) "
                    "VALUES (%s, 'ok computer album', 'OK Computer album', false)", (questions[1],))
-        album_player, album_attempt = guess('OK Computer album', questions[1])
+        album_player, album_attempt = guess('OK Computer album', questions[1], expired=True)
         assert totals([(None, album_attempt)]) == [0]
         preview = api(f'/api/quizzes/{QUIZ_DATE}', token=TOKEN)[1]
         album = answers_of(preview, 1)['OK Computer album']
