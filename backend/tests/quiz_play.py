@@ -55,8 +55,11 @@ def build_quiz(track_id, album_id=None, names=('Radiohead', 'Creep', 'Answer 6')
         # points overrides the tier's own value: the artist is worth its tier, and
         # both fields together are worth the two added up plus a bonus, which is
         # not a number any single tier names.
+        # The album box is only put up when the key answers it, so the record it came
+        # from is a row of its own, like the artist.
         'answers': [{'display': f'{artist} {title}', 'tier_id': 6, 'points': 45},
-                    {'display': artist, 'tier_id': 2}],
+                    {'display': artist, 'tier_id': 2},
+                    {'display': album, 'tier_id': 3}],
     })
     return {'quiz_date': QUIZ_DATE, 'published': True, 'questions': questions}
 
@@ -177,11 +180,17 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         free_id = made['id']
         free_q = db.execute('SELECT id FROM questions WHERE quiz_id = %s AND position = 1',
                             (free_id,)).fetchone()[0]
+        # Both flags on, and the key still answers neither name: the boxes come from
+        # the key, so the question is served with none of them rather than with two
+        # that would refuse every answer it is asking for.
+        db.execute('UPDATE questions SET ask_artist = true, ask_title = true WHERE id = %s', (free_q,))
         _, free_cookie = me()
         status, flight, _ = api('/api/attempts', {}, cookie=free_cookie)
         served_free = flight['question']
         assert served_free['qtype'] == 'album' and served_free['cover'], served_free
         assert served_free['ask_artist'] is False and served_free['ask_title'] is False, served_free
+        assert db.execute('SELECT ask_artist AND ask_title FROM questions WHERE id = %s',
+                          (free_q,)).fetchone()[0], 'the flags are untouched; only the key decides'
         # No catalog behind the box, so what it offers is the key's own answers --
         # to this player, on this question, now.
         free_hint = f'/api/suggest?q=all&question={free_q}'
@@ -403,11 +412,12 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert q1['answers'][0]['yours'] is True and q1['answers'][1]['yours'] is False
         assert q1['answers'][0]['tier'] == 'Main Sequence' and q1['answers'][1]['tier'] == 'Nebula'
         song = sheet['questions'][6]
-        assert [a['display'] for a in song['answers']] == [f'{artist_name} {track_title}', artist_name], song['answers']
+        assert [a['display'] for a in song['answers']] == \
+               [f'{artist_name} {track_title}', album_title, artist_name], song['answers']
         assert song['answers'][0]['tier'] == 'Supernova' and song['answers'][0]['yours'] is True
         # A song key is a ladder of how much you named, so it reveals what each rung
         # is worth -- the moderator's 45, not the Supernova tier's 100.
-        assert [a['points'] for a in song['answers']] == [45, 15], song['answers']
+        assert [a['points'] for a in song['answers']] == [45, 30, 15], song['answers']
         assert q1['qtype'] == 'rarest' and song['qtype'] == 'song'
         assert 'normalized' not in str(sheet) and 'track_id' not in str(sheet)
         assert len(sheet['dist']) == 36 and sheet['better_than'] >= 0

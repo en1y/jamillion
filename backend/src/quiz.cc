@@ -27,6 +27,21 @@ bool isUniqueViolation(const orm::DrogonDbException &e) {
     return dynamic_cast<const orm::UniqueViolation *>(&e.base()) != nullptr;
 }
 
+// The boxes a question puts in front of a player, as question_boxes() reports them:
+// "artist,title". The flags alone were not enough -- a question whose key holds
+// neither name is asking about the record, not its credits, and its boxes would
+// refuse every answer it wants. The DB works that out; this only unpacks the list.
+std::vector<std::string> boxesOf(const std::string &joined) {
+    std::vector<std::string> boxes;
+    for (std::size_t at = 0; at < joined.size();) {
+        const auto end = joined.find(',', at);
+        boxes.push_back(joined.substr(at, end - at));
+        if (end == std::string::npos) break;
+        at = end + 1;
+    }
+    return boxes;
+}
+
 // A box of spaces is an empty box: what reaches the key is normalised anyway,
 // this only decides whether the player filled the field in at all.
 std::string trimmed(std::string text) {
@@ -115,12 +130,10 @@ Task<std::vector<std::string>> customNames(HttpRequestPtr req, const std::string
                  "WHERE qa.question_id = $1::bigint AND qa.is_correct "
                  "  AND (a.player_id = $3::uuid OR p.user_id = nullif($4, '')::uuid) "
                  "  AND q.position = (SELECT count(*) + 1 FROM attempt_answers aa WHERE aa.attempt_id = a.id) "
-                 "  AND CASE WHEN $2 = '' THEN q.qtype = 'rarest' OR NOT (q.ask_artist OR q.ask_title "
-                 "                                                          OR (q.qtype = 'song' AND q.ask_album)) "
-                 "      WHEN $2 = 'artist' THEN q.ask_artist WHEN $2 = 'title' THEN q.ask_title "
-                 "      ELSE q.qtype = 'song' AND q.ask_album END "
-                 "  AND ($2 = '' OR qa.field = $2 OR (qa.field IS NULL AND "
-                 "       q.ask_artist::int + q.ask_title::int + (q.qtype = 'song' AND q.ask_album)::int = 1)) "
+                 "  AND CASE WHEN $2 = '' THEN cardinality(question_boxes(q.id)) = 0 "
+                 "           ELSE $2 = ANY (question_boxes(q.id)) END "
+                 "  AND ($2 = '' OR qa.field = $2 "
+                 "       OR (qa.field IS NULL AND cardinality(question_boxes(q.id)) = 1)) "
                  "  AND " + std::string(filter) + " ORDER BY qa.display LIMIT 8",
                  question, field, player, who.id, q))
             out.push_back(row[0].as<std::string>());
@@ -190,7 +203,7 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             "  (SELECT count(*) FROM attempt_answers aa WHERE aa.attempt_id = a.id) AS answered, "
             "  q.id AS question_id, q.position, q.qtype::text AS qtype, q.prompt, q.time_limit_sec, "
             "  q.snippet_start_sec::float8 AS snippet_start_sec, q.snippet_len_sec::float8 AS snippet_len_sec, "
-            "  q.ask_artist, q.ask_title, q.ask_album, q.hints, al.cover_url, "
+            "  array_to_string(question_boxes(q.id), ',') AS boxes, q.hints, al.cover_url, "
             "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
             "  CASE WHEN q.time_limit_sec = 0 THEN NULL ELSE "
             "    to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
@@ -220,9 +233,13 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             // Never the track id: tracks are world readable through the anon key, so it
             // would give away the song. The clip is fetched by question id instead.
             if (question["qtype"] != "rarest") {
-                question["ask_artist"] = row["ask_artist"].as<bool>();
-                question["ask_title"] = row["ask_title"].as<bool>();
-                question["ask_album"] = row["ask_album"].as<bool>();
+                const auto boxes = boxesOf(row["boxes"].as<std::string>());
+                const auto asks = [&](const char *field) {
+                    return std::find(boxes.begin(), boxes.end(), field) != boxes.end();
+                };
+                question["ask_artist"] = asks("artist");
+                question["ask_title"] = asks("title");
+                question["ask_album"] = asks("album");
             }
             // Off means the player types unaided: /api/suggest is never asked. On a
             // question with no boxes -- rarest, or a song or album question that asks
@@ -654,7 +671,7 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
             "SELECT a.question_started_at IS NULL AS unserved, "
             "  q.time_limit_sec > 0 "
             "    AND now() > a.question_started_at + ((q.time_limit_sec + 3) * interval '1 second') AS late, "
-            "  q.qtype::text AS qtype, q.ask_artist, q.ask_title, q.ask_album "
+            "  q.qtype::text AS qtype, array_to_string(question_boxes(q.id), ',') AS boxes "
             "FROM attempts a JOIN players p ON p.id = a.player_id "
             "JOIN questions q ON q.quiz_id = a.quiz_id AND q.id = $4::bigint "
             "WHERE a.id = $1::bigint AND a.finished_at IS NULL AND " + std::string(kOwned) +
@@ -666,12 +683,7 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
         const auto qtype = checks[0]["qtype"].as<std::string>();
 
         // The boxes this question asks for, in the order the answer key was seeded.
-        std::vector<std::string> asked;
-        if (qtype != "rarest") {
-            if (checks[0]["ask_artist"].as<bool>()) asked.emplace_back("artist");
-            if (checks[0]["ask_title"].as<bool>()) asked.emplace_back("title");
-            if (qtype == "song" && checks[0]["ask_album"].as<bool>()) asked.emplace_back("album");
-        }
+        const auto asked = boxesOf(checks[0]["boxes"].as<std::string>());
         if (asked.empty() != field.empty())
             co_return auth::error(k400BadRequest, asked.empty() ? "This question takes no field"
                                                                 : "field is required");
