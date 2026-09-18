@@ -194,7 +194,12 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             "  to_char(a.question_started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS started_at, "
             "  CASE WHEN q.time_limit_sec = 0 THEN NULL ELSE "
             "    to_char((a.question_started_at + q.time_limit_sec * interval '1 second') AT TIME ZONE 'UTC', "
-            "            'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') END AS deadline",
+            "            'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') END AS deadline, "
+            // What the client actually counts down: a duration, not an instant, so a
+            // device whose clock is fast does not start the question already expired.
+            "  CASE WHEN q.time_limit_sec = 0 THEN NULL ELSE extract(epoch from "
+            "    (a.question_started_at + q.time_limit_sec * interval '1 second') - now())::float8 "
+            "  END AS seconds_left",
             attemptId);
         if (!served.empty()) {
             const auto &row = served[0];
@@ -210,6 +215,8 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
             question["time_limit_sec"] = row["time_limit_sec"].as<int>();
             question["started_at"] = nullable(row["started_at"]);
             question["deadline"] = nullable(row["deadline"]);
+            question["seconds_left"] = row["seconds_left"].isNull()
+                ? Json::Value() : Json::Value(row["seconds_left"].as<double>());
             // Never the track id: tracks are world readable through the anon key, so it
             // would give away the song. The clip is fetched by question id instead.
             if (question["qtype"] != "rarest") {

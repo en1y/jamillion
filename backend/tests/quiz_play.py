@@ -225,10 +225,13 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         attempt_id, first = attempt['id'], attempt['question']
         assert first['position'] == 1 and attempt['answered'] == 0 and attempt['total_points'] == 0
         assert first['time_limit_sec'] == 20 and first['deadline'] > first['started_at']
+        # The countdown runs off this, not off the device's clock: a duration, at most the limit.
+        assert 0 < first['seconds_left'] <= 20, first
         assert 'track_id' not in str(attempt)
         status, again, _ = api('/api/attempts', {}, cookie=cookie)      # a refresh grants no extra time
         assert status == 200 and again['id'] == attempt_id
         assert again['question']['started_at'] == first['started_at']
+        assert again['question']['seconds_left'] <= first['seconds_left']
 
         # -------------------------------------------------- rarity
         # Eight other players give the common answer, straight through the scorer.
@@ -352,6 +355,7 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert served['question']['ask_album'] is True, served['question']
         assert served['question']['time_limit_sec'] == 0, served['question']
         assert served['question']['deadline'] is None, served['question']
+        assert served['question']['seconds_left'] is None, served['question']
         # Artist and title right, album wrong: the boxes that landed still pay, so this
         # scores the artist+title rung, not zero, and says which box missed.
         status, body = answer_boxes(cookie, attempt_id, song_id,

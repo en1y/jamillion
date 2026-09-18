@@ -43,6 +43,7 @@ export interface Question {
   time_limit_sec: number        // 0 = no clock, and then deadline is null
   started_at: string
   deadline: string | null
+  seconds_left: number | null   // the same clock as a duration: what the countdown uses
   ask_artist?: boolean          // song and album: which fields the moderator asks for
   ask_title?: boolean
   ask_album?: boolean           // song only: which record is it from

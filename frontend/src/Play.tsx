@@ -416,32 +416,32 @@ function Snippet({ question }: { question: Question }) {
   )
 }
 
-/** The server owns the clock; this only reads its deadline. Its 3 s grace absorbs
- *  the round trip and any clock skew. */
-function remaining(question: Question) {
-  if (!question.deadline) return Infinity
-  const left = Date.parse(question.deadline) - Date.now()
-  return Math.max(0, Math.min(left, question.time_limit_sec * 1000))
-}
-
+/** The server owns the clock, and it hands the question over as a duration
+ *  (`seconds_left`) rather than an instant. The device's own wall clock is never
+ *  read: a phone whose time is minutes fast used to open the question already at
+ *  zero. performance.now() is monotonic, so a clock corrected mid-question cannot
+ *  jump the ring either. The backend's 3 s grace still absorbs the round trip. */
 function Countdown({ question, onExpire }: { question: Question; onExpire: () => void }) {
-  const [left, setLeft] = useState(() => remaining(question))
+  const total = question.time_limit_sec * 1000
+  const budget = Math.max(0, Math.min((question.seconds_left ?? question.time_limit_sec) * 1000, total))
+  const [left, setLeft] = useState(budget)
   const expire = useRef(onExpire)
   useEffect(() => { expire.current = onExpire })
 
-  // No deadline is an untimed question: nothing to count, and nothing to submit
+  // No clock is an untimed question: nothing to count, and nothing to submit
   // on the player's behalf. The hooks above still run, so the ring can come and
   // go between questions without changing how many hooks this renders.
-  const untimed = !question.deadline
+  const untimed = question.time_limit_sec === 0
   useEffect(() => {
     if (untimed) return
+    const anchor = performance.now()
     const timer = setInterval(() => {
-      const next = remaining(question)
+      const next = Math.max(0, budget - (performance.now() - anchor))
       setLeft(next)
       if (next === 0) { clearInterval(timer); expire.current() }
     }, 250)
     return () => clearInterval(timer)
-  }, [question, untimed])
+  }, [untimed, budget])
 
   const seconds = Math.ceil(left / 1000)
   const late = seconds <= 5
@@ -449,7 +449,7 @@ function Countdown({ question, onExpire }: { question: Question; onExpire: () =>
   // return, like the rest, so an untimed question renders the same hooks.
   useEffect(() => { if (!untimed && late && seconds > 0) sfx('tick') }, [seconds, late, untimed])
   if (untimed) return null
-  const style = { '--p': left / (question.time_limit_sec * 1000) } as CSSProperties
+  const style = { '--p': left / total } as CSSProperties
   return (<>
     <span className={late ? 'ring late' : 'ring'} role="timer" style={style}><span>{seconds}</span></span>
     {late && <i className="edge" aria-hidden="true" />}   {/* the screen's edges throb with the last seconds */}
@@ -739,7 +739,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
           drops the keyboard only for the next box to raise it again: the buttons
           still click, the focus stays put. */}
       <form onSubmit={submit} onMouseDown={event => { if ((event.target as Element).closest('button')) event.preventDefault() }}>
-        <Countdown question={question} onExpire={expire} />
+        <Countdown key={question.id} question={question} onExpire={expire} />
         {/* Every box of the question at once, the one being typed open and the rest
             waiting under it: a single box gave no sign that two more were coming,
             and Enter read as "send the lot". */}
