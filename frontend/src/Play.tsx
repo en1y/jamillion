@@ -483,7 +483,8 @@ function fieldsFor(question: Question): Field[] {
  *  from the third character, debounced. A free box has no catalog kind: what it
  *  offers is the question's own accepted answers, which is the only help there is
  *  when the key is the whole truth about what counts. */
-function useSuggest(kind: SuggestKind | null, on: boolean, value: string, question: number, field: string) {
+function useSuggest(kind: SuggestKind | null, on: boolean, value: string, question: number, field: string,
+                    token?: string) {
   const [options, setOptions] = useState<string[]>([])
   const q = value.trim()
   const long = [...q].length >= 3     // characters, not UTF-16 units
@@ -492,10 +493,10 @@ function useSuggest(kind: SuggestKind | null, on: boolean, value: string, questi
     let live = true
     const timer = setTimeout(() => {
       // A free box names no field: the key is the whole question's, not one box of it.
-      suggest(kind, q, kind ? { question, field } : { question }).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
+      suggest(kind, q, kind ? { question, field } : { question }, token).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
     }, 150)
     return () => { live = false; clearTimeout(timer) }
-  }, [kind, on, q, long, question, field])
+  }, [kind, on, q, long, question, field, token])
   // Options from an earlier query linger until the next reply; only the ones that
   // still start with what is typed are offered, so nothing stale shows.
   const prefix = q.toLocaleLowerCase()
@@ -506,13 +507,13 @@ function useSuggest(kind: SuggestKind | null, on: boolean, value: string, questi
  *  this job, but browsers draw that one their own way or not at all, and on a
  *  three-field song question the player needs to see what is on offer. The list
  *  opens *upward*: these inputs live in the HUD along the bottom of the screen. */
-function Input({ question, field, value, onChange, autoFocus, invalid, hint, help, onLeave }: {
+function Input({ question, field, value, onChange, autoFocus, invalid, hint, help, token, onLeave }: {
   question: number; field: Field; value: string; onChange: (value: string) => void; autoFocus: boolean; invalid: boolean
-  hint?: 'next' | 'send'; help?: boolean; onLeave?: (direction: -1 | 1) => void
+  hint?: 'next' | 'send'; help?: boolean; token?: string; onLeave?: (direction: -1 | 1) => void
 }) {
   // help === false: the moderator wants this one typed from memory. The typo check
   // stays -- only catalog names are accepted, and being told so beats a refusal.
-  const options = useSuggest(field.kind, help !== false, value, question, field.key)
+  const options = useSuggest(field.kind, help !== false, value, question, field.key, token)
   const [open, setOpen] = useState(true)
   const [cursor, setCursor] = useState(-1)
 
@@ -698,7 +699,9 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
 
   async function unrecognised(value: string): Promise<boolean> {
     if (!field.kind || !value) return false
-    try { return !(await isKnown(field.kind, value, { question: question.id, field: field.key })).known } catch { return false }
+    try {
+      return !(await isKnown(field.kind, value, { question: question.id, field: field.key }, token)).known
+    } catch { return false }
   }
 
   /** Move to another box of the same question, parking the one being left. Nothing
@@ -760,7 +763,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
                     <span className="slot-label">{slot.label}</span>
                     {i === step ? (
                       <Input key={slot.key} question={question.id} field={slot} value={values[slot.key] ?? ''} autoFocus
-                             invalid={!!unknown} hint={finale ? 'send' : 'next'} help={question.hints}
+                             invalid={!!unknown} hint={finale ? 'send' : 'next'} help={question.hints} token={token}
                              onLeave={direction => void go(step + direction)}
                              onChange={value => { setUnknown(''); setMeant(''); setValues(prev => ({ ...prev, [slot.key]: value })) }} />
                     ) : (
@@ -776,7 +779,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
         ) : (
           <div className="fields">
             <Input key={field.key} question={question.id} field={field} value={values[field.key] ?? ''} autoFocus
-                   invalid={!!unknown} help={question.hints}
+                   invalid={!!unknown} help={question.hints} token={token}
                    onChange={value => { setUnknown(''); setMeant(''); setValues(prev => ({ ...prev, [field.key]: value })) }} />
           </div>
         )}

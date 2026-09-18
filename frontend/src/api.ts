@@ -152,15 +152,17 @@ export interface Box { question: number; field?: string }
 
 /** Catalog completions for the artist, song title and album title fields. With no
  *  kind -- a free box -- it offers the question's own accepted answers instead, and
- *  then the question is required. */
-export const suggest = (kind: SuggestKind | null, q: string, box?: Box) =>
-  call<string[]>(`/api/suggest${query({ ...(kind ? { kind } : {}), q, ...box })}`)
+ *  then the question is required. The token goes with it whenever there is one: the
+ *  names the moderator accepted are looked up against the player's own current
+ *  question, and a signed-in player's row is found by their account, not the cookie. */
+export const suggest = (kind: SuggestKind | null, q: string, box?: Box, token?: string) =>
+  call<string[]>(`/api/suggest${query({ ...(kind ? { kind } : {}), q, ...box })}`, token)
 
 /** Is this a real name in the music catalog? Used to nudge a player off a typo
  *  before it costs them the guess. Catalog only, so it says nothing about the
  *  answer key; public for the same reason /api/suggest is. */
-export const isKnown = (kind: SuggestKind, q: string, box?: Box) =>
-  call<{ known: boolean }>(`/api/known${query({ kind, q, ...box })}`)
+export const isKnown = (kind: SuggestKind, q: string, box?: Box, token?: string) =>
+  call<{ known: boolean }>(`/api/known${query({ kind, q, ...box })}`, token)
 
 export interface RevealedAnswer { display: string; tier: string | null; points: number; yours: boolean }
 export interface RevealedQuestion { position: number; prompt: string; qtype: string; answers: RevealedAnswer[] }

@@ -196,6 +196,16 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         free_hint = f'/api/suggest?q=all&question={free_q}'
         assert api(free_hint, cookie=free_cookie)[1] == ['all caps'], api(free_hint, cookie=free_cookie)
         assert api(free_hint)[1] == [], 'no passport, no answer key'
+        # Signed in, the cookie alone is not the passport any more: the player row is
+        # found by the account, so the token has to ride along or the hints go quiet.
+        # A second guest takes the same question, then signs in on it.
+        _, signed_cookie = me()
+        api('/api/attempts', {}, cookie=signed_cookie)
+        assert api(free_hint, cookie=signed_cookie)[1] == ['all caps']
+        me(TOKEN, signed_cookie)                     # link that guest to the moderator's account
+        assert api(free_hint, cookie=signed_cookie)[1] == [], 'a linked row needs its token'
+        assert api(free_hint, cookie=signed_cookie, token=TOKEN)[1] == ['all caps'], \
+            'a signed-in player gets the same hints'
         # One request, no field, and the key decides.
         status, verdict, _ = api(f'/api/attempts/{flight["id"]}/answers',
                                  {'question_id': free_q, 'text': 'ALL CAPS!'}, cookie=free_cookie)
