@@ -609,6 +609,37 @@ Decisions worth carrying forward:
   before that are still only served for the player's own current question, three
   characters in.
 
+## v1.0.6 — The boxes come from the key
+
+- [x] A ticked field is only a box when the key holds an answer for it. v1.0.5 gave
+      the moderator a way to say "no field" and left the three flags in charge, so
+      every question already written the other way -- flags at their defaults, a key
+      that answers the prompt rather than naming the record -- still put an artist
+      and an album title box in front of the player, and still refused every answer
+      it wanted. `question_boxes()` in the database decides now, and the serve route,
+      the answer route and the hints all read it: a field counts as answered when a
+      key row is tagged with it, or when any row's text names it as whole words.
+      Nothing ticked, or nothing answered, is one free box.
+- [x] The editor says the same thing before a day is saved, from its own copy of the
+      rule over the draft: which boxes the player will actually get, and which ticked
+      field the key has no answer for.
+- [x] `/api/suggest` and `/api/known` carry the access token when there is one. Both
+      look the moderator's accepted names up against the player's own current
+      question, and a signed-in player's row is found by their account rather than by
+      the cookie -- so without the token the hints went quiet and a name only the key
+      holds read as unknown. Guests were unaffected, which is why it took a signed-in
+      flight to notice.
+
+Decisions worth carrying forward:
+
+- **The key is the question.** The flags are what the moderator asked for; the key is
+  what they wrote. Where the two disagree the key wins, because it is the only one of
+  the two a player can ever satisfy. The flags are left untouched -- the editor still
+  edits them, and a key that grows the missing name brings its box straight back.
+- **Generous by design.** The containment test drops a box only when nothing in the
+  key mentions it, so a moderator who wrote only a combination row, or only an
+  alternative spelling tagged with the field, keeps their boxes.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).
