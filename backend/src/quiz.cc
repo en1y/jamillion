@@ -93,12 +93,14 @@ Task<std::string> playerFor(HttpRequestPtr req) {
 // the question the player has in front of them: served, unsettled, their own. On a
 // one-box question the key's hand-typed rows (field NULL) are names for that box;
 // on more boxes those rows are combinations, and only field-tagged rows count.
+// An empty field is a question with no boxes -- rarest, or a song or album question
+// that asks for neither name -- and there the whole key is what the box accepts.
 // `filter` compares display with q, which is $5.
 Task<std::vector<std::string>> customNames(HttpRequestPtr req, const std::string &question,
                                            const std::string &field, const char *filter, const std::string &q) {
     std::vector<std::string> out;
     if (question.empty() || question.size() > 18 || question.find_first_not_of("0123456789") != std::string::npos ||
-        (field != "artist" && field != "title" && field != "album"))
+        (!field.empty() && field != "artist" && field != "title" && field != "album"))
         co_return out;
     const auto player = co_await playerFor(req);
     if (player.empty()) co_return out;
@@ -106,16 +108,18 @@ Task<std::vector<std::string>> customNames(HttpRequestPtr req, const std::string
     try {
         for (const auto &row : co_await app().getDbClient()->execSqlCoro(
                  "SELECT DISTINCT qa.display FROM question_answers qa "
-                 "JOIN questions q ON q.id = qa.question_id AND q.qtype <> 'rarest' "
+                 "JOIN questions q ON q.id = qa.question_id "
                  "JOIN attempts a ON a.quiz_id = q.quiz_id AND a.finished_at IS NULL "
                  "  AND a.question_started_at IS NOT NULL "
                  "JOIN players p ON p.id = a.player_id "
                  "WHERE qa.question_id = $1::bigint AND qa.is_correct "
                  "  AND (a.player_id = $3::uuid OR p.user_id = nullif($4, '')::uuid) "
                  "  AND q.position = (SELECT count(*) + 1 FROM attempt_answers aa WHERE aa.attempt_id = a.id) "
-                 "  AND CASE $2 WHEN 'artist' THEN q.ask_artist WHEN 'title' THEN q.ask_title "
+                 "  AND CASE WHEN $2 = '' THEN q.qtype = 'rarest' OR NOT (q.ask_artist OR q.ask_title "
+                 "                                                          OR (q.qtype = 'song' AND q.ask_album)) "
+                 "      WHEN $2 = 'artist' THEN q.ask_artist WHEN $2 = 'title' THEN q.ask_title "
                  "      ELSE q.qtype = 'song' AND q.ask_album END "
-                 "  AND (qa.field = $2 OR (qa.field IS NULL AND "
+                 "  AND ($2 = '' OR qa.field = $2 OR (qa.field IS NULL AND "
                  "       q.ask_artist::int + q.ask_title::int + (q.qtype = 'song' AND q.ask_album)::int = 1)) "
                  "  AND " + std::string(filter) + " ORDER BY qa.display LIMIT 8",
                  question, field, player, who.id, q))
@@ -172,9 +176,11 @@ Task<Json::Value> progress(long long attemptId, bool serve = true) {
                 question["ask_artist"] = row["ask_artist"].as<bool>();
                 question["ask_title"] = row["ask_title"].as<bool>();
                 question["ask_album"] = row["ask_album"].as<bool>();
-                // Off means the player types the name unaided: /api/suggest is never asked.
-                question["hints"] = row["hints"].as<bool>();
             }
+            // Off means the player types unaided: /api/suggest is never asked. On a
+            // question with no boxes -- rarest, or a song or album question that asks
+            // for neither name -- what it offers is the key's own answers.
+            question["hints"] = row["hints"].as<bool>();
             // An album question shows the cover. The Deezer URL is a content hash: it
             // names neither the album nor the artist.
             if (question["qtype"] == "album") question["cover"] = nullable(row["cover_url"]);
@@ -246,13 +252,12 @@ const char *validate(const Json::Value &body) {
             for (const char *flag : {"ask_artist", "ask_title", "ask_album"})
                 if (q.isMember(flag) && !q[flag].isBool())
                     return "ask_artist, ask_title and ask_album must be booleans";
-            const bool album = q.get("ask_album", false).asBool();
-            if (!q.get("ask_artist", true).asBool() && !q.get("ask_title", true).asBool() && !album)
-                return "A song or album question must ask for at least one field";
+            // No field at all is a question asked over a cover or a clip whose answer
+            // is neither the artist nor the title: one free box, key-scored.
             // On an album question the album title is what ask_title already means.
-            if (type == "album" && album) return "ask_album is for song questions";
-            if (q.isMember("hints") && !q["hints"].isBool()) return "hints must be a boolean";
+            if (type == "album" && q.get("ask_album", false).asBool()) return "ask_album is for song questions";
         }
+        if (q.isMember("hints") && !q["hints"].isBool()) return "hints must be a boolean";
         const auto &answers = q["answers"];
         if (!answers.isArray() || answers.empty()) return "Each question needs at least one answer";
         for (const auto &a : answers) {
@@ -935,15 +940,6 @@ Task<HttpResponsePtr> patchQuestion(HttpRequestPtr req, long long questionId) {
             if (start < 0 || len < 1 || start + len > 30)
                 co_return auth::error(k400BadRequest, "The snippet must fit inside the 30 second clip");
         }
-        if (hasArtist || hasTitle || hasAlbumAsk) {
-            const bool artist = hasArtist ? (*body)["ask_artist"].asBool() : rows[0]["ask_artist"].as<bool>();
-            const bool title = hasTitle ? (*body)["ask_title"].asBool() : rows[0]["ask_title"].as<bool>();
-            const bool albumAsk = hasAlbumAsk ? (*body)["ask_album"].asBool() : rows[0]["ask_album"].as<bool>();
-            if (!artist && !title && !albumAsk)
-                co_return auth::error(k400BadRequest,
-                                      "A song or album question must ask for at least one field");
-        }
-
         // An absent key keeps its column: '' stands in for "not given", the same
         // shape review_answer's optional arguments use.
         const auto text = [&](const char *key, bool has) {
@@ -1400,7 +1396,8 @@ Task<HttpResponsePtr> known(HttpRequestPtr req) {
 
 // GET /api/suggest?kind=artist|title|album&q=[&question=&field=]   names starting with q, 3+ characters
 // of song and album questions. Catalog names only, never the answer key, so it
-// needs no passport.
+// needs no passport. Without a kind it is a question with no boxes asking for its
+// own key -- question= is then required, and customNames does the vetting.
 Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
     const auto kind = req->getParameter("kind");
     auto q = req->getParameter("q");
@@ -1415,7 +1412,10 @@ Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
       : kind == "album"  ? "SELECT title FROM albums WHERE title ILIKE $1::text || '%' GROUP BY title "
                            "ORDER BY max(deezer_fans) DESC NULLS LAST, title LIMIT 8"
       : nullptr;
-    if (!sql) co_return auth::error(k400BadRequest, "kind must be artist, title or album");
+    // No kind is legal only with a question: the free box of a rarest question, or
+    // of a song or album question that asks for neither name.
+    if (!sql && !(kind.empty() && !req->getParameter("question").empty()))
+        co_return auth::error(k400BadRequest, "kind must be artist, title or album");
     Json::Value out(Json::arrayValue);
     // Three characters, not bytes, before the catalog is scanned.
     const auto chars = std::count_if(q.begin(), q.end(), [](unsigned char c) { return (c & 0xC0) != 0x80; });
@@ -1434,9 +1434,10 @@ Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
         // not asking; these rows are the answer key, so they are held back here.
         auto names = co_await customNames(req, req->getParameter("question"), req->getParameter("field"),
                                           "q.hints AND qa.display ILIKE $5 || '%'", pattern);
-        for (const auto &row : co_await app().getDbClient()->execSqlCoro(sql, pattern))
-            if (std::find(names.begin(), names.end(), row[0].as<std::string>()) == names.end())
-                names.push_back(row[0].as<std::string>());
+        if (sql)
+            for (const auto &row : co_await app().getDbClient()->execSqlCoro(sql, pattern))
+                if (std::find(names.begin(), names.end(), row[0].as<std::string>()) == names.end())
+                    names.push_back(row[0].as<std::string>());
         for (std::size_t i = 0; i < names.size() && i < 8; ++i) out.append(names[i]);
         co_return json(out);
     } catch (const orm::DrogonDbException &e) {

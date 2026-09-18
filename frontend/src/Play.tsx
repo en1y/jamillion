@@ -458,9 +458,15 @@ function Countdown({ question, onExpire }: { question: Question; onExpire: () =>
 
 interface Field { key: string; kind: SuggestKind | null; label: string }
 
-/** Rarest: one free field. Song and album: the fields the moderator asked for. */
+/** The one box of a question that asks for no catalog name: whatever the key says
+ *  is the answer, typed free. */
+const FREE: Field = { key: 'text', kind: null, label: 'your answer' }
+
+/** Rarest: one free field. Song and album: the fields the moderator asked for --
+ *  and when they asked for none of them, the question is about the cover or the
+ *  clip rather than the names on it, so it is one free field too. */
 function fieldsFor(question: Question): Field[] {
-  if (question.qtype === 'rarest') return [{ key: 'text', kind: null, label: 'your answer' }]
+  if (question.qtype === 'rarest') return [FREE]
   const fields: Field[] = []
   if (question.ask_artist !== false) fields.push({ key: 'artist', kind: 'artist', label: 'artist' })
   if (question.ask_title !== false) fields.push(question.qtype === 'song'
@@ -470,26 +476,30 @@ function fieldsFor(question: Question): Field[] {
   // fields joined, and the moderator's key was seeded in the same order.
   if (question.qtype === 'song' && question.ask_album)
     fields.push({ key: 'album', kind: 'album', label: 'album' })
-  return fields
+  return fields.length > 0 ? fields : [FREE]
 }
 
-/** Catalog names, and the moderator's for this box, starting with what is typed, from the third character, debounced. */
-function useSuggest(kind: SuggestKind | null, value: string, question: number, field: string) {
+/** Catalog names, and the moderator's for this box, starting with what is typed,
+ *  from the third character, debounced. A free box has no catalog kind: what it
+ *  offers is the question's own accepted answers, which is the only help there is
+ *  when the key is the whole truth about what counts. */
+function useSuggest(kind: SuggestKind | null, on: boolean, value: string, question: number, field: string) {
   const [options, setOptions] = useState<string[]>([])
   const q = value.trim()
   const long = [...q].length >= 3     // characters, not UTF-16 units
   useEffect(() => {
-    if (!kind || !long) return
+    if (!on || !long) return
     let live = true
     const timer = setTimeout(() => {
-      suggest(kind, q, { question, field }).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
+      // A free box names no field: the key is the whole question's, not one box of it.
+      suggest(kind, q, kind ? { question, field } : { question }).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
     }, 150)
     return () => { live = false; clearTimeout(timer) }
-  }, [kind, q, long, question, field])
+  }, [kind, on, q, long, question, field])
   // Options from an earlier query linger until the next reply; only the ones that
   // still start with what is typed are offered, so nothing stale shows.
   const prefix = q.toLocaleLowerCase()
-  return kind && long ? options.filter(option => option.toLocaleLowerCase().startsWith(prefix)) : []
+  return on && long ? options.filter(option => option.toLocaleLowerCase().startsWith(prefix)) : []
 }
 
 /** One field, with the catalog's completions under it. A <datalist> was doing
@@ -502,7 +512,7 @@ function Input({ question, field, value, onChange, autoFocus, invalid, hint, hel
 }) {
   // help === false: the moderator wants this one typed from memory. The typo check
   // stays -- only catalog names are accepted, and being told so beats a refusal.
-  const options = useSuggest(help === false ? null : field.kind, value, question, field.key)
+  const options = useSuggest(field.kind, help !== false, value, question, field.key)
   const [open, setOpen] = useState(true)
   const [cursor, setCursor] = useState(-1)
 
@@ -611,6 +621,10 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   onAnswered: (answered: Answered, text: string, expired: boolean) => void; onLost: () => void
 }) {
   const fields = fieldsFor(question)
+  // One box with no catalog kind: a rarest question, or a song or album question
+  // asking something the names on the record do not answer. It is scored against
+  // the key in one request rather than box by box.
+  const free = !fields[0].kind
   const [values, setValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const [unknown, setUnknown] = useState('')   // what the tower would not take, in its own words
@@ -640,7 +654,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
     sfx(settle ? 'send' : 'type')
     const value = (all[field.key] ?? '').trim()
     try {
-      const reply = question.qtype === 'rarest'
+      const reply = free
         ? await submitAnswer(attemptId, question.id, join(all), token)
         : await submitField(attemptId, question.id, field.key, value, settle, token)
       // The card leaves once the answer is in, never before: an answer the tower
@@ -672,7 +686,7 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
   /** The clock: the box being typed goes as it stands and the question settles,
    *  late. The boxes already parked keep whatever they earned. */
   function expire() {
-    void post(question.qtype === 'rarest' ? { [field.key]: typed.current } : values, true, true)
+    void post(free ? { [field.key]: typed.current } : values, true, true)
   }
 
   /** True when this field holds something the music catalog does not know. False on

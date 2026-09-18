@@ -46,7 +46,9 @@ export interface Question {
   ask_artist?: boolean          // song and album: which fields the moderator asks for
   ask_title?: boolean
   ask_album?: boolean           // song only: which record is it from
-  hints?: boolean               // song and album: catalog completions under the boxes
+  // With none of the three, a song or album question is one free box, like a
+  // rarest one: the answer is neither the artist nor the title.
+  hints?: boolean               // completions under the boxes; on a free box, the key's own answers
   snippet_start_sec?: number    // song
   snippet_len_sec?: number
   audio?: string
@@ -118,6 +120,8 @@ export async function getToday(token?: string): Promise<Today | null> {
 export const startAttempt = (token?: string) =>
   call<Progress>('/api/attempts', token, { method: 'POST' })
 
+/** The one free box of a rarest question, or of a song or album question that asks
+ *  for neither name. */
 export const submitAnswer = (attemptId: number, question_id: number, text: string, token?: string) =>
   call<Answered>(`/api/attempts/${attemptId}/answers`, token,
     { method: 'POST', body: JSON.stringify({ question_id, text }) })
@@ -134,11 +138,13 @@ export type SuggestKind = 'artist' | 'title' | 'album'
 
 /** Where a box sits: with it, the names the moderator accepted for that box count
  *  alongside the catalog's -- only ever for the player's own current question. */
-export interface Box { question: number; field: string }
+export interface Box { question: number; field?: string }
 
-/** Catalog completions for the artist, song title and album title fields. */
-export const suggest = (kind: SuggestKind, q: string, box?: Box) =>
-  call<string[]>(`/api/suggest${query({ kind, q, ...box })}`)
+/** Catalog completions for the artist, song title and album title fields. With no
+ *  kind -- a free box -- it offers the question's own accepted answers instead, and
+ *  then the question is required. */
+export const suggest = (kind: SuggestKind | null, q: string, box?: Box) =>
+  call<string[]>(`/api/suggest${query({ ...(kind ? { kind } : {}), q, ...box })}`)
 
 /** Is this a real name in the music catalog? Used to nudge a player off a typo
  *  before it costs them the guess. Catalog only, so it says nothing about the

@@ -166,8 +166,13 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         # the DB CHECKs are pre-empted, so a moderator never reads Postgres's words
         assert api(f'/api/questions/{song_id}', {'snippet_start_sec': 25, 'snippet_len_sec': 6},
                    token=TOKEN, method='PATCH')[0] == 400          # 31 s does not fit
-        assert api(f'/api/questions/{song_id}', {'ask_artist': False, 'ask_title': False},
-                   token=TOKEN, method='PATCH')[0] == 400
+        # No field at all is a question whose answer is neither name: allowed, and the
+        # player then gets one free box scored against the key.
+        off = api(f'/api/questions/{song_id}', {'ask_artist': False, 'ask_title': False, 'ask_album': False},
+                  token=TOKEN, method='PATCH')
+        assert off[0] == 200 and off[1]['ask_artist'] is False and off[1]['ask_title'] is False, off
+        assert api(f'/api/questions/{song_id}', {'ask_artist': True, 'ask_title': True},
+                   token=TOKEN, method='PATCH')[0] == 200
         assert api(f'/api/questions/{song_id}', {'time_limit_sec': 99}, token=TOKEN, method='PATCH')[0] == 400
         assert api(f'/api/questions/{song_id}', {'prompt': ''}, token=TOKEN, method='PATCH')[0] == 400
         assert api(f'/api/questions/{song_id}', {}, token=TOKEN, method='PATCH')[0] == 400

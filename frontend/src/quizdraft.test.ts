@@ -73,14 +73,19 @@ test('a song needs a track and an album needs an album', () => {
   assert.ok(problems.includes('Question 2: needs an album'), problems)
 })
 
-test('a song or album question must ask for something', () => {
+test('an album question can ask for no field at all: one free box, the key decides', () => {
   const draft = fillable()
   draft.questions[0] = { ...draft.questions[0], qtype: 'album',
-    album: { id: 7, title: 'Kid A', artist: 'Radiohead' }, ask_artist: false, ask_title: false }
-  assert.ok(draftProblems(draft, TIERS).includes('Question 1: must ask for at least one field'))
-  // ask_album does not rescue an album question: the backend refuses it there
-  draft.questions[0] = { ...draft.questions[0], ask_album: true }
-  assert.ok(draftProblems(draft, TIERS).includes('Question 1: must ask for at least one field'))
+    album: { id: 7, title: 'Kid A', artist: 'Radiohead' }, ask_artist: false, ask_title: false,
+    answers: [{ display: 'all caps', tier_id: null }] }
+  assert.deepEqual(draftProblems(draft, TIERS), [])
+  const [question] = toPayload(draft, TIERS).questions
+  assert.equal(question.ask_artist, false)
+  assert.equal(question.ask_title, false)
+  assert.deepEqual(question.answers, [{ display: 'all caps' }])
+  // The key is still the whole of it: with no field seeded, nothing writes one.
+  draft.questions[0] = { ...draft.questions[0], answers: [] }
+  assert.ok(draftProblems(draft, TIERS).includes('Question 1: needs at least one accepted answer'))
 })
 
 test('a song question defaults to no clock and a rarest one keeps the 20 s timer', () => {

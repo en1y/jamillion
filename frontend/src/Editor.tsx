@@ -948,19 +948,13 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
                 </button>
               ))}
           </div>
-
-          {/* The catalog's completions under the player's boxes. On unless the
-              moderator takes them away: three characters of a list of millions is
-              a strong hint, and on some questions it is the whole question. */}
-          <div className="asks">
-            <button className="chip" type="button" aria-pressed={question.hints}
-                    onClick={() => set({ hints: !question.hints })}>
-              suggest names from the catalog
-            </button>
-            <span className="meta">{question.hints
-              ? 'players see matching names as they type'
-              : 'players type the name with no list'}</span>
-          </div>
+          {/* Neither name is a question about the record rather than its credits --
+              "how is this artist's name spelled?" is answered "all caps", and with the
+              boxes on, the catalog refuses that and every other answer it wants. */}
+          {asked === 0 && (
+            <p className="meta">no field asked: the player gets one free box, and the
+              answers below are the whole of what counts</p>
+          )}
 
           {question.qtype === 'song' && question.track && (
             <SnippetPicker key={question.track.id} trackId={question.track.id} start={question.snippet_start_sec}
@@ -969,11 +963,30 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
           )}
         </details>}
 
+        {/* The completions under the player's boxes. On unless the moderator takes
+            them away: three characters of a list of millions is a strong hint, and on
+            some questions it is the whole question. A box with no catalog behind it --
+            a rarest question, or one that asks for no field -- offers the accepted
+            answers below instead, which is the only help there is when the key is
+            the whole truth about what counts. */}
+        {!frozen && (
+          <div className="asks">
+            <button className="chip" type="button" aria-pressed={question.hints}
+                    onClick={() => set({ hints: !question.hints })}>
+              {asked === 0 ? 'suggest the accepted answers' : 'suggest names from the catalog'}
+            </button>
+            <span className="meta">{question.hints
+              ? asked === 0 ? 'players see matching answers from three characters in'
+                            : 'players see matching names as they type'
+              : 'players type it with no list'}</span>
+          </div>
+        )}
+
         {/* On a flown day the list below shows the same answers with
             controls that actually work, so this editor would only be a dead copy. */}
         {!frozen && <details className="qpart answers" open={answersOpen}
                              onToggle={e => setAnswersOpen(e.currentTarget.open)}>
-          <summary>accepted answers · {filled} <span>{question.qtype === 'rarest'
+          <summary>accepted answers · {filled} <span>{asked === 0
             ? 'a tier here beats the rarity'
             : 'a player scores every field they get right, added up'}</span></summary>
           <div className="answer-tools">
@@ -989,7 +1002,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
             {/* Down the list as it reads: Nebula at the top, Supernova at the bottom.
                 Only where a ladder means anything -- a song question's fields are
                 three different questions, not one list from common to obscure. */}
-            {question.qtype === 'rarest' && question.answers.length > 1 && tiers.length > 0 && (
+            {asked === 0 && question.answers.length > 1 && tiers.length > 0 && (
               <button className="chip" type="button" onClick={spreadOverAnswers}
                       title="Nebula at the top of the list, Supernova at the bottom, the rest evenly between">
                 spread the tiers
@@ -1007,7 +1020,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
           {/* "Every Coldplay song over a million listens" is a query, not twenty
               lines of typing. Only on a rarest question: a song or album question
               writes its own key from the pick and the fields it asks for. */}
-          {schema && question.qtype === 'rarest' && (
+          {schema && asked === 0 && (
             <details className="qquery">
               <summary>browse the catalog</summary>
               <CatalogQuery schema={schema} entities={['tracks', 'albums', 'artists']}

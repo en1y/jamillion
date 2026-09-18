@@ -207,13 +207,17 @@ export function toPayload(draft: Draft, tiers: TierPoints[] = []) {
       }
       if (question.qtype === 'album') out.album_id = question.album?.id
       if (question.qtype !== 'rarest') {
+        // None of the three is a question whose answer is neither the artist nor the
+        // title: the player gets one free box and the key decides, as on a rarest one.
         out.ask_artist = question.ask_artist
         out.ask_title = question.ask_title
         // ask_album is a song question's third field; on an album question the
         // album title is what ask_title already means, and the backend rejects it.
         if (question.qtype === 'song') out.ask_album = question.ask_album
-        out.hints = question.hints
       }
+      // A box with no catalog kind offers the key's own answers, so the switch means
+      // something on a rarest question too.
+      out.hints = question.hints
       return out
     }),
   }
@@ -394,9 +398,6 @@ export function draftProblems(draft: Draft, tiers: TierPoints[] = []): string[] 
       if (fitted.start !== question.snippet_start_sec || fitted.len !== question.snippet_len_sec)
         at(`snippet does not fit inside the ${CLIP_SEC} second clip`)
     }
-    if (question.qtype !== 'rarest' && !question.ask_artist && !question.ask_title &&
-        !(question.qtype === 'song' && question.ask_album))
-      at('must ask for at least one field')
     // A track with no album row in the catalog cannot answer "which record",
     // and the field would otherwise just go quietly missing from the key.
     if (question.qtype === 'song' && question.ask_album && question.track &&

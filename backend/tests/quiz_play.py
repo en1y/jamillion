@@ -105,7 +105,7 @@ def answer_boxes(cookie, attempt_id, question_id, boxes):
 
 
 with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
-    quiz_id = None
+    quiz_id = free_id = None
     seeded = []
     try:
         QUIZ_DATE = db.execute('SELECT game_today()::text').fetchone()[0]
@@ -149,8 +149,6 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                        lambda q: q['questions'][0].update(time_limit_sec=3),      # 0 or 5..60
                        lambda q: q['questions'][0].update(answers=[{'display': 'x', 'points': 701}]),
                        lambda q: q['questions'][1].update(position=1),
-                       lambda q: q['questions'][6].update(ask_artist=False, ask_title=False,
-                                                          ask_album=False),
                        lambda q: q['questions'][5].update(qtype='album')):        # no album_id
             broken = build_quiz(track_id)
             mutate(broken)
@@ -163,6 +161,38 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         album_asks_album = build_quiz(track_id, album_id)
         album_asks_album['questions'][5]['ask_album'] = True
         assert api('/api/quizzes', album_asks_album, token=TOKEN)[0] == 400
+
+        # -------------------------------------------------- no field asked at all
+        # "How is this artist's name spelled?" over a cover is answered "all caps":
+        # neither box would ever take it, so the question asks for no field and is
+        # played as one free box, scored against the key like a rarest question.
+        free_quiz = build_quiz(track_id, album_id, names)
+        free_quiz['questions'][0] = {
+            'position': 1, 'qtype': 'album', 'prompt': "How is this artist's name spelled?",
+            'album_id': album_id, 'ask_artist': False, 'ask_title': False,
+            'answers': [{'display': 'all caps'}],
+        }
+        status, made, _ = api('/api/quizzes', free_quiz, token=TOKEN)
+        assert status == 201, (status, made)
+        free_id = made['id']
+        free_q = db.execute('SELECT id FROM questions WHERE quiz_id = %s AND position = 1',
+                            (free_id,)).fetchone()[0]
+        _, free_cookie = me()
+        status, flight, _ = api('/api/attempts', {}, cookie=free_cookie)
+        served_free = flight['question']
+        assert served_free['qtype'] == 'album' and served_free['cover'], served_free
+        assert served_free['ask_artist'] is False and served_free['ask_title'] is False, served_free
+        # No catalog behind the box, so what it offers is the key's own answers --
+        # to this player, on this question, now.
+        free_hint = f'/api/suggest?q=all&question={free_q}'
+        assert api(free_hint, cookie=free_cookie)[1] == ['all caps'], api(free_hint, cookie=free_cookie)
+        assert api(free_hint)[1] == [], 'no passport, no answer key'
+        # One request, no field, and the key decides.
+        status, verdict, _ = api(f'/api/attempts/{flight["id"]}/answers',
+                                 {'question_id': free_q, 'text': 'ALL CAPS!'}, cookie=free_cookie)
+        assert status == 200 and verdict['result']['correct'] is True, verdict
+        db.execute('DELETE FROM quizzes WHERE id = %s', (free_id,))
+        free_id = None
 
         # -------------------------------------------------- create the quiz
         status, created, _ = api('/api/quizzes', build_quiz(track_id, album_id, names), token=TOKEN)
@@ -427,8 +457,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
               ' the answer response never serving the next question, own answers on /api/quiz/today,'
               ' and the post-flight reveal sorted by rarity')
     finally:
-        if quiz_id:
-            db.execute('DELETE FROM quizzes WHERE id = %s', (quiz_id,))
+        for gone in (quiz_id, free_id):
+            if gone:
+                db.execute('DELETE FROM quizzes WHERE id = %s', (gone,))
         if seeded:
             db.execute('DELETE FROM players WHERE id = ANY(%s::uuid[])', (seeded,))
         cleanup(db)
