@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   CLIP_SEC, asksOf, clampSnippet, defaultTimeLimit, draftProblems, emptyDraft, expandAnswers,
-  fromQuiz, fullAnswerPoints, normalizeAnswer, onDate, prefillAnswers, reseedAnswers, toPayload,
+  fromQuiz, fullAnswerPoints, normalizeAnswer, onDate, playerBoxes, prefillAnswers, reseedAnswers,
+  toPayload,
 } from './quizdraft.ts'
 import type { Draft, DraftQuestion } from './quizdraft.ts'
 import type { ModQuiz } from './moderator.ts'
@@ -71,6 +72,25 @@ test('a song needs a track and an album needs an album', () => {
   const problems = draftProblems(draft, TIERS)
   assert.ok(problems.includes('Question 1: needs a track'), problems)
   assert.ok(problems.includes('Question 2: needs an album'), problems)
+})
+
+test('a ticked field with no answer in the key is not a box the player sees', () => {
+  const draft = fillable()
+  const album = { id: 7, title: 'Madvillainy', artist: 'Madvillain' }
+  // Both fields ticked, but the key answers the question rather than naming the
+  // record: neither box could ever take "all caps", so neither is put up.
+  draft.questions[0] = { ...draft.questions[0], qtype: 'album', album,
+    answers: [{ display: 'all caps', tier_id: null }] }
+  assert.deepEqual(playerBoxes(draft.questions[0]), [])
+  // The record's own names in the key are what make the boxes real again.
+  assert.deepEqual(playerBoxes({ ...draft.questions[0],
+    answers: [{ display: 'Madvillain — Madvillainy', tier_id: null }] }), ['artist', 'title'])
+  assert.deepEqual(playerBoxes({ ...draft.questions[0],
+    answers: [{ display: 'Madvillainy', tier_id: null }] }), ['title'])
+  // A row tagged with a field counts as its answer whatever it says: an alternative
+  // spelling is still an answer for that box.
+  assert.deepEqual(playerBoxes({ ...draft.questions[0],
+    answers: [{ display: 'Metal Face Doom', tier_id: null, field: 'artist' }] }), ['artist'])
 })
 
 test('an album question can ask for no field at all: one free box, the key decides', () => {

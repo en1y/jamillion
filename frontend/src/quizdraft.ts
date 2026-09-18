@@ -249,6 +249,32 @@ export const asksOf = (question: DraftQuestion) => ({
   album: question.qtype === 'song' && question.ask_album,
 })
 
+/** The boxes the player will actually be given. A field the moderator ticked but
+ *  wrote no answer for is not a box: it would refuse every answer the question is
+ *  really asking for. Mirrors `question_boxes()` in the database, which is what the
+ *  play routes read -- this copy exists only so the editor can say so before a
+ *  draft is ever saved. A field counts as answered when a row is tagged with it, or
+ *  when any row's text mentions the catalog's name for it. */
+export function playerBoxes(question: DraftQuestion): AnswerField[] {
+  const asks = asksOf(question)
+  const pick = question.qtype === 'song' ? question.track
+             : question.qtype === 'album' ? question.album : null
+  const rows = question.answers.filter(answer => answer.display.trim())
+  const keys = rows.map(answer => normalizeAnswer(answer.display))
+  const names: Record<AnswerField, string> = {
+    artist: pick?.artist ?? '',
+    title: pick?.title ?? '',
+    album: pick?.album ?? '',
+  }
+  return (['artist', 'title', 'album'] as AnswerField[]).filter(field => {
+    if (!asks[field]) return false
+    if (rows.some(answer => answer.field === field)) return true
+    // Whole words, padded: "Madvillain" must not be found inside "Madvillainy".
+    const name = normalizeAnswer(names[field])
+    return !!name && keys.some(key => ` ${key} `.includes(` ${name} `))
+  })
+}
+
 /** Just enough of a rarity tier to rank two of them. */
 export interface TierPoints { id: number; points: number }
 

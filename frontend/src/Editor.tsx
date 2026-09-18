@@ -18,8 +18,8 @@ import type {
 } from './catalog'
 import {
   CLIP_SEC, asksOf, clampSnippet, clearDraft, defaultTimeLimit, draftProblems, emptyDraft,
-  fromQuiz, fullAnswerPoints, loadDraft, normalizeAnswer, onDate, reseedAnswers, saveDraft,
-  toPayload,
+  fromQuiz, fullAnswerPoints, loadDraft, normalizeAnswer, onDate, playerBoxes, reseedAnswers,
+  saveDraft, toPayload,
 } from './quizdraft'
 import type { AnswerField, Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
@@ -808,6 +808,8 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
   const limits = LIMITS.includes(question.time_limit_sec)
     ? LIMITS : [...LIMITS, question.time_limit_sec].sort((a, b) => a - b)
   const asked = Object.values(asksOf(question)).filter(Boolean).length
+  // The boxes the player is given, which is the asked-for fields the key answers.
+  const boxes = playerBoxes(question)
   const total = fullAnswerPoints(question, tiers)
   const loose = question.answers.filter(answer => !answer.seeded && !answer.field).length
 
@@ -948,13 +950,18 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
                 </button>
               ))}
           </div>
-          {/* Neither name is a question about the record rather than its credits --
-              "how is this artist's name spelled?" is answered "all caps", and with the
-              boxes on, the catalog refuses that and every other answer it wants. */}
-          {asked === 0 && (
-            <p className="meta">no field asked: the player gets one free box, and the
+          {/* What the player is actually given. A field with no answer of its own in
+              the key is not a box: "how is this artist's name spelled?" is answered
+              "all caps", and an artist box would refuse that and everything else the
+              question wants. The backend works this out the same way, from the key. */}
+          {boxes.length === 0 ? (
+            <p className="meta">no box: the player types one free answer, and the
               answers below are the whole of what counts</p>
-          )}
+          ) : boxes.length < asked ? (
+            <p className="meta">the player only gets {boxes.join(' and ')}: the key has no
+              answer for the {ASKS.filter(([flag]) => !boxes.includes(flag.slice(4) as AnswerField))
+                .map(([, label]) => label.replace('ask for the ', '')).join(' or ')}</p>
+          ) : null}
 
           {question.qtype === 'song' && question.track && (
             <SnippetPicker key={question.track.id} trackId={question.track.id} start={question.snippet_start_sec}
@@ -973,10 +980,10 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
           <div className="asks">
             <button className="chip" type="button" aria-pressed={question.hints}
                     onClick={() => set({ hints: !question.hints })}>
-              {asked === 0 ? 'suggest the accepted answers' : 'suggest names from the catalog'}
+              {boxes.length === 0 ? 'suggest the accepted answers' : 'suggest names from the catalog'}
             </button>
             <span className="meta">{question.hints
-              ? asked === 0 ? 'players see matching answers from three characters in'
+              ? boxes.length === 0 ? 'players see matching answers from three characters in'
                             : 'players see matching names as they type'
               : 'players type it with no list'}</span>
           </div>
@@ -986,7 +993,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
             controls that actually work, so this editor would only be a dead copy. */}
         {!frozen && <details className="qpart answers" open={answersOpen}
                              onToggle={e => setAnswersOpen(e.currentTarget.open)}>
-          <summary>accepted answers · {filled} <span>{asked === 0
+          <summary>accepted answers · {filled} <span>{boxes.length === 0
             ? 'a tier here beats the rarity'
             : 'a player scores every field they get right, added up'}</span></summary>
           <div className="answer-tools">
@@ -1002,7 +1009,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
             {/* Down the list as it reads: Nebula at the top, Supernova at the bottom.
                 Only where a ladder means anything -- a song question's fields are
                 three different questions, not one list from common to obscure. */}
-            {asked === 0 && question.answers.length > 1 && tiers.length > 0 && (
+            {boxes.length === 0 && question.answers.length > 1 && tiers.length > 0 && (
               <button className="chip" type="button" onClick={spreadOverAnswers}
                       title="Nebula at the top of the list, Supernova at the bottom, the rest evenly between">
                 spread the tiers
@@ -1020,7 +1027,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
           {/* "Every Coldplay song over a million listens" is a query, not twenty
               lines of typing. Only on a rarest question: a song or album question
               writes its own key from the pick and the fields it asks for. */}
-          {schema && asked === 0 && (
+          {schema && boxes.length === 0 && (
             <details className="qquery">
               <summary>browse the catalog</summary>
               <CatalogQuery schema={schema} entities={['tracks', 'albums', 'artists']}
