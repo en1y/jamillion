@@ -107,8 +107,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
                            'ORDER BY deezer_rank DESC NULLS LAST LIMIT 1').fetchone()
         assert track, 'The catalog has no track with a preview; seed one first'
         over = build_quiz(track[0])
-        over['questions'][5]['answers'][0]['display'] = LONG_ANSWER + 'é'
-        assert api('/api/quizzes', over, token=TOKEN)[0] == 400   # 101 characters, over the limit
+        over['questions'][5]['answers'][0]['display'] = 'é' * 301
+        assert api('/api/quizzes', over, token=TOKEN)[0] == 400   # 301 characters, over the limit
         status, created, _ = api('/api/quizzes', build_quiz(track[0]), token=TOKEN)
         assert status == 201, (status, created)
         quiz_id = created['id']
