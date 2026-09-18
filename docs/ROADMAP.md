@@ -553,6 +553,27 @@ Decisions worth carrying forward:
   only for a box that question asks. They cost a guess of three letters to surface,
   which is the price of making them typeable at all. Rarest questions are unchanged.
 
+## v1.0.4 — Longer answers, cheaper queries
+
+- [x] An answer may be 300 characters, not 100. A catalog title long enough to be
+      refused by the editor was a title a moderator could not use at all; the
+      player's boxes take the same 300, so an answer the key holds is typeable.
+- [x] The rarity share counts its denominator once per question instead of once per
+      answer row. The reveal and the admin day stats both ran
+      `count(*) FROM attempt_answers` per answer, so a day with a few hundred
+      answers and a few thousand players cost answers x players: 146 ms -> 11 ms for
+      the stats and 100 ms -> 21 ms for the reveal at 500 answers and 8000 players.
+- [x] The editor validates the draft when it changes, not on every render. Expanding
+      seven questions' keys is every spelling of every combination -- 12k rows on a
+      day with ten alternatives a field -- and it ran on each keystroke.
+
+Decisions worth carrying forward:
+
+- **The share's denominator belongs to the question, not the row.** Every answer of a
+  question divides by the same number, so counting it per row is the same count
+  repeated a few hundred times. `submit_answer()` and `rescore_answer()` count once
+  per call already and are left alone.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).

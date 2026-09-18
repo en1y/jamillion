@@ -1,6 +1,6 @@
 // The flight deck: where a moderator writes the day. Everything it talks to is in
 // moderator.ts; everything it decides without a DOM is in quizdraft.ts.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError } from './api'
 import { QuizStats } from './Admin'
 import { navigate } from './routing'
@@ -1021,7 +1021,7 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
             return (
             <div className={alt ? 'answer-row alt' : 'answer-row'} key={index}>
               {alt && <span className="or">or</span>}
-              <input value={answer.display} maxLength={100}
+              <input value={answer.display} maxLength={300}
                      aria-label={alt ? `Another ${answer.field}` : `Answer ${index + 1}`}
                      onChange={e => set({ answers: question.answers.map((row, i) =>
                        i === index ? { ...row, display: e.target.value } : row) })} />
@@ -1105,12 +1105,16 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
   // Every keystroke is a draft: the server takes seven questions or nothing.
   const change = useCallback((next: Draft) => { setDraft(next); saveDraft(date, next) }, [date])
 
+  // Expanding seven questions' keys is every spelling of every combination -- a
+  // few thousand rows on a day with alternatives -- so it runs when the draft
+  // changes, not on every render the seven cards cause.
+  const problems = useMemo(() => draft ? draftProblems(draft, tiers) : [], [draft, tiers])
+
   if (error) return <section className="editor"><p className="notice" role="alert">{error}</p>
     <p><a className="chip" href="/editor">◀ all days</a></p></section>
   if (!draft) return <section className="editor"><p role="status">Opening {formatDate(date)}…</p></section>
 
   const frozen = (quiz?.attempts_started ?? 0) > 0
-  const problems = draftProblems(draft, tiers)
 
   async function save() {
     if (!draft || busy) return

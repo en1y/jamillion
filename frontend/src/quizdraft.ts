@@ -410,7 +410,7 @@ export function draftProblems(draft: Draft, tiers: TierPoints[] = []): string[] 
     // UNIQUE (question_id, normalized) index will actually see.
     const displays = expandAnswers(question, tiers).map(answer => answer.display.trim()).filter(Boolean)
     if (displays.length === 0) at('needs at least one accepted answer')
-    if (displays.some(display => display.length > 100)) at('an answer is over 100 characters')
+    if (displays.some(display => display.length > 300)) at('an answer is over 300 characters')
     const seen = new Set<string>()
     for (const display of displays) {
       const key = normalizeAnswer(display)

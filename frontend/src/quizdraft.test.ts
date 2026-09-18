@@ -113,10 +113,10 @@ test('blank answer rows are dropped, not sent', () => {
 test('an over-long prompt or answer is refused', () => {
   const draft = fillable()
   draft.questions[0] = { ...draft.questions[0], prompt: 'x'.repeat(501) }
-  draft.questions[1] = { ...draft.questions[1], answers: [{ display: 'y'.repeat(101), tier_id: null }] }
+  draft.questions[1] = { ...draft.questions[1], answers: [{ display: 'y'.repeat(301), tier_id: null }] }
   const problems = draftProblems(draft, TIERS)
   assert.ok(problems.includes('Question 1: prompt is over 500 characters'), problems)
-  assert.ok(problems.includes('Question 2: an answer is over 100 characters'), problems)
+  assert.ok(problems.includes('Question 2: an answer is over 300 characters'), problems)
 })
 
 test('the snippet window is clamped inside the clip', () => {

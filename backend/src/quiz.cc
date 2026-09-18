@@ -257,7 +257,7 @@ const char *validate(const Json::Value &body) {
         if (!answers.isArray() || answers.empty()) return "Each question needs at least one answer";
         for (const auto &a : answers) {
             if (!a.isObject() || !a["display"].isString() || a["display"].asString().empty() ||
-                chars(a["display"].asString()) > 100) return "Each answer needs a display of 1 to 100 characters";
+                chars(a["display"].asString()) > 300) return "Each answer needs a display of 1 to 300 characters";
             if (a.isMember("tier_id") && !a["tier_id"].isIntegral()) return "tier_id must be a number";
             // What a combination of fields adds up to, when that is not any one
             // tier's own number. 700 is a perfect run, so nothing above it.
@@ -464,20 +464,26 @@ Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
         }
 
         // Override tier wins; otherwise the live share, same rule as submit_answer.
-        // Unguessed answers have share 0 and land on the rarest tier.
+        // Unguessed answers have share 0 and land on the rarest tier. The share's
+        // denominator is counted once per question, not once per answer row: a
+        // reveal of a day with hundreds of answers is still seven counts.
         for (const auto &row : co_await db->execSqlCoro(
+                 "WITH answered AS ("
+                 "  SELECT aa.question_id, count(*)::numeric AS n FROM attempt_answers aa "
+                 "  JOIN questions q ON q.id = aa.question_id AND q.quiz_id = $1::bigint "
+                 "  GROUP BY aa.question_id) "
                  "SELECT qa.question_id, qa.display, "
                  "  coalesce(ov.name, live.name) AS tier, "
                  "  coalesce(qa.points, ov.points, live.points) AS points, "
                  "  coalesce(ov.sort_order, live.sort_order, 0) AS sort_order, "
                  "  (aa.answer_id IS NOT NULL) AS yours "
                  "FROM question_answers qa "
+                 "LEFT JOIN answered ON answered.question_id = qa.question_id "
                  "LEFT JOIN rarity_tiers ov ON ov.id = qa.tier_id "
                  "LEFT JOIN LATERAL ("
                  "  SELECT rt.name, rt.points, rt.sort_order FROM rarity_tiers rt "
                  "  WHERE qa.tier_id IS NULL AND rt.max_share >= ("
-                 "    qa.guess_count::numeric / greatest("
-                 "      (SELECT count(*)::numeric FROM attempt_answers WHERE question_id = qa.question_id), 1))"
+                 "    qa.guess_count::numeric / greatest(coalesce(answered.n, 0), 1))"
                  "  ORDER BY rt.max_share LIMIT 1"
                  ") live ON true "
                  "LEFT JOIN attempt_answers aa ON aa.question_id = qa.question_id "

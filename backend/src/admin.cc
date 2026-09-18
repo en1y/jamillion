@@ -235,15 +235,21 @@ Task<HttpResponsePtr> quizStats(HttpRequestPtr req, std::string date) {
 
         // One query for every question's top answers, ranked in the database.
         // The share divides by all answers stored for the question, skips included,
-        // which is the denominator submit_answer() and rescore_answer() use.
+        // which is the denominator submit_answer() and rescore_answer() use. It is
+        // counted once per question rather than once per answer row: a day with a
+        // few hundred answers and a few thousand players is the same seven counts.
         for (const auto &row : co_await db->execSqlCoro(
+                 "WITH answered AS ("
+                 "  SELECT aa.question_id, count(*)::numeric AS n FROM attempt_answers aa "
+                 "  JOIN questions q ON q.id = aa.question_id AND q.quiz_id = $1::bigint "
+                 "  GROUP BY aa.question_id) "
                  "SELECT question_id, id, display, is_correct, tier_id, guess_count, share FROM ( "
                  "  SELECT qa.question_id, qa.id, qa.display, qa.is_correct, qa.tier_id, qa.guess_count, "
-                 "    round(qa.guess_count::numeric / greatest((SELECT count(*) FROM attempt_answers aa "
-                 "      WHERE aa.question_id = qa.question_id), 1), 4)::text AS share, "
+                 "    round(qa.guess_count::numeric / greatest(coalesce(answered.n, 0), 1), 4)::text AS share, "
                  "    row_number() OVER (PARTITION BY qa.question_id "
                  "      ORDER BY qa.guess_count DESC, qa.id) AS rn "
                  "  FROM question_answers qa JOIN questions q ON q.id = qa.question_id "
+                 "  LEFT JOIN answered ON answered.question_id = qa.question_id "
                  "  WHERE q.quiz_id = $1::bigint) t "
                  "WHERE rn <= $2::int ORDER BY question_id, rn",
                  quizId, top)) {

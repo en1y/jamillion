@@ -580,7 +580,7 @@ function Input({ question, field, value, onChange, autoFocus, invalid, hint, hel
              // a phone: the question is at the top of the page, keep it on screen
              onFocus={() => { if (matchMedia('(pointer: coarse)').matches) scrollTo(0, 0) }}
              autoFocus={autoFocus} autoComplete="off" autoCapitalize="off" spellCheck={false}
-             enterKeyHint={hint ?? 'send'} maxLength={100} aria-label={field.label} placeholder={field.label}
+             enterKeyHint={hint ?? 'send'} maxLength={300} aria-label={field.label} placeholder={field.label}
              aria-invalid={invalid || undefined} />
       {shown.length > 0 && (
         <ul className="picks" ref={list} id={`${field.key}-picks`} role="listbox" aria-label={`${field.label} from the catalog`}>
