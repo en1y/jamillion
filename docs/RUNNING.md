@@ -164,7 +164,7 @@ docker compose -f compose.yaml -f compose.build.yaml up --build -d
 
 # publish a release: the version from backend/CMakeLists.txt, and latest
 docker login
-for tag in 1.0.4 latest; do
+for tag in 1.0.5 latest; do
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
 done
@@ -511,7 +511,7 @@ The integration script uses `psycopg` from `scripts/requirements.txt`, accepts `
 
 The game day rolls over at **04:00 UTC**, not midnight: `game_today()` in the database is the one definition of "today", used by every route here.
 
-**Publish a day's quiz.** Moderator or admin only. Exactly seven questions, positions 1 to 7, each with at least one accepted answer. `tier_id` on an answer is a moderator override that beats the computed rarity; leave it out to let the share decide. `published` defaults to true. `qtype` is `rarest`, `song` (needs `track_id`, `snippet_start_sec`, `snippet_len_sec`) or `album` (needs `album_id`). Song and album questions take `ask_artist` and `ask_title` (both default true, at least one must stay true): the player gets one field per flag, and what they type is joined as `Artist — Title` before scoring, which normalises to the same key as an accepted answer written `Artist Title`. A player who fills only one field sends only that name, so an accepted answer of just the artist, with a lower fixed tier, is how partial credit works.
+**Publish a day's quiz.** Moderator or admin only. Exactly seven questions, positions 1 to 7, each with at least one accepted answer. `tier_id` on an answer is a moderator override that beats the computed rarity; leave it out to let the share decide. `published` defaults to true. `qtype` is `rarest`, `song` (needs `track_id`, `snippet_start_sec`, `snippet_len_sec`) or `album` (needs `album_id`). Song and album questions take `ask_artist` and `ask_title` (both default true): the player gets one field per flag, and what they type is joined as `Artist — Title` before scoring, which normalises to the same key as an accepted answer written `Artist Title`. With every flag false the question asks for no field at all — "how is this artist's name spelled?" over a cover — and the player gets one free box scored against the key, like a rarest question. A player who fills only one field sends only that name, so an accepted answer of just the artist, with a lower fixed tier, is how partial credit works.
 
 ```bash
 curl -X POST localhost:8080/api/quizzes -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -533,7 +533,7 @@ Find `track_id` and `album_id` with `POST /api/catalog` (section 3).
 
 `time_limit_sec` is **0 for no clock** or 5–60 seconds; it defaults to 20 when the key is absent. An untimed question is served with `deadline: null`, the player's ring is not drawn, and nothing is ever counted late. The editor defaults a song or an album question to no clock and a rarest question to 20 s.
 
-`ask_artist`, `ask_title` and `ask_album` are the fields a song or album question puts in front of the player, in that order; their answer is those fields joined with `—`. At least one must be true. Each field is a separate input in the player's HUD with the catalog's completions listed under it (`/api/suggest`), so the three-field question is picked rather than typed.
+`ask_artist`, `ask_title` and `ask_album` are the fields a song or album question puts in front of the player, in that order; their answer is those fields joined with `—`. None of them true is one free box instead, scored against the key. Each field is a separate input in the player's HUD with the catalog's completions listed under it (`/api/suggest`), so the three-field question is picked rather than typed.
 
 The `answers` you POST are the key exactly as stored: the API knows nothing about fields and combinations. It is the **editor** that expands them — one row per field, plus every combination of those fields.
 
@@ -568,11 +568,17 @@ Since v0.6.0 that attempt also carries `answers`, your own results so far, one r
 **The response is the result and the running totals, never the next question** (`"question"` is always `null` here). Since v0.6.0 the next question is served only by the next `POST /api/attempts`, because that is what starts its timer: a player reading their result must not be spending the next question's twenty seconds.
 
 ```json
-{"result": {"timed_out": false, "correct": true, "tier": "Main Sequence", "points": 30},
+{"result": {"timed_out": false, "correct": true, "tier": "Main Sequence", "points": 30,
+            "answers": [{"display": "Kid A", "tier": "Main Sequence", "points": 30, "yours": true},
+                        {"display": "OK Computer", "tier": "Nebula", "points": 10, "yours": false}]},
  "id": 9, "quiz_id": 5, "total_points": 30, "answered": 1, "finished": false, "question": null}
 ```
 
-A rarest answer is matched against that question's key: exactly, or within one slip of spelling per six characters (under four characters, exactly only), which is how a typo scores the answer it meant. An answer the key cannot place at all is refused with **422** and costs nothing -- no row, no guess count, the question stays current. Past the clock the box arrives blank, so a refusal can never eat the guess.
+`result.answers` is the question's key, read out now that the question has settled: every accepted answer with the tier it sits in and what it is worth, rarest first, `yours` on the one that was matched. The player's verdict prints it above NEXT, so a flight is not the first time they learn what would have counted.
+
+A free box -- a rarest question, or a song or album question that asks for no field -- is matched against that question's key: exactly, or within one slip of spelling per six characters (under four characters, exactly only), which is how a typo scores the answer it meant. What it cannot place is refused with **422** while there is still time to fix it, and costs nothing: no row, no guess count, the question stays current. The key is searched again more loosely first (one slip per three) and a hit rides along, `{"error": "Did you mean that?", "did_you_mean": "Texarkana"}`, so the client can ask instead of just saying no.
+
+`"expired": true` in the body is the client's clock sending the box as it stands. Nothing is refused then: an answer the key cannot place lands as the wrong answer it is, worth nothing, with what was typed kept as `raw_text`. It is the only way a wrong free answer is stored, which is why a refusal can never eat the guess -- the clock always gets to send. (The server's own lateness check is separate and stricter: past `time_limit_sec + 3` the box is blanked whatever the client says.)
 
 Rarity is read as the answer lands: an accepted answer given by a share of players at or below a tier's `max_share` takes the rarest tier that fits, and the points are then frozen. The first player to give a correct answer therefore scores Nebula, exactly as in Krillion. A guess nobody has approved is still stored, with `is_correct` null, waiting for the v0.4 moderator review.
 
@@ -593,6 +599,8 @@ curl -b /tmp/jam.cookies -H "Authorization: Bearer $ACCESS_TOKEN" localhost:8080
 Signed in, the list covers every player row of the account, the same fan-out `GET /api/players/{id}` uses, so a flight taken on another browser is in it. A guest row reports only itself. One row per day: `attempts` is unique per `(player_id, quiz_id)` rather than per account, so two browsers that each flew a day as guests and then signed into the same account own two attempts for it, and the history keeps the better one. `answers` names the tier you were given and never the accepted answer your guess matched: that is `/api/players/{id}`'s job, and it is a moderator route.
 
 **Completions.** `GET /api/suggest?kind=artist|title|album&q=` returns up to eight catalog names for the answer fields: prefix matches first, then by popularity, nothing under two letters. It is public and reads only the catalog, never the answer key.
+
+With `question=` and `field=` the names the moderator accepted for that box are offered first, and with **no `kind` at all** — a free box, which has no catalog behind it — the question's own accepted answers are all it offers. Either way those rows come out only for the player's own current, unsettled question, from three characters in, and only while the question's `hints` switch is on, which is what makes the switch mean something on a rarest question.
 
 **Is that a real name?** `GET /api/known?kind=artist|title|album&q=` answers `{"known": true|false}` for one field's worth of text. It compares through `normalize_answer()`, the same collapse the scorer uses, so `radiohead` and `RADIOHEAD!` are both known. An empty `q` is `known`, because an empty field is a deliberate skip. Public and catalog-only for the same reason `/api/suggest` is: it says nothing about what is accepted for a question.
 
@@ -770,7 +778,7 @@ curl -X PATCH localhost:8080/api/questions/533 -H "Authorization: Bearer $ACCESS
   -H 'Content-Type: application/json' -d '{"prompt": "Who sings this, and what is it called?"}'
 ```
 
-While the day is unplayed it also takes `time_limit_sec` (5–60), `snippet_start_sec` and `snippet_len_sec` (song questions; the window must fit inside the 30 s clip), and `ask_artist` / `ask_title` (song and album; at least one must stay true). A key left out keeps its value. Any of those on a day that has attempts is **409 `Only the prompt can change once the day has been played`**: v0.3.0 froze points at answer time, and moving a track, a snippet or the answer key under people mid-flight would invalidate scores they have already been shown. `qtype`, `position`, `track_id` and `album_id` are never editable — a different track is a different question, and on an unplayed day re-POSTing the day already does it. The response is the question as `GET /api/quizzes/{date}` shapes it. Unknown id 404, empty body 400 `Nothing to change`.
+While the day is unplayed it also takes `time_limit_sec` (5–60), `snippet_start_sec` and `snippet_len_sec` (song questions; the window must fit inside the 30 s clip), and `ask_artist` / `ask_title` (song and album; all of them off is a free-box question). A key left out keeps its value. Any of those on a day that has attempts is **409 `Only the prompt can change once the day has been played`**: v0.3.0 froze points at answer time, and moving a track, a snippet or the answer key under people mid-flight would invalidate scores they have already been shown. `qtype`, `position`, `track_id` and `album_id` are never editable — a different track is a different question, and on an unplayed day re-POSTing the day already does it. The response is the question as `GET /api/quizzes/{date}` shapes it. Unknown id 404, empty body 400 `Nothing to change`.
 
 **Player detail.** `GET /api/players/{id}` reports every flight of that player with its height, and each answer with the accepted answer it matched. A signed-in player has one row per browser, so a linked row reports the whole account rather than the one browser.
 

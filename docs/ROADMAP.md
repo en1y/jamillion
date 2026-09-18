@@ -574,6 +574,41 @@ Decisions worth carrying forward:
   repeated a few hundred times. `submit_answer()` and `rescore_answer()` count once
   per call already and are left alone.
 
+## v1.0.5 — Questions the key decides
+
+- [x] A song or album question may ask for no field at all. "How is this artist's
+      name spelled?" over a cover is answered "all caps", and with the artist and
+      title boxes on, the catalog refused that answer and every other one the
+      question actually wanted. With no field asked, the player gets one free box
+      scored against the key, exactly as a rarest question is; the editor says so
+      and hands over the key tools (the ladder, the catalog query) that were rarest
+      questions' until now.
+- [x] The verdict reads the key out: every answer that would have counted, its tier
+      and its points, in a container right above NEXT. Waiting for the whole flight
+      to land left a player with no idea what they had missed.
+- [x] A free box offers the question's own accepted answers as completions, from
+      three characters in, under the same `hints` switch the catalog boxes use --
+      which now means something on a rarest question, where it was inert.
+- [x] A free answer the key cannot place is still refused while the clock runs --
+      there is time to fix it -- but the refusal now carries the key's nearest
+      spelling, so the player is asked "did you mean X?" the way Krillion does rather
+      than just told no. `near_answer()` is the looser twin of `match_answer()`, which
+      still corrects a single slip silently.
+- [x] What the clock sends lands. The timer's own submit carries `expired`, and the
+      tower takes the box as it stands: a wrong answer is then a wrong answer worth
+      nothing, with what was typed kept, instead of being bounced back to a question
+      with no time left on it or blanked into a skip.
+
+Decisions worth carrying forward:
+
+- **The boxes are the moderator's decision, not the qtype's.** A cover or a clip is
+  the *subject* of a question; what the answer is made of is the key. The player's
+  UI reads the same three flags the editor writes, and none of them set is a
+  legitimate question rather than an error to refuse.
+- **The answer key stops being a secret the moment its question settles.** Hints
+  before that are still only served for the player's own current question, three
+  characters in.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).
