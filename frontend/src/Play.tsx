@@ -796,9 +796,9 @@ function Ask({ question, attemptId, answered, token, onAnswered, onLost }: {
 
 /** The verdict reads out a beat after it lands; behind it the rocket boosts and
  *  the stars stream past, which is what says "you climbed". */
-function Verdict({ result, raw, expired, points, max, tiers, last, leaving, onNext }: {
+function Verdict({ result, raw, expired, points, max, tiers, qtype, last, leaving, onNext }: {
   result: Result; raw: string; expired: boolean; points: number; max: number; tiers: Today['tiers']
-  last: boolean; leaving: boolean; onNext: () => void
+  qtype: Question['qtype']; last: boolean; leaving: boolean; onNext: () => void
 }) {
   // The client's timer fired, or the server counted it late: either way, the clock.
   const headline = (result.timed_out || expired) && !result.correct ? 'THE CLOCK BEAT YOU'
@@ -843,6 +843,26 @@ function Verdict({ result, raw, expired, points, max, tiers, last, leaving, onNe
           </ul>
         )}
         {!result.correct && said && <p className="meta">A moderator may still accept it.</p>}
+        {/* The question is over, so the key can be read: every answer that would
+            have counted, what tier it sits in and what it was worth. Waiting for
+            the whole flight to say so left a player with no idea what they missed. */}
+        {result.answers && result.answers.length > 0 && (
+          <div className="key">
+            <p className="fathom">what counted <span>{result.answers.length} answers</span></p>
+            <ul className="sheet">
+              {result.answers.filter(option => option.points > 0 || option.yours).map(option => (
+                <li key={option.display} className={option.yours ? 'yours' : undefined}>
+                  {qtype === 'rarest' && <span className="glyph"><TierIcon tier={option.tier} tiers={tiers} /></span>}
+                  <span className="said">
+                    {option.display}{option.yours && <i>you</i>}
+                    {option.tier && <small>{option.tier}</small>}
+                  </span>
+                  <b>+{option.points}</b>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <button className="cta" type="button" autoFocus onClick={() => { sfx('click'); onNext() }}>{last ? 'SEE RESULTS ▲' : 'NEXT ▲'}</button>
       </div>
     </section>
@@ -853,7 +873,8 @@ export function Play({ today, max, token, onPoints, onDone }: {
   today: Today; max: number; token?: string; onPoints: (points: number, mood?: Mood) => void; onDone: () => void
 }) {
   const [progress, setProgress] = useState<Progress | null>(null)
-  const [last, setLast] = useState<{ result: Result; raw: string; expired: boolean; points: number; last: boolean } | null>(null)
+  const [last, setLast] = useState<{ result: Result; raw: string; expired: boolean; points: number
+                                     qtype: Question['qtype']; last: boolean } | null>(null)
   const [error, setError] = useState('')
   const [leaving, setLeaving] = useState(false)   // the verdict drifts off while the next question loads
 
@@ -883,6 +904,7 @@ export function Play({ today, max, token, onPoints, onDone }: {
          onAnswered={(answered, raw, expired) => {
            onPoints(answered.total_points, answered.result.correct ? 'boost' : 'tumble')
            setLast({ result: answered.result, raw, expired, points: answered.total_points,
+                     qtype: progress.question!.qtype,
                      last: answered.answered >= today.question_count })
          }} />
   )

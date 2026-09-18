@@ -130,6 +130,46 @@ Task<std::vector<std::string>> customNames(HttpRequestPtr req, const std::string
     co_return out;
 }
 
+// The accepted answers of one question, with the tier each is worth now and which
+// one the player matched. Only ever called for a question that has just settled,
+// which is when the key stops being a secret. Same rule as the reveal: the
+// moderator's override wins, otherwise the live share decides the tier.
+Task<Json::Value> answerKey(long long questionId, long long attemptId) {
+    Json::Value answers(Json::arrayValue);
+    try {
+        for (const auto &row : co_await app().getDbClient()->execSqlCoro(
+                 "WITH answered AS (SELECT count(*)::numeric AS n FROM attempt_answers aa "
+                 "                  WHERE aa.question_id = $1::bigint) "
+                 "SELECT qa.display, coalesce(ov.name, live.name) AS tier, "
+                 "  coalesce(qa.points, ov.points, live.points) AS points, "
+                 "  coalesce(ov.sort_order, live.sort_order, 0) AS sort_order, "
+                 "  (aa.answer_id IS NOT NULL) AS yours "
+                 "FROM question_answers qa CROSS JOIN answered "
+                 "LEFT JOIN rarity_tiers ov ON ov.id = qa.tier_id "
+                 "LEFT JOIN LATERAL ("
+                 "  SELECT rt.name, rt.points, rt.sort_order FROM rarity_tiers rt "
+                 "  WHERE qa.tier_id IS NULL AND rt.max_share >= "
+                 "    (qa.guess_count::numeric / greatest(answered.n, 1)) "
+                 "  ORDER BY rt.max_share LIMIT 1"
+                 ") live ON true "
+                 "LEFT JOIN attempt_answers aa ON aa.question_id = qa.question_id "
+                 "  AND aa.attempt_id = $2::bigint AND aa.answer_id = qa.id "
+                 "WHERE qa.question_id = $1::bigint AND qa.is_correct "
+                 "ORDER BY points DESC NULLS LAST, sort_order DESC, qa.display LIMIT 60",
+                 questionId, attemptId)) {
+            Json::Value answer;
+            answer["display"] = row["display"].as<std::string>();
+            answer["tier"] = nullable(row["tier"]);
+            answer["points"] = row["points"].isNull() ? 0 : row["points"].as<int>();
+            answer["yours"] = row["yours"].as<bool>();
+            answers.append(answer);
+        }
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();   // the verdict still reads without its key
+    }
+    co_return answers;
+}
+
 // Report the attempt's progress and, when serve is set, hand over its current
 // question, stamping when it was first shown. Re-serving the same question keeps
 // the original started_at, so a refresh does not hand out extra time.
@@ -742,6 +782,10 @@ Task<HttpResponsePtr> answer(HttpRequestPtr req, long long attemptId) {
             }
             result["fields"] = shown;
         }
+
+        // The question is settled, so its key is no longer a secret: the verdict reads
+        // out what would have been accepted and what each answer was worth.
+        result["answers"] = co_await answerKey(questionId, attemptId);
 
         // serve = false: the next question's timer starts when the player asks for
         // it with POST /api/attempts, not while they are reading this result.

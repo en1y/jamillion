@@ -377,6 +377,13 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .boxes li i { flex: none; min-width: 7em; text-align: left; font-style: normal; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--flare); }
 .boxes li.miss b, .boxes li.miss i, .boxes li.miss em { color: var(--mute); }
 
+/* the key, read out with the verdict and sitting right above NEXT */
+.key { margin: 14px auto 12px; max-width: 30rem; text-align: left;
+  border: 1px solid var(--line); background: #0b152680; padding: 10px 6px 4px; }
+.key .fathom { margin: 0 8px 4px; }
+.key .sheet { padding-left: 8px; max-height: 13rem; }
+.key .sheet li { font-size: 15px; }
+
 /* --- flight log: the same row vocabulary as .haul, opened by <details> ---- */
 .logbook-stats { flex-wrap: wrap; margin: 4px 0 12px; }
 .flights { list-style: none; width: 100%; min-width: 0; padding: 0; margin: 0 0 12px; }

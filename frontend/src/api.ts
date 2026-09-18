@@ -67,7 +67,9 @@ export interface Progress {
 /** One box of a song or album question, and whether it landed. */
 export interface FieldResult { field: string; text: string; correct: boolean; points: number; tier: string | null }
 export interface Result { timed_out: boolean; correct: boolean; tier: string | null; points: number
-                          fields?: FieldResult[] }
+                          fields?: FieldResult[]
+                          /** The key, now that the question has settled: what would have counted. */
+                          answers?: RevealedAnswer[] }
 /** A box parked at the tower: stored, nothing scored, nothing given away. */
 export interface Stored { stored: string; remaining: string[] }
 export interface Answered extends Progress { result: Result }

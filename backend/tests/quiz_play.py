@@ -191,6 +191,9 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         status, verdict, _ = api(f'/api/attempts/{flight["id"]}/answers',
                                  {'question_id': free_q, 'text': 'ALL CAPS!'}, cookie=free_cookie)
         assert status == 200 and verdict['result']['correct'] is True, verdict
+        # The question has settled, so the verdict reads the key out.
+        assert [a['display'] for a in verdict['result']['answers']] == ['all caps'], verdict['result']
+        assert verdict['result']['answers'][0]['yours'] is True, verdict['result']
         db.execute('DELETE FROM quizzes WHERE id = %s', (free_id,))
         free_id = None
 
@@ -241,7 +244,11 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         # 1 in 9 lands two tiers above the crowd's answer.
         status, body = answer(cookie, attempt_id, questions[1], '  KID-a! ')
         assert status == 200, (status, body)
-        assert body['result'] == {'timed_out': False, 'correct': True, 'tier': 'Main Sequence', 'points': 30}, body['result']
+        assert {k: v for k, v in body['result'].items() if k != 'answers'} == \
+               {'timed_out': False, 'correct': True, 'tier': 'Main Sequence', 'points': 30}, body['result']
+        # Rarest first, the crowd's answer under it, and the one that was yours marked.
+        assert [(a['display'], a['tier'], a['yours']) for a in body['result']['answers']] == \
+               [('Kid A', 'Main Sequence', True), ('OK Computer', 'Nebula', False)], body['result']['answers']
         assert body['total_points'] == 30 and body['answered'] == 1
         # Answering does not serve the next question, so no timer is running while
         # the player reads the result; POST /api/attempts starts question 2's.
@@ -271,7 +278,8 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         db.execute("UPDATE attempts SET question_started_at = now() - interval '60 seconds' WHERE id = %s",
                    (attempt_id,))
         status, body = answer(cookie, attempt_id, questions[4], 'Answer 4')    # correct, but too late
-        assert body['result'] == {'timed_out': True, 'correct': False, 'tier': None, 'points': 0}, body['result']
+        assert {k: v for k, v in body['result'].items() if k != 'answers'} == \
+               {'timed_out': True, 'correct': False, 'tier': None, 'points': 0}, body['result']
         assert db.execute('SELECT guess_count FROM question_answers WHERE question_id = %s AND normalized = %s',
                           (questions[4], 'answer 4')).fetchone()[0] == 0, 'a timeout must not count as a guess'
         assert body['total_points'] == 30
