@@ -665,6 +665,22 @@ Decisions worth carrying forward:
       labels stay 14px while each tick stays level with its AU. Pulled out, the
       plain ticks fade, then every other label, so the labels never crowd.
 
+## v1.0.8 — Fewer hand-rolled parts
+
+- [x] Firefox no longer leaks while the camera zooms. The old starfield called
+      `createPattern` on a canvas it redrew every frame, and Firefox kept a snapshot
+      per frame: ~90 MB per zoom out and back, 4.8 GB in four minutes of trips. The
+      flow starfield from v1.0.7 is flat at ~170 MB; a comment says why the tile
+      must not come back. The images on Docker Hub before v1.0.7 still leak.
+- [x] The frontend's seventeen fetch effects are TanStack Query: each is a
+      `useQuery` (`useInfiniteQuery` for the haul's pages) keyed on what it reads,
+      so the `let live = true` guards are gone. No retries and no refetch on
+      focus, as before; a debounce lives inside the queryFn and aborts with its key.
+- [x] The editor's snippet picker is a wavesurfer.js waveform with one region:
+      drag an edge to trim, the middle to slide, bare waveform to draw a new
+      window; the sliders stay. wavesurfer loads inside the picker, so the
+      player's bundle never carries it.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).
