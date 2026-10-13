@@ -164,17 +164,28 @@ export const suggest = (kind: SuggestKind | null, q: string, box?: Box, token?: 
 export const isKnown = (kind: SuggestKind, q: string, box?: Box, token?: string) =>
   call<{ known: boolean }>(`/api/known${query({ kind, q, ...box })}`, token)
 
-export interface RevealedAnswer { display: string; tier: string | null; points: number; yours: boolean }
-export interface RevealedQuestion { position: number; prompt: string; qtype: string; answers: RevealedAnswer[] }
+/** `guesses` is how many pilots typed it: the count the rarity was read from. */
+export interface RevealedAnswer { display: string; tier: string | null; points: number; guesses: number; yours: boolean }
+/** `chose` is how many pilots landed on the answer this flight matched, this one
+ *  included; null when it matched nothing. */
+export interface RevealedQuestion { position: number; prompt: string; qtype: string; chose: number | null }
 export interface Reveal {
   questions: RevealedQuestion[]
   dist: number[]
   better_than: number
 }
 
-/** Accepted answers for today, rarest first, plus the day's score curve. 403 until landed. */
+/** Today's prompts and score curve. 403 until landed. */
 export const getReveal = (token?: string) =>
   call<Reveal>('/api/quiz/today/reveal', token)
+
+/** One question's accepted answers, rarest first, a hundred from `offset`. `q`
+ *  searches the whole key and `tier` keeps one tier; `total` is how many pass both.
+ *  `tiers` is how many the search leaves in each tier, and under "all" in every
+ *  one: the counts on the filter row. 403 until landed. */
+export interface RevealPage { answers: RevealedAnswer[]; total: number; tiers: Record<string, number> }
+export const getRevealPage = (position: number, offset: number, q: string, tier: string, token?: string) =>
+  call<RevealPage>(`/api/quiz/today/reveal/${position}${query({ q, tier, offset: offset || undefined })}`, token)
 
 /** A prompt idea from the post-flight screen. 3 per game day. */
 export const sendIdea = (text: string, token?: string) =>

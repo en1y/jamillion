@@ -397,6 +397,15 @@ input[type="range"] { flex: 1; width: auto; margin: 0; padding: 0; border: 0; ba
 .round .more { flex: none; width: 1em; color: var(--mute); }
 .sheet { padding: 0 4px 8px 28px; max-height: 18rem; overflow-x: hidden; overflow-y: auto; }
 .sheet li { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px; }
+.sheet-find { margin: 0 0 6px 28px; width: calc(100% - 28px); }
+.sheet-tiers { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px 28px; }
+.sheet-tiers button { --tier: var(--ink); padding: 5px 9px 4px; border: 1px solid color-mix(in srgb, var(--tier) 40%, transparent);
+  background: none; color: var(--tier); font-size: 13px; letter-spacing: .04em; }
+.sheet-tiers button span { color: var(--mute); }
+.sheet-tiers button.on { border-color: var(--tier); background: color-mix(in srgb, var(--tier) 14%, transparent); }
+.sheet-foot { display: flex; justify-content: space-between; gap: 8px; margin: 4px 0 8px 28px; font-size: 12px; letter-spacing: .06em; color: var(--mute); }
+.round .said small.chose { margin-top: 2px; text-transform: none; }
+.round .said small.chose b { color: var(--ion); }
 .sheet li.yours { background: #16294a80; }
 .sheet i { margin-left: 8px; font-style: normal; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ion); }
 

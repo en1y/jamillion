@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent } from 'react'
-import { ApiError, getFlights, getReveal, isKnown, sendIdea, startAttempt, submitAnswer, submitField, suggest } from './api'
-import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
+import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties, FormEvent, ReactNode } from 'react'
+import { ApiError, getFlights, getReveal, getRevealPage, isKnown, sendIdea, startAttempt, submitAnswer, submitField, suggest } from './api'
+import type { Answered, OwnAnswer, Progress, Question, Result, RevealedAnswer, RevealedQuestion, SuggestKind, Today } from './api'
 import {
   altitudeAu, bandFor, countdown, curveGeom, EMPTY_LOG,
   LANDMARKS, logDepth, nextRollover, passed, PLUTO_AU, RULER, scoreBands, shareText,
@@ -1062,6 +1062,128 @@ function Ideas({ token }: { token?: string }) {
   )
 }
 
+/** Whatever goes wrong inside one opened question stays there: the rest of the
+ *  results page -- the score, the haul, the share button -- keeps standing. */
+class Contained extends Component<{ children: ReactNode }, { broken: boolean }> {
+  state = { broken: false }
+  static getDerivedStateFromError() { return { broken: true } }
+  componentDidCatch(error: unknown) { console.error(error) }
+  render() {
+    return this.state.broken
+      ? <p className="meta sheet-foot">the star charts for this question did not load — refresh to try again</p>
+      : this.props.children
+  }
+}
+
+/** One question's accepted answers after landing, each with how many times it was
+ *  guessed. The tower hands them over a hundred at a time and the last row coming
+ *  into view asks for the next hundred, so the list scrolls as if it were whole. The
+ *  search and the tier chips run on the tower over the whole key, not over the rows
+ *  already here, and each chip counts what the search leaves in its tier. */
+function Sheet({ position, qtype, tiers, token }: {
+  position: number; qtype?: string; tiers: Today['tiers']; token?: string
+}) {
+  const [typed, setTyped] = useState('')
+  const [want, setWant] = useState({ q: '', tier: '', offset: 0 })
+  // The rows remember which search and chip they answer, so a page of the old one is
+  // never asked for, or appended, while the new one is on its way.
+  const [got, setGot] = useState<{ q: string; tier: string; rows: RevealedAnswer[]; total: number
+                                   counts: Record<string, number> } | null>(null)
+  const [failed, setFailed] = useState(false)
+  const list = useRef<HTMLUListElement>(null)
+  const end = useRef<HTMLLIElement>(null)
+  useEffect(() => {
+    const timer = setTimeout(() => setWant(prev => prev.q === typed.trim() ? prev : { ...prev, q: typed.trim(), offset: 0 }), 250)
+    return () => clearTimeout(timer)
+  }, [typed])
+  useEffect(() => {
+    let live = true
+    getRevealPage(position, want.offset, want.q, want.tier, token).then(page => {
+      if (!live) return
+      setFailed(false)
+      if (!want.offset && list.current) list.current.scrollTop = 0   // a new search starts at its top
+      // A tower a release behind sends no counts, or no total: no chips then, not a crash.
+      setGot(prev => {
+        const same = want.offset && prev?.q === want.q && prev.tier === want.tier
+        const rows = page.answers ?? []
+        return { q: want.q, tier: want.tier, total: page.total ?? rows.length, counts: page.tiers ?? {},
+                 rows: same ? [...prev.rows, ...rows] : rows }
+      })
+    }).catch(() => { if (live) setFailed(true) })
+    return () => { live = false }
+  }, [position, want, token])
+  const current = got !== null && got.q === want.q && got.tier === want.tier
+  const more = current && got.rows.length < got.total
+  useEffect(() => {
+    const node = end.current
+    if (!node || !more || !got) return
+    const next = got.rows.length
+    // Watched against the sheet, not the window, and a few rows early, so the next
+    // hundred is usually here before the last row is.
+    const watch = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setWant(prev => prev.offset === next ? prev : { ...prev, offset: next })
+    }, { root: list.current, rootMargin: '0px 0px 240px 0px' })
+    watch.observe(node)
+    return () => watch.disconnect()
+  }, [more, got])
+  // A song or album key is a ladder of how much of the answer you named, not a
+  // rarity ladder, so only a rarest question gets the tier chips. Rarest first,
+  // the way the list runs; an empty tier is left off unless it is the one picked.
+  const chips = qtype === 'rarest' && got
+    ? [...tiers].sort((a, b) => b.points - a.points)
+        .filter(tier => got.counts[tier.name] || tier.name === want.tier)
+    : []
+  const pick = (tier: string) => setWant(prev => ({ ...prev, tier, offset: 0 }))
+  return (
+    <div className="sheet-wrap">
+      {chips.length > 0 && (
+        <div className="sheet-tiers" role="group" aria-label="Show one tier">
+          <button type="button" className={want.tier === '' ? 'on' : undefined} aria-pressed={want.tier === ''}
+                  onClick={() => pick('')}>All <span>{(got?.counts.all ?? 0).toLocaleString()}</span></button>
+          {chips.map(tier => (
+            <button key={tier.name} type="button" className={want.tier === tier.name ? 'on' : undefined}
+                    aria-pressed={want.tier === tier.name} style={{ '--tier': TIER_META[tier.name]?.color } as CSSProperties}
+                    onClick={() => pick(want.tier === tier.name ? '' : tier.name)}>
+              {tier.name} <span>{(got?.counts[tier.name] ?? 0).toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <input type="search" className="sheet-find" value={typed} maxLength={100}
+             placeholder="search all answers…" aria-label={`Search the accepted answers of question ${position}`}
+             onChange={event => setTyped(event.target.value)} />
+      <ul className="sheet" ref={list}>
+        {failed && <li className="meta">the star charts are not answering — try again in a moment</li>}
+        {!failed && got === null && <li className="meta">unsealing the star charts…</li>}
+        {got?.rows.length === 0 &&
+          <li className="meta">{got.q || got.tier ? 'nothing like that in the key' : 'no chart for this question'}</li>}
+        {/* The ladder again: on a song or album key the points say it, not the tier. */}
+        {got?.rows.map(option => (
+          <li key={option.display} className={option.yours ? 'yours' : undefined}>
+            {qtype === 'rarest' && <span className="glyph"><TierIcon tier={option.tier} tiers={tiers} /></span>}
+            <span className="said">
+              {option.display}{option.yours && <i>you</i>}
+              <small>
+                {qtype === 'rarest' && option.tier && TIER_META[option.tier] && `${TIER_META[option.tier].blurb} · `}
+                {option.guesses ? `${option.guesses.toLocaleString()} ${option.guesses === 1 ? 'guess' : 'guesses'}`
+                                : 'never guessed'}
+              </small>
+            </span>
+            <b>+{option.points}</b>
+          </li>
+        ))}
+        {more && <li ref={end} className="meta">charting the next hundred…</li>}
+      </ul>
+      {got && got.total > 0 && (
+        <p className="sheet-foot">
+          <span>{got.rows.length.toLocaleString()} of {got.total.toLocaleString()} answers</span>
+          {more && <span>scroll for more</span>}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function Results({ today, max, token }: { today: Today; max: number; token?: string }) {
   const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
@@ -1150,31 +1272,14 @@ export function Results({ today, max, token }: { today: Today; max: number; toke
                   <span className="said">
                     <small>{question?.prompt ?? `question ${answer.position}`}</small>
                     {answer.raw_text.trim() ? answer.raw_text.trim() : (answer.tier ?? 'skipped')}
+                    {answer.correct && question?.chose != null &&
+                      <small className="chose"><b>{Math.max(0, question.chose - 1).toLocaleString()}</b> other
+                        {question.chose === 2 ? ' pilot' : ' pilots'} chose this</small>}
                   </span>
                   <b>{answer.points}</b>
                   <span className="more" aria-hidden="true">{expanded ? '−' : '+'}</span>
                 </button>
-                {expanded && (
-                  <ul className="sheet">
-                    {sheet === null && <li className="meta">unsealing the star charts…</li>}
-                    {sheet && !question && <li className="meta">no chart for this question</li>}
-                    {/* A song or album key is a ladder of how much of the answer you named,
-                        not a rarity ladder: the tier glyph and its blurb say nothing there,
-                        the points do. Answers worth nothing are left off either way. */}
-                    {question?.answers.filter(option => option.points > 0 || option.yours).map(option => (
-                      <li key={option.display} className={option.yours ? 'yours' : undefined}>
-                        {question.qtype === 'rarest' &&
-                          <span className="glyph"><TierIcon tier={option.tier} tiers={today.tiers} /></span>}
-                        <span className="said">
-                          {option.display}{option.yours && <i>you</i>}
-                          {question.qtype === 'rarest' && option.tier && TIER_META[option.tier] &&
-                            <small>{TIER_META[option.tier].blurb}</small>}
-                        </span>
-                        <b>+{option.points}</b>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {expanded && <Contained><Sheet position={answer.position} qtype={question?.qtype} tiers={today.tiers} token={token} /></Contained>}
               </li>
             )
           })}

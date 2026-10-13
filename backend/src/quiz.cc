@@ -143,18 +143,28 @@ Task<std::vector<std::string>> customNames(HttpRequestPtr req, const std::string
     co_return out;
 }
 
-// The accepted answers of one question, with the tier each is worth now and which
-// one the player matched. Only ever called for a question that has just settled,
-// which is when the key stops being a secret. Same rule as the reveal: the
-// moderator's override wins, otherwise the live share decides the tier.
-Task<Json::Value> answerKey(long long questionId, long long attemptId) {
+// The accepted answers of one question, with the tier each is worth now, how many
+// times each was guessed and which one the player matched. Only ever called for a
+// question that has settled, which is when the key stops being a secret: the
+// verdict right after it, and the reveal once the player has landed. Same rule as
+// submit_answer: the moderator's override wins, otherwise the live share decides
+// the tier. Answers worth nothing are left off unless they are the player's.
+// `q` narrows the key the way the scorer reads names, through normalize_answer(),
+// and `tier` to one tier; `total` is how many answers pass both, past the page.
+// `counts` is how many pass the search in each tier, plus "all" -- the filter row
+// over the list -- and it comes back even when the page itself is empty.
+Task<Json::Value> answerKey(long long questionId, long long attemptId, const std::string &q = "",
+                            const std::string &tier = "", long long offset = 0, int limit = 60,
+                            long long *total = nullptr, Json::Value *counts = nullptr) {
     Json::Value answers(Json::arrayValue);
+    if (total) *total = 0;
     try {
         for (const auto &row : co_await app().getDbClient()->execSqlCoro(
                  "WITH answered AS (SELECT count(*)::numeric AS n FROM attempt_answers aa "
-                 "                  WHERE aa.question_id = $1::bigint) "
-                 "SELECT qa.display, coalesce(ov.name, live.name) AS tier, "
-                 "  coalesce(qa.points, ov.points, live.points) AS points, "
+                 "                  WHERE aa.question_id = $1::bigint), "
+                 "key AS ("
+                 "SELECT qa.id, qa.display, qa.guess_count, coalesce(ov.name, live.name) AS tier, "
+                 "  coalesce(qa.points, ov.points, live.points, 0) AS points, "
                  "  coalesce(ov.sort_order, live.sort_order, 0) AS sort_order, "
                  "  (aa.answer_id IS NOT NULL) AS yours "
                  "FROM question_answers qa CROSS JOIN answered "
@@ -167,15 +177,29 @@ Task<Json::Value> answerKey(long long questionId, long long attemptId) {
                  ") live ON true "
                  "LEFT JOIN attempt_answers aa ON aa.question_id = qa.question_id "
                  "  AND aa.attempt_id = $2::bigint AND aa.answer_id = qa.id "
+                 // An empty needle is in every string, so no search is no filter.
                  "WHERE qa.question_id = $1::bigint AND qa.is_correct "
-                 "ORDER BY points DESC NULLS LAST, sort_order DESC, qa.display LIMIT 60",
-                 questionId, attemptId)) {
+                 "  AND strpos(normalize_answer(qa.display), normalize_answer($3)) > 0), "
+                 "shown AS (SELECT * FROM key WHERE points > 0 OR yours) "
+                 // The counts are one row the page hangs off, so they survive an empty page.
+                 "SELECT p.*, c.tiers::text FROM (SELECT jsonb_build_object('all', (SELECT count(*) FROM shown)) "
+                 "  || coalesce((SELECT jsonb_object_agg(tier, n) FROM (SELECT tier, count(*) AS n FROM shown "
+                 "               WHERE tier IS NOT NULL GROUP BY tier) t), '{}') AS tiers) c "
+                 "LEFT JOIN LATERAL (SELECT *, count(*) OVER () AS total FROM shown "
+                 "  WHERE $6 = '' OR tier = $6 "
+                 "  ORDER BY points DESC, sort_order DESC, display, id LIMIT $4::int OFFSET $5::bigint) p ON true "
+                 "ORDER BY p.points DESC, p.sort_order DESC, p.display, p.id",
+                 questionId, attemptId, q, limit, offset, tier)) {
+            if (counts) parseJson(row["tiers"].as<std::string>(), *counts);
+            if (row["display"].isNull()) continue;
             Json::Value answer;
             answer["display"] = row["display"].as<std::string>();
             answer["tier"] = nullable(row["tier"]);
-            answer["points"] = row["points"].isNull() ? 0 : row["points"].as<int>();
+            answer["points"] = row["points"].as<int>();
+            answer["guesses"] = row["guess_count"].as<int>();
             answer["yours"] = row["yours"].as<bool>();
             answers.append(answer);
+            if (total) *total = row["total"].as<long long>();
         }
     } catch (const orm::DrogonDbException &e) {
         LOG_ERROR << e.base().what();   // the verdict still reads without its key
@@ -495,80 +519,52 @@ Task<HttpResponsePtr> today(HttpRequestPtr req) {
     }
 }
 
-// The answer key, but only after this player has landed: prompts plus every
-// accepted answer, rarest first, the way Krillion surfaces the catch.
-Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
+// Today's quiz and this player's finished flight on it. Neither means the key is
+// still a secret to them: 401 without a passport, 404 with no quiz, 403 until landed.
+struct Landed { long long quiz = 0, attempt = 0; HttpResponsePtr refused; };
+Task<Landed> landed(HttpRequestPtr req) {
     const auto player = co_await playerFor(req);
-    if (player.empty()) co_return auth::error(k401Unauthorized, "No player passport: GET /api/me first");
+    if (player.empty()) co_return {0, 0, auth::error(k401Unauthorized, "No player passport: GET /api/me first")};
     const auto &who = req->attributes()->get<auth::Identity>("identity");
     auto db = app().getDbClient();
-    try {
-        const auto quizzes = co_await db->execSqlCoro(
-            "SELECT id FROM quizzes WHERE quiz_date = game_today() AND published");
-        if (quizzes.empty()) co_return auth::error(k404NotFound, "No quiz today");
-        const auto quizId = quizzes[0][0].as<long long>();
+    const auto quizzes = co_await db->execSqlCoro(
+        "SELECT id FROM quizzes WHERE quiz_date = game_today() AND published");
+    if (quizzes.empty()) co_return {0, 0, auth::error(k404NotFound, "No quiz today")};
+    const auto quizId = quizzes[0][0].as<long long>();
+    const auto flights = co_await db->execSqlCoro(
+        "SELECT a.id FROM attempts a JOIN players p ON p.id = a.player_id "
+        "WHERE a.quiz_id = $1::bigint AND a.finished_at IS NOT NULL "
+        "  AND (a.player_id = $2::uuid OR p.user_id = nullif($3, '')::uuid) LIMIT 1",
+        quizId, player, who.id);
+    if (flights.empty()) co_return {0, 0, auth::error(k403Forbidden, "Finish today's flight first")};
+    co_return {quizId, flights[0][0].as<long long>(), nullptr};
+}
 
-        const auto flights = co_await db->execSqlCoro(
-            "SELECT a.id FROM attempts a JOIN players p ON p.id = a.player_id "
-            "WHERE a.quiz_id = $1::bigint AND a.finished_at IS NOT NULL "
-            "  AND (a.player_id = $2::uuid OR p.user_id = nullif($3, '')::uuid) LIMIT 1",
-            quizId, player, who.id);
-        if (flights.empty()) co_return auth::error(k403Forbidden, "Finish today's flight first");
-        const auto attemptId = flights[0][0].as<long long>();
+// After landing: the prompts and the day's score curve. The accepted answers of
+// each question come a page at a time from GET /api/quiz/today/reveal/{position},
+// since a busy day's key runs to hundreds of rows a question.
+Task<HttpResponsePtr> reveal(HttpRequestPtr req) {
+    try {
+        const auto flight = co_await landed(req);
+        if (flight.refused) co_return flight.refused;
+        const auto quizId = flight.quiz, attemptId = flight.attempt;
+        auto db = app().getDbClient();
 
         Json::Value questions(Json::arrayValue);
-        std::map<long long, Json::ArrayIndex> index;
         for (const auto &row : co_await db->execSqlCoro(
-                 "SELECT id, position, prompt, qtype::text AS qtype FROM questions "
-                 "WHERE quiz_id = $1::bigint ORDER BY position",
-                 quizId)) {
-            const auto id = row["id"].as<long long>();
+                 "SELECT q.position, q.prompt, q.qtype::text AS qtype, qa.guess_count AS chose "
+                 "FROM questions q LEFT JOIN attempt_answers aa ON aa.question_id = q.id "
+                 "  AND aa.attempt_id = $2::bigint "
+                 "LEFT JOIN question_answers qa ON qa.id = aa.answer_id AND qa.is_correct "
+                 "WHERE q.quiz_id = $1::bigint ORDER BY q.position",
+                 quizId, attemptId)) {
             Json::Value question;
             question["position"] = row["position"].as<int>();
             question["prompt"] = row["prompt"].as<std::string>();
             question["qtype"] = row["qtype"].as<std::string>();
-            question["answers"] = Json::Value(Json::arrayValue);
-            index[id] = questions.size();
+            // How many pilots landed on the answer this flight matched, this one included.
+            question["chose"] = nullableInt(row["chose"]);
             questions.append(question);
-        }
-
-        // Override tier wins; otherwise the live share, same rule as submit_answer.
-        // Unguessed answers have share 0 and land on the rarest tier. The share's
-        // denominator is counted once per question, not once per answer row: a
-        // reveal of a day with hundreds of answers is still seven counts.
-        for (const auto &row : co_await db->execSqlCoro(
-                 "WITH answered AS ("
-                 "  SELECT aa.question_id, count(*)::numeric AS n FROM attempt_answers aa "
-                 "  JOIN questions q ON q.id = aa.question_id AND q.quiz_id = $1::bigint "
-                 "  GROUP BY aa.question_id) "
-                 "SELECT qa.question_id, qa.display, "
-                 "  coalesce(ov.name, live.name) AS tier, "
-                 "  coalesce(qa.points, ov.points, live.points) AS points, "
-                 "  coalesce(ov.sort_order, live.sort_order, 0) AS sort_order, "
-                 "  (aa.answer_id IS NOT NULL) AS yours "
-                 "FROM question_answers qa "
-                 "LEFT JOIN answered ON answered.question_id = qa.question_id "
-                 "LEFT JOIN rarity_tiers ov ON ov.id = qa.tier_id "
-                 "LEFT JOIN LATERAL ("
-                 "  SELECT rt.name, rt.points, rt.sort_order FROM rarity_tiers rt "
-                 "  WHERE qa.tier_id IS NULL AND rt.max_share >= ("
-                 "    qa.guess_count::numeric / greatest(coalesce(answered.n, 0), 1))"
-                 "  ORDER BY rt.max_share LIMIT 1"
-                 ") live ON true "
-                 "LEFT JOIN attempt_answers aa ON aa.question_id = qa.question_id "
-                 "  AND aa.attempt_id = $2::bigint AND aa.answer_id = qa.id "
-                 "WHERE qa.is_correct AND qa.question_id IN "
-                 "  (SELECT id FROM questions WHERE quiz_id = $1::bigint) "
-                 "ORDER BY points DESC NULLS LAST, sort_order DESC, qa.display",
-                 quizId, attemptId)) {
-            const auto slot = index.find(row["question_id"].as<long long>());
-            if (slot == index.end()) continue;
-            Json::Value answer;
-            answer["display"] = row["display"].as<std::string>();
-            answer["tier"] = nullable(row["tier"]);
-            answer["points"] = row["points"].isNull() ? 0 : row["points"].as<int>();
-            answer["yours"] = row["yours"].as<bool>();
-            questions[slot->second]["answers"].append(answer);
         }
 
         Json::Value out;
@@ -1522,6 +1518,34 @@ Task<HttpResponsePtr> suggest(HttpRequestPtr req) {
     }
 }
 
+// GET /api/quiz/today/reveal/{position}?q=&tier=&offset=   one question's accepted
+// answers after landing, rarest first, a hundred at a time, each with how many times
+// it was guessed. q searches the whole key, not the page already shown; tier keeps
+// one tier; `tiers` counts what the search leaves in each, for the filter row.
+Task<HttpResponsePtr> revealPage(HttpRequestPtr req, int position) {
+    auto q = req->getParameter("q");
+    if (q.size() > 100) q.resize(100);
+    const auto offset = std::max(0L, std::strtol(req->getParameter("offset").c_str(), nullptr, 10));
+    try {
+        const auto flight = co_await landed(req);
+        if (flight.refused) co_return flight.refused;
+        const auto rows = co_await app().getDbClient()->execSqlCoro(
+            "SELECT id FROM questions WHERE quiz_id = $1::bigint AND position = $2::int", flight.quiz, position);
+        if (rows.empty()) co_return auth::error(k404NotFound, "No such question today");
+        long long total = 0;
+        Json::Value out, counts(Json::objectValue);
+        out["answers"] = co_await answerKey(rows[0][0].as<long long>(), flight.attempt, q,
+                                            req->getParameter("tier"), static_cast<long long>(offset), 100,
+                                            &total, &counts);
+        out["total"] = static_cast<Json::Int64>(total);
+        out["tiers"] = counts;
+        co_return json(out);
+    } catch (const orm::DrogonDbException &e) {
+        LOG_ERROR << e.base().what();
+        co_return auth::error(k503ServiceUnavailable, "Quiz service unavailable");
+    }
+}
+
 // Question ideas from landed (or any) players. Three per game day; the catalog
 // suggest stays GET /api/suggest, so this lives next door.
 Task<HttpResponsePtr> idea(HttpRequestPtr req) {
@@ -1567,6 +1591,7 @@ void registerRoutes() {
     app().registerHandler("/api/quizzes", &createQuiz, {Post, "auth::Optional", "auth::Moderator"});
     app().registerHandler("/api/quiz/today", &today, {Get, "auth::Optional"});
     app().registerHandler("/api/quiz/today/reveal", &reveal, {Get, "auth::Optional"});
+    app().registerHandler("/api/quiz/today/reveal/{1}", &revealPage, {Get, "auth::Optional"});
     app().registerHandler("/api/attempts", &startAttempt, {Post, "auth::Optional"});
     app().registerHandler("/api/attempts/{1}/answers", &answer, {Post, "auth::Optional"});
     app().registerHandler("/api/audio/{1}", &audio, {Get, "auth::Optional"});

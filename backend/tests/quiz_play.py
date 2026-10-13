@@ -416,20 +416,45 @@ with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as db:
         assert status == 200, (status, sheet)
         assert [q['position'] for q in sheet['questions']] == [1, 2, 3, 4, 5, 6, 7]
         q1 = sheet['questions'][0]
-        assert q1['prompt'] == 'Name a Radiohead album'
-        # Rarest first: Kid A (Main Sequence) above the crowd's OK Computer (Nebula).
-        assert [a['display'] for a in q1['answers']] == ['Kid A', 'OK Computer'], q1['answers']
-        assert q1['answers'][0]['yours'] is True and q1['answers'][1]['yours'] is False
-        assert q1['answers'][0]['tier'] == 'Main Sequence' and q1['answers'][1]['tier'] == 'Nebula'
+        assert q1['prompt'] == 'Name a Radiohead album' and 'answers' not in q1
+        assert q1['chose'] >= 1                                  # Kid A, ours included
+        assert sheet['questions'][2]['chose'] is None            # a skip matched nothing
         song = sheet['questions'][6]
-        assert [a['display'] for a in song['answers']] == \
-               [f'{artist_name} {track_title}', album_title, artist_name], song['answers']
-        assert song['answers'][0]['tier'] == 'Supernova' and song['answers'][0]['yours'] is True
-        # A song key is a ladder of how much you named, so it reveals what each rung
-        # is worth -- the moderator's 45, not the Supernova tier's 100.
-        assert [a['points'] for a in song['answers']] == [45, 30, 15], song['answers']
         assert q1['qtype'] == 'rarest' and song['qtype'] == 'song'
         assert 'normalized' not in str(sheet) and 'track_id' not in str(sheet)
+        # Each question's key comes a hundred at a time, after landing only.
+        assert api('/api/quiz/today/reveal/1')[0] == 401
+        assert api('/api/quiz/today/reveal/1', cookie=still_diving)[0] == 403
+        assert api('/api/quiz/today/reveal/99', cookie=cookie)[0] == 404
+        status, page, _ = api('/api/quiz/today/reveal/1', cookie=cookie)
+        assert status == 200 and page['total'] == 2, (status, page)
+        # Rarest first: Kid A (Main Sequence) above the crowd's OK Computer (Nebula),
+        # each with how many pilots typed it.
+        assert [a['display'] for a in page['answers']] == ['Kid A', 'OK Computer'], page
+        assert page['answers'][0]['yours'] is True and page['answers'][1]['yours'] is False
+        assert page['answers'][0]['tier'] == 'Main Sequence' and page['answers'][1]['tier'] == 'Nebula'
+        assert all(isinstance(a['guesses'], int) and a['guesses'] >= 0 for a in page['answers']), page
+        assert page['answers'][0]['guesses'] >= 1    # ours, at least
+        assert 'normalized' not in str(page)
+        # The search reads names the way the scorer does, over the whole key.
+        assert [a['display'] for a in api('/api/quiz/today/reveal/1?q=kid-a', cookie=cookie)[1]['answers']] == ['Kid A']
+        assert api('/api/quiz/today/reveal/1?q=COMP', cookie=cookie)[1]['total'] == 1
+        assert page['tiers'] == {'all': 2, 'Main Sequence': 1, 'Nebula': 1}, page['tiers']
+        # The tier chips: one tier, counted under the search; the counts outlive an empty page.
+        status, nebula, _ = api('/api/quiz/today/reveal/1?tier=Nebula', cookie=cookie)
+        assert [a['display'] for a in nebula['answers']] == ['OK Computer'] and nebula['total'] == 1, nebula
+        assert nebula['tiers'] == page['tiers']
+        assert api('/api/quiz/today/reveal/1?q=zzz', cookie=cookie)[1] == {'answers': [], 'total': 0, 'tiers': {'all': 0}}
+        assert api('/api/quiz/today/reveal/1?q=kid&tier=Nebula', cookie=cookie)[1] == \
+               {'answers': [], 'total': 0, 'tiers': {'all': 1, 'Main Sequence': 1}}
+        assert api('/api/quiz/today/reveal/1?offset=1', cookie=cookie)[1]['answers'][0]['display'] == 'OK Computer'
+        status, page, _ = api('/api/quiz/today/reveal/7', cookie=cookie)
+        assert [a['display'] for a in page['answers']] == \
+               [f'{artist_name} {track_title}', album_title, artist_name], page['answers']
+        assert page['answers'][0]['tier'] == 'Supernova' and page['answers'][0]['yours'] is True
+        # A song key is a ladder of how much you named, so it reveals what each rung
+        # is worth -- the moderator's 45, not the Supernova tier's 100.
+        assert [a['points'] for a in page['answers']] == [45, 30, 15], page['answers']
         assert len(sheet['dist']) == 36 and sheet['better_than'] >= 0
         st, idea, _ = api('/api/ideas', {'text': 'name a dwarf planet'}, cookie=cookie)
         assert st == 200 and idea.get('ok') is True, (st, idea)
