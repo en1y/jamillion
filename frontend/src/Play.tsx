@@ -132,7 +132,9 @@ function Starfield({ au }: { au: number }) {
     // (or pushes it out); 1 - m² of them, the share of the screen a pull-out uncovers,
     // are dropped into that band along the edges, and what a push-in carries off the
     // screen comes back anywhere on it. Same density, nothing repeats, no seams, and
-    // the cost is the star count whatever the scale.
+    // the cost is the star count whatever the scale. It was also a leak: a createPattern
+    // of a canvas redrawn every frame makes Firefox snapshot it every frame, and the
+    // snapshots outlived the pattern -- one zoom out and back held ~90 MB, a quiz gigabytes.
     function respawn(star: Star, m: number) {
       const dx = Math.random() * width - cx, dy = Math.random() * height - cy
       if (m > 1) { star.x = cx + dx; star.y = cy + dy; return }
