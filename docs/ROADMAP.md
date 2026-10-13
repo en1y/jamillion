@@ -640,6 +640,31 @@ Decisions worth carrying forward:
   key mentions it, so a moderator who wrote only a combination row, or only an
   alternative spelling tagged with the field, keeps their boxes.
 
+## v1.0.7 — The whole haul
+
+- [x] The post-flight haul shows how many times each accepted answer was guessed,
+      and scrolls through the whole key instead of stopping at what the reveal sent.
+      `/api/quiz/today/reveal` is the prompts and the score curve now; each question's
+      answers come from `/api/quiz/today/reveal/{position}?offset=` a hundred at a
+      time, and the sheet asks for the next hundred as its last row comes into view.
+- [x] A search box over each question's key. `q=` runs on the tower over the whole
+      key through `normalize_answer()`, so case, accents and punctuation do not
+      matter, and it finds rows the sheet has not paged in yet.
+- [x] Tier chips over a rarest question's key, Krillion's filter row: All plus each
+      tier, rarest first, each with how many answers the search leaves in it.
+      `tier=` keeps one; the counts ride along on every page, even an empty one.
+      Song and album keys are a ladder of how much you named, so they get none.
+- [x] Under each round, how many other pilots chose the answer this flight matched,
+      and under the list how many of how many answers are showing.
+- [x] Krillion's depth ruler, for height: a hairline down the right edge of the sky
+      with the track's AU on it, riding the track so the climb runs past it. The
+      legs are stretched unevenly, so the step widens at Mars and at Saturn (0.02,
+      0.1, 0.2 AU) to keep the ticks 45-110 px apart, labelled on every fifth.
+- [x] The ruler holds still when the camera zooms: an animatable `--s` follows the
+      wheel and the trip, so the line stays at the screen's right edge and the
+      labels stay 14px while each tick stays level with its AU. Pulled out, the
+      plain ticks fade, then every other label, so the labels never crowd.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).
