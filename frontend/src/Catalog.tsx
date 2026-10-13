@@ -7,7 +7,8 @@
 // an artist that failed outright (catalog_failures, written by the seeder and kept
 // between runs) and an artist whose row exists with no tracks under it, which looks
 // seeded everywhere else and is useless to the editor.
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { FormEvent } from 'react'
 import { ApiError } from './api'
 import { formatDate } from './flight'
@@ -28,9 +29,14 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: () => void; la
 }
 
 export function Catalog({ token }: { token?: string }) {
-  const [status, setStatus] = useState<SetupStatus | null>(null)
-  const [error, setError] = useState('')
-  const [reload, setReload] = useState(0)
+  const client = useQueryClient()
+  // A run that is moving is worth a closer look than a catalog sitting still.
+  const seeder = useQuery({ queryKey: ['seeder', token], queryFn: () => getSeeder(token),
+                            refetchInterval: query => query.state.data?.seeding ? 5_000 : 20_000 })
+  const status = seeder.data
+  const setStatus = (next: SetupStatus) => client.setQueryData(['seeder', token], next)
+  const [failed, setError] = useState('')
+  const error = failed || (seeder.error ? wall(seeder.error) : '')
   const [picked, setPicked] = useState<string[]>([])
   const [typed, setTyped] = useState('')
   const [limit, setLimit] = useState<number | null>(null)
@@ -42,20 +48,6 @@ export function Catalog({ token }: { token?: string }) {
   const empty = status?.empty_artists ?? []
   const gaps = [...failures.map(f => f.name), ...empty]
 
-  // A run that is moving is worth a closer look than a catalog sitting still.
-  useEffect(() => {
-    let live = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const check = () => {
-      getSeeder(token)
-        .then(next => { if (live) { setStatus(next); setError('') } })
-        .catch((cause: unknown) => { if (live) setError(wall(cause)) })
-        .finally(() => { if (live) timer = setTimeout(check, running ? 5_000 : 20_000) })
-    }
-    check()
-    return () => { live = false; if (timer) clearTimeout(timer) }
-  }, [token, reload, running])
-
   const pick = (name: string) =>
     setPicked(rest => rest.includes(name) ? rest.filter(other => other !== name) : [...rest, name])
 
@@ -66,7 +58,6 @@ export function Catalog({ token }: { token?: string }) {
     try {
       setStatus(await rerunSeeder(request, token))
       if ('artists' in request) { setPicked([]); setTyped('') }
-      setReload(n => n + 1)
     } catch (cause) { setError(wall(cause)) } finally { setBusy(false) }
   }
 

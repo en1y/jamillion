@@ -1,7 +1,8 @@
 import { Component, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent, ReactNode } from 'react'
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { ApiError, getFlights, getReveal, getRevealPage, isKnown, sendIdea, startAttempt, submitAnswer, submitField, suggest } from './api'
-import type { Answered, OwnAnswer, Progress, Question, Result, RevealedAnswer, RevealedQuestion, SuggestKind, Today } from './api'
+import type { Answered, OwnAnswer, Progress, Question, Result, SuggestKind, Today } from './api'
 import {
   altitudeAu, bandFor, countdown, curveGeom, EMPTY_LOG,
   LANDMARKS, logDepth, nextRollover, passed, PLUTO_AU, RULER, scoreBands, shareText,
@@ -10,6 +11,7 @@ import {
 import { useCountUp } from './count'
 import { setPrefs, sfx, usePrefs } from './prefs'
 import { TierIcon } from './Settings'
+import { pause } from './query'
 
 interface Star { x: number; y: number; r: number; vx: number; vy: number; a: number; tw: number }
 interface Comet { x: number; y: number; vx: number; vy: number; len: number }
@@ -509,18 +511,14 @@ function fieldsFor(question: Question): Field[] {
  *  when the key is the whole truth about what counts. */
 function useSuggest(kind: SuggestKind | null, on: boolean, value: string, question: number, field: string,
                     token?: string) {
-  const [options, setOptions] = useState<string[]>([])
   const q = value.trim()
   const long = [...q].length >= 3     // characters, not UTF-16 units
-  useEffect(() => {
-    if (!on || !long) return
-    let live = true
-    const timer = setTimeout(() => {
-      // A free box names no field: the key is the whole question's, not one box of it.
-      suggest(kind, q, kind ? { question, field } : { question }, token).then(next => { if (live) setOptions(next) }).catch(() => { if (live) setOptions([]) })
-    }, 150)
-    return () => { live = false; clearTimeout(timer) }
-  }, [kind, on, q, long, question, field, token])
+  const { data: options = [] } = useQuery<string[]>({
+    queryKey: ['suggest', kind, q, question, field, token], enabled: on && long,
+    // A free box names no field: the key is the whole question's, not one box of it.
+    queryFn: ({ signal }) => pause(150, signal).then(() => suggest(kind, q, kind ? { question, field } : { question }, token)),
+    placeholderData: keepPreviousData,
+  })
   // Options from an earlier query linger until the next reply; only the ones that
   // still start with what is typed are offered, so nothing stale shows.
   const prefix = q.toLocaleLowerCase()
@@ -1086,67 +1084,61 @@ function Sheet({ position, qtype, tiers, token }: {
   position: number; qtype?: string; tiers: Today['tiers']; token?: string
 }) {
   const [typed, setTyped] = useState('')
-  const [want, setWant] = useState({ q: '', tier: '', offset: 0 })
-  // The rows remember which search and chip they answer, so a page of the old one is
-  // never asked for, or appended, while the new one is on its way.
-  const [got, setGot] = useState<{ q: string; tier: string; rows: RevealedAnswer[]; total: number
-                                   counts: Record<string, number> } | null>(null)
-  const [failed, setFailed] = useState(false)
+  const [q, setQ] = useState('')
+  const [tier, setTier] = useState('')
   const list = useRef<HTMLUListElement>(null)
   const end = useRef<HTMLLIElement>(null)
   useEffect(() => {
-    const timer = setTimeout(() => setWant(prev => prev.q === typed.trim() ? prev : { ...prev, q: typed.trim(), offset: 0 }), 250)
+    const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
-  useEffect(() => {
-    let live = true
-    getRevealPage(position, want.offset, want.q, want.tier, token).then(page => {
-      if (!live) return
-      setFailed(false)
-      if (!want.offset && list.current) list.current.scrollTop = 0   // a new search starts at its top
-      // A tower a release behind sends no counts, or no total: no chips then, not a crash.
-      setGot(prev => {
-        const same = want.offset && prev?.q === want.q && prev.tier === want.tier
-        const rows = page.answers ?? []
-        return { q: want.q, tier: want.tier, total: page.total ?? rows.length, counts: page.tiers ?? {},
-                 rows: same ? [...prev.rows, ...rows] : rows }
-      })
-    }).catch(() => { if (live) setFailed(true) })
-    return () => { live = false }
-  }, [position, want, token])
-  const current = got !== null && got.q === want.q && got.tier === want.tier
-  const more = current && got.rows.length < got.total
+  // The old search's rows stay up while the new one is on its way, but nothing is
+  // appended to them: `more` waits for rows that answer this search.
+  const { data, isError: failed, isPlaceholderData, hasNextPage, fetchNextPage } = useInfiniteQuery({
+    queryKey: ['haul', position, q, tier, token],
+    queryFn: ({ pageParam }) => getRevealPage(position, pageParam, q, tier, token),
+    initialPageParam: 0,
+    getNextPageParam: (page, pages) => {
+      const next = pages.reduce((sum, one) => sum + (one.answers?.length ?? 0), 0)
+      return page.answers?.length && next < (page.total ?? 0) ? next : undefined
+    },
+    placeholderData: keepPreviousData,
+  })
+  useEffect(() => { if (list.current) list.current.scrollTop = 0 }, [q, tier])   // a new search starts at its top
+  // A tower a release behind sends no counts, or no total: no chips then, not a crash.
+  const rows = data?.pages.flatMap(page => page.answers ?? []) ?? []
+  const counts = data?.pages[0].tiers ?? {}
+  const total = data?.pages.at(-1)?.total ?? rows.length
+  const more = !isPlaceholderData && hasNextPage
   useEffect(() => {
     const node = end.current
-    if (!node || !more || !got) return
-    const next = got.rows.length
+    if (!node || !more) return
     // Watched against the sheet, not the window, and a few rows early, so the next
     // hundred is usually here before the last row is.
     const watch = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) setWant(prev => prev.offset === next ? prev : { ...prev, offset: next })
+      if (entry.isIntersecting) void fetchNextPage({ cancelRefetch: false })
     }, { root: list.current, rootMargin: '0px 0px 240px 0px' })
     watch.observe(node)
     return () => watch.disconnect()
-  }, [more, got])
+  }, [more, data, fetchNextPage])
   // A song or album key is a ladder of how much of the answer you named, not a
   // rarity ladder, so only a rarest question gets the tier chips. Rarest first,
   // the way the list runs; an empty tier is left off unless it is the one picked.
-  const chips = qtype === 'rarest' && got
+  const chips = qtype === 'rarest' && data
     ? [...tiers].sort((a, b) => b.points - a.points)
-        .filter(tier => got.counts[tier.name] || tier.name === want.tier)
+        .filter(one => counts[one.name] || one.name === tier)
     : []
-  const pick = (tier: string) => setWant(prev => ({ ...prev, tier, offset: 0 }))
   return (
     <div className="sheet-wrap">
       {chips.length > 0 && (
         <div className="sheet-tiers" role="group" aria-label="Show one tier">
-          <button type="button" className={want.tier === '' ? 'on' : undefined} aria-pressed={want.tier === ''}
-                  onClick={() => pick('')}>All <span>{(got?.counts.all ?? 0).toLocaleString()}</span></button>
-          {chips.map(tier => (
-            <button key={tier.name} type="button" className={want.tier === tier.name ? 'on' : undefined}
-                    aria-pressed={want.tier === tier.name} style={{ '--tier': TIER_META[tier.name]?.color } as CSSProperties}
-                    onClick={() => pick(want.tier === tier.name ? '' : tier.name)}>
-              {tier.name} <span>{(got?.counts[tier.name] ?? 0).toLocaleString()}</span>
+          <button type="button" className={tier === '' ? 'on' : undefined} aria-pressed={tier === ''}
+                  onClick={() => setTier('')}>All <span>{(counts.all ?? 0).toLocaleString()}</span></button>
+          {chips.map(one => (
+            <button key={one.name} type="button" className={tier === one.name ? 'on' : undefined}
+                    aria-pressed={tier === one.name} style={{ '--tier': TIER_META[one.name]?.color } as CSSProperties}
+                    onClick={() => setTier(tier === one.name ? '' : one.name)}>
+              {one.name} <span>{(counts[one.name] ?? 0).toLocaleString()}</span>
             </button>
           ))}
         </div>
@@ -1156,11 +1148,11 @@ function Sheet({ position, qtype, tiers, token }: {
              onChange={event => setTyped(event.target.value)} />
       <ul className="sheet" ref={list}>
         {failed && <li className="meta">the star charts are not answering — try again in a moment</li>}
-        {!failed && got === null && <li className="meta">unsealing the star charts…</li>}
-        {got?.rows.length === 0 &&
-          <li className="meta">{got.q || got.tier ? 'nothing like that in the key' : 'no chart for this question'}</li>}
+        {!failed && !data && <li className="meta">unsealing the star charts…</li>}
+        {data && rows.length === 0 &&
+          <li className="meta">{q || tier || isPlaceholderData ? 'nothing like that in the key' : 'no chart for this question'}</li>}
         {/* The ladder again: on a song or album key the points say it, not the tier. */}
-        {got?.rows.map(option => (
+        {rows.map(option => (
           <li key={option.display} className={option.yours ? 'yours' : undefined}>
             {qtype === 'rarest' && <span className="glyph"><TierIcon tier={option.tier} tiers={tiers} /></span>}
             <span className="said">
@@ -1176,9 +1168,9 @@ function Sheet({ position, qtype, tiers, token }: {
         ))}
         {more && <li ref={end} className="meta">charting the next hundred…</li>}
       </ul>
-      {got && got.total > 0 && (
+      {total > 0 && (
         <p className="sheet-foot">
-          <span>{got.rows.length.toLocaleString()} of {got.total.toLocaleString()} answers</span>
+          <span>{rows.length.toLocaleString()} of {total.toLocaleString()} answers</span>
           {more && <span>scroll for more</span>}
         </p>
       )}
@@ -1189,26 +1181,16 @@ function Sheet({ position, qtype, tiers, token }: {
 export function Results({ today, max, token }: { today: Today; max: number; token?: string }) {
   const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
-  const [sheet, setSheet] = useState<RevealedQuestion[] | null>(null)
-  const [dist, setDist] = useState<number[] | null>(null)
-  const [better, setBetter] = useState(0)
   const [left, setLeft] = useState(() => countdown(nextRollover()))
-  const [log, setLog] = useState(EMPTY_LOG)
+  const reveal = useQuery({ queryKey: ['reveal', token], queryFn: () => getReveal(token) }).data
+  const sheet = reveal?.questions
+  // The logbook is the server's flights now, not a localStorage counter; the flight
+  // log reads the same key.
+  const flights = useQuery({ queryKey: ['flights', token], queryFn: () => getFlights(token) }).data
+  const log = flights ? summarize(flights) : EMPTY_LOG
   const attempt = today.attempt
   const shown = useCountUp(attempt?.total_points ?? 0, 1200)
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
-  useEffect(() => {
-    let live = true
-    getReveal(token).then(next => {
-      if (!live) return
-      setSheet(next.questions)
-      setDist(next.dist)
-      setBetter(next.better_than)
-    }).catch(() => { if (live) setSheet([]) })
-    // The logbook is the server's flights now, not a localStorage counter.
-    getFlights(token).then(flights => { if (live) setLog(summarize(flights)) }).catch(() => {})
-    return () => { live = false }
-  }, [token])
   useEffect(() => {
     const tick = () => setLeft(countdown(nextRollover()))
     const timer = setInterval(tick, 1000)
@@ -1237,7 +1219,7 @@ export function Results({ today, max, token }: { today: Today; max: number; toke
         <b>{shown}<i>pts</i></b>
         <span>{au.toFixed(1)} AU · past {passed(au)}</span>
       </p>
-      {dist && <Curve dist={dist} score={points} max={max} better={better} />}
+      {reveal && <Curve dist={reveal.dist} score={points} max={max} better={reveal.better_than} />}
 
       <FlightLog answers={answers} tiers={today.tiers} />
 

@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { getCeilings, getPlayer, supabase } from './supabase'
-import type { Player } from './supabase'
 import { getToday } from './api'
-import type { Today } from './api'
 import { Play, Results, Scene } from './Play'
 import type { Mood } from './Play'
 import { useCountUp } from './count'
@@ -33,19 +32,16 @@ import './App.css'
 
 function App() {
   const [session, setSession] = useState<Session | null | undefined>(supabase ? undefined : null)
-  const [result, setResult] = useState<{ key: string; player: Player | null; error: string } | null>(null)
   const [mode, setMode] = useState<'login' | 'signup'>('login')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [retry, setRetry] = useState(0)
-  const [quiz, setQuiz] = useState<{ key: string; today: Today | null } | null>(null)
   const [flying, setFlying] = useState(false)
   const [settings, setSettings] = useState(false)
   const { sfx: sound } = usePrefs()
   // Each day's ceiling in points, from the key, by date. Loaded once.
-  const [ceilings, setCeilings] = useState<Record<string, number>>({})
-  useEffect(() => { getCeilings().then(setCeilings).catch(() => {}) }, [])
+  const ceilings = useQuery({ queryKey: ['ceilings'], queryFn: getCeilings }).data ?? {}
   // What the scene behind the page shows: the flight's running total while flying,
   // else the day's attempt. Keyed to the identity so a sign-out does not keep it.
   const [flown, setFlown] = useState<{ who: string; points: number } | null>(null)
@@ -94,37 +90,23 @@ function App() {
 
   const token = session?.access_token
   const initialized = session !== undefined
-  const requestKey = `${token ?? 'guest'}:${retry}`
-  const loading = !initialized || result?.key !== requestKey
-  const player = loading ? null : result?.player
-  const playerError = loading ? '' : result?.error
+  // Retry is in the keys so a retry, or a landing, reads as loading again.
+  const identity = useQuery({ queryKey: ['player', token, retry], enabled: initialized,
+                              queryFn: ({ signal }) => getPlayer(token, signal) })
+  const loading = identity.isPending
+  const player = identity.data
+  const playerError = identity.error?.message ?? ''
   // The day's quiz, keyed like the player above: undefined while it loads for the
   // current identity, null when nothing is scheduled today.
-  useEffect(() => {
-    if (!initialized) return
-    let live = true
-    getToday(token)
-      .then(next => { if (live) setQuiz({ key: requestKey, today: next }) })
-      .catch(() => { if (live) setQuiz({ key: requestKey, today: null }) })
-    return () => { live = false }
-  }, [token, initialized, requestKey])
-  const today = quiz?.key === requestKey ? quiz.today : undefined
+  const today = useQuery({
+    queryKey: ['today', token, retry], enabled: initialized,
+    queryFn: () => getToday(token).catch(() => null),
+  }).data
   const who = token ?? 'guest'
   const points = flown?.who === who ? flown.points : today?.attempt?.total_points ?? 0
   const max = today ? ceilingFor(today, ceilings) : 0
   const au = altitudeAu(points, max)
   const ticking = useCountUp(points)      // the header's counters crank up to the new total
-
-  useEffect(() => {
-    if (!initialized) return
-    const controller = new AbortController()
-    getPlayer(token, controller.signal).then(next => {
-      if (!controller.signal.aborted) setResult({ key: requestKey, player: next, error: '' })
-    }).catch((cause: unknown) => {
-      if (!controller.signal.aborted) setResult({ key: requestKey, player: null, error: cause instanceof Error ? cause.message : 'Unable to load your player.' })
-    })
-    return () => controller.abort()
-  }, [token, initialized, requestKey])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()

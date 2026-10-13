@@ -1,8 +1,8 @@
 // The flight log: every flight this passport has flown. Signed in, that is the
 // whole account; as a guest, this browser's cookie.
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { ApiError, getFlights } from './api'
-import type { Flight, Today } from './api'
+import type { Today } from './api'
 import { altitudeAu, emojiFor, formatDate, summarize } from './flight'
 
 export function Flights({ token, signedIn, tiers, ceilings }: {
@@ -11,27 +11,12 @@ export function Flights({ token, signedIn, tiers, ceilings }: {
   signedIn: boolean
   tiers: Today['tiers'] | undefined
 }) {
-  // Keyed to the identity, like App does: a result for an older token is simply
-  // not this key's, so loading is derived rather than reset inside the effect.
+  // The same key Results reads its logbook from, so the two share one request.
   // An empty list covers both "no flights yet" and the 401 a passport-less
   // browser gets, which read the same to a player.
-  const key = token ?? 'guest'
-  const [result, setResult] = useState<{ key: string; flights: Flight[]; error: string } | null>(null)
-
-  useEffect(() => {
-    let live = true
-    getFlights(token)
-      .then(next => { if (live) setResult({ key, flights: next, error: '' }) })
-      .catch((cause: unknown) => {
-        if (!live) return
-        const fatal = !(cause instanceof ApiError && cause.status === 401)
-        setResult({ key, flights: [], error: fatal && cause instanceof Error ? cause.message : '' })
-      })
-    return () => { live = false }
-  }, [token, key])
-
-  const flights = result?.key === key ? result.flights : undefined
-  const error = result?.key === key ? result.error : ''
+  const recorder = useQuery({ queryKey: ['flights', token], queryFn: () => getFlights(token) })
+  const flights = recorder.error ? [] : recorder.data
+  const error = recorder.error instanceof ApiError && recorder.error.status === 401 ? '' : recorder.error?.message ?? ''
 
   const log = summarize(flights ?? [])
   // Heights on each day's own scale, so they are averaged as heights, not points.

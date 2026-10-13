@@ -1,14 +1,16 @@
 // The flight deck: where a moderator writes the day. Everything it talks to is in
 // moderator.ts; everything it decides without a DOM is in quizdraft.ts.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ApiError } from './api'
 import { QuizStats } from './Admin'
 import { navigate } from './routing'
+import { pause } from './query'
 import {
   deleteQuiz, getFields, getQuiz, getTiers, listQuizzes, mergeAnswer, patchQuestion,
   reviewAnswer, runQuery, saveQuiz, setPublished, trackAudio,
 } from './moderator'
-import type { ModAnswer, ModQuestion, ModQuiz, QuizDay, Tier } from './moderator'
+import type { ModAnswer, ModQuestion, QuizDay, Tier } from './moderator'
 import {
   NO_VALUE, OP_LABELS, answerText, cell, columnsFor, defaultOp, dirLabel, fieldGroups,
   fieldLabel, fieldType, fieldsFor, firstInGroup, groupOf, splitField, spreadTiers, toPick, usable,
@@ -25,7 +27,6 @@ import type { AnswerField, Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
 import { formatDate, monthGrid, monthLabel, parseDate, shiftDay, shiftMonth, weekday } from './flight'
 import { getSeeder } from './setup'
-import type { SetupStatus } from './setup'
 
 /** The fields a song question will take more than one name for. Not the artist:
  *  a song has one, and another name for that is a different act. */
@@ -172,21 +173,8 @@ function DatePicker({ value, onPick, label = 'Open the calendar' }:
 /** The catalog has its own screen now; the deck keeps the one line that says
  *  whether it is worth going there. */
 function CatalogLine({ token }: { token?: string }) {
-  const [status, setStatus] = useState<SetupStatus | null>(null)
-
-  useEffect(() => {
-    let live = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const check = () => {
-      getSeeder(token)
-        .then(next => { if (live) setStatus(next) })
-        .catch(() => {})
-        .finally(() => { if (live) timer = setTimeout(check, 30_000) })
-    }
-    check()
-    return () => { live = false; if (timer) clearTimeout(timer) }
-  }, [token])
-
+  // The same key as the catalog screen, polled slower.
+  const status = useQuery({ queryKey: ['seeder', token], queryFn: () => getSeeder(token), refetchInterval: 30_000 }).data
   const gaps = (status?.failures?.length ?? 0) + (status?.empty_artists?.length ?? 0)
   return (
     <aside className="catalog-line" aria-label="Music catalog">
@@ -202,8 +190,10 @@ function CatalogLine({ token }: { token?: string }) {
 }
 
 function DayList({ token, admin }: { token?: string; admin?: boolean }) {
-  const [days, setDays] = useState<QuizDay[] | null>(null)
-  const [error, setError] = useState('')
+  const list = useQuery({ queryKey: ['quizzes', token], queryFn: () => listQuizzes(token) })
+  const days = list.error ? [] : list.data
+  const [failed, setError] = useState('')
+  const error = failed || (list.error ? wall(list.error) : '')
   // Chromium renders <input type="date"> in the browser's own locale and ignores
   // lang, so the day is typed as text in the same dd.mm.yyyy the rest of the deck
   // prints. ponytail: no calendar popup; the list below is the way to browse.
@@ -220,20 +210,12 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
     setBusy(day.quiz_date)
     try {
       await deleteQuiz(day.quiz_date, token)
-      setDays(rest => (rest ?? []).filter(other => other.quiz_date !== day.quiz_date))
+      await list.refetch()
       setError('')
     } catch (cause) {
       setError(wall(cause))
     } finally { setBusy('') }
   }
-
-  useEffect(() => {
-    let live = true
-    listQuizzes(token)
-      .then(next => { if (live) setDays(next) })
-      .catch((cause: unknown) => { if (live) { setDays([]); setError(wall(cause)) } })
-    return () => { live = false }
-  }, [token])
 
   return (
     <section className="editor" aria-labelledby="deck-heading">
@@ -252,7 +234,7 @@ function DayList({ token, admin }: { token?: string; admin?: boolean }) {
           : <span className="cta off" role="status">dd.mm.yyyy</span>}
       </div>
 
-      {days === null && <p role="status">Reading the schedule…</p>}
+      {list.isPending && <p role="status">Reading the schedule…</p>}
       {days?.length === 0 && !error && <p className="meta">No quizzes in this window yet.</p>}
       {days && days.length > 0 && (
         <ul className="days">
@@ -337,34 +319,21 @@ function CatalogQuery({ schema, entities, token, onPick, onCollect, blocked }: {
   const [filters, setFilters] = useState<Filter[]>([])
   const [sorts, setSorts] = useState<Sort[]>([])
   const [limit, setLimit] = useState(25)
-  const [page, setPage] = useState<Page | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
   const [ticked, setTicked] = useState<number[]>([])
   const [shape, setShape] = useState<AnswerShape>('title')
 
   const fields = fieldsFor(schema, entity)
   const asked = usable(filters)
-  // The request body and the effect's only dependency at once: the arrays are new
-  // objects on every render, the string they make is not.
-  const wire = JSON.stringify({ entity, filters: asked, sorts, limit })
+  const search: Query = { entity, filters: asked, sorts, limit }
 
   // Debounced like the answer completions in Play: one query per pause in typing.
-  useEffect(() => {
-    let live = true
-    const timer = setTimeout(() => {
-      setBusy(true)
-      runQuery(JSON.parse(wire) as Query, token)
-        .then(next => { if (live) { setPage(next); setError('') } })
-        .catch((cause: unknown) => {
-          if (!live) return
-          setPage(null)
-          setError(cause instanceof Error ? cause.message : 'The catalog did not answer')
-        })
-        .finally(() => { if (live) setBusy(false) })
-    }, 250)
-    return () => { live = false; clearTimeout(timer) }
-  }, [wire, token])
+  // The last page stays up while the next is asked for.
+  const { data: page, error: failed, isFetching: busy } = useQuery<Page>({
+    queryKey: ['catalog', search, token],
+    queryFn: ({ signal }) => pause(250, signal).then(() => runQuery(search, token)),
+    placeholderData: keepPreviousData,
+  })
+  const error = failed?.message ?? ''
 
   const patch = (index: number, next: Partial<Filter>) =>
     setFilters(filters.map((filter, i) => i === index ? { ...filter, ...next } : filter))
@@ -1091,36 +1060,38 @@ function QuestionCard({ slot, question, tiers, schema, token, frozen, saved,
 
 // --- one day ---------------------------------------------------------------
 
+const NO_TIERS: Tier[] = []    // one empty ladder, so the draft's problems are not rerun every render
+
 function Day({ date, token, admin }: { date: string; token?: string; admin?: boolean }) {
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [quiz, setQuiz] = useState<ModQuiz | null>(null)
-  const [tiers, setTiers] = useState<Tier[]>([])
-  const [schema, setSchema] = useState<CatalogSchema | null>(null)
-  const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
-  const [reload, setReload] = useState(0)
 
-  useEffect(() => { getTiers(token).then(setTiers).catch(() => setTiers([])) }, [token])
+  // The same key as ground control's ladder, so an edit there shows here.
+  const tiers = useQuery({ queryKey: ['tiers', token], queryFn: () => getTiers(token) }).data ?? NO_TIERS
 
   // The catalog's columns and operators. Static, so it is read once for the whole
   // day rather than by each of the seven cards.
-  useEffect(() => { getFields(token).then(setSchema).catch(() => setSchema(null)) }, [token])
+  const schema = useQuery({ queryKey: ['fields', token], queryFn: () => getFields(token) }).data ?? null
 
-  useEffect(() => {
-    let live = true
-    getQuiz(date, token)
-      .then(next => { if (live) { setQuiz(next); setDraft(loadDraft(date) ?? fromQuiz(next)); setError('') } })
-      .catch((cause: unknown) => {
-        if (!live) return
-        if (cause instanceof ApiError && cause.status === 404) {
-          setQuiz(null)
-          setDraft(loadDraft(date) ?? emptyDraft(date))    // a day nobody has written yet
-          setError('')
-        } else { setError(wall(cause)) }
-      })
-    return () => { live = false }
-  }, [date, token, reload])
+  const day = useQuery({
+    queryKey: ['quiz', date, token],
+    queryFn: () => getQuiz(date, token).catch((cause: unknown) => {
+      if (cause instanceof ApiError && cause.status === 404) return null    // a day nobody has written yet
+      throw cause
+    }),
+  })
+  const quiz = day.data ?? null
+  const error = day.error ? wall(day.error) : ''
+  // Every read of the day, the first and each one after a save, starts the draft
+  // over: from the one this browser kept, if it kept one. Set while rendering, the
+  // way React adjusts state to a new prop, not in an effect a render late.
+  const read = `${date}:${day.dataUpdatedAt}`
+  const [seeded, setSeeded] = useState('')
+  if (day.data !== undefined && seeded !== read) {
+    setSeeded(read)
+    setDraft(loadDraft(date) ?? (day.data ? fromQuiz(day.data) : emptyDraft(date)))
+  }
 
   // Every keystroke is a draft: the server takes seven questions or nothing.
   const change = useCallback((next: Draft) => { setDraft(next); saveDraft(date, next) }, [date])
@@ -1143,7 +1114,7 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
       await saveQuiz(toPayload(draft, tiers), token)
       clearDraft(date)
       setNote('Saved.')
-      setReload(n => n + 1)
+      void day.refetch()
     } catch (cause) {
       const status = cause instanceof ApiError ? cause.status : 0
       const said = cause instanceof Error ? cause.message : 'The save did not land'
@@ -1191,7 +1162,7 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
     try {
       await setPublished(date, next, token)
       setNote(next ? 'Published.' : 'Unpublished.')
-      setReload(n => n + 1)
+      void day.refetch()
     } catch (cause) {
       setNote(cause instanceof Error ? cause.message : 'The switch did not flip')
     } finally { setBusy(false) }
@@ -1224,7 +1195,7 @@ function Day({ date, token, admin }: { date: string; token?: string; admin?: boo
                       onChange={next => change({ ...draft,
                         questions: draft.questions.map((q, i) => i === slot ? next : q) })}
                       onPrompt={async (id, prompt) => { await patchQuestion(id, { prompt }, token) }}
-                      onReviewed={() => setReload(n => n + 1)} />
+                      onReviewed={() => void day.refetch()} />
       ))}
 
       {problems.length > 0 && !frozen && (

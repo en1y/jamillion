@@ -1,18 +1,20 @@
 // Ground control: the admin screen. Everything it talks to is in admin.ts.
 // QuizStats is exported because the editor's day screen shows it too -- the import
 // runs Editor -> Admin and never back, so the two files do not circle each other.
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from './api'
 import { cell } from './catalog'
 import { formatDate, parseDate, shiftDay } from './flight'
 import { navigate } from './routing'
+import { pause } from './query'
 import { getTiers } from './moderator'
 import type { Tier } from './moderator'
 import {
   getRangeStats, getStats, listTables, listUsers, patchTier, readTable, removeUser, rowRange, seedEdit,
   setRole, tierPatch,
 } from './admin'
-import type { AdminUser, RangeStats, Role, Stats, TierEdit, UserSort } from './admin'
+import type { AdminUser, Role, TierEdit, UserSort } from './admin'
 
 const TABS = ['users', 'stats', 'tiers', 'tables'] as const
 const ROLES: Role[] = ['user', 'moderator', 'admin']
@@ -61,27 +63,14 @@ function Users({ token, me }: { token?: string; me?: string }) {
   const [sort, setSort] = useState<UserSort>('created_at')
   const [dir, setDir] = useState<'asc' | 'desc'>('desc')
   const [offset, setOffset] = useState(0)
-  const [reload, setReload] = useState(0)
   const [busy, setBusy] = useState('')
   const [failed, setFailed] = useState('')
-  const [result, setResult] = useState<{ key: string; rows: AdminUser[]; error: string } | null>(null)
 
-  // The params and the effect's only dependency, the way the catalog query does it.
-  const wire = JSON.stringify({ q, role, sort, dir, limit: PAGE, offset })
-  const key = `${wire}:${reload}`
-
-  useEffect(() => {
-    let live = true
-    const timer = setTimeout(() => {
-      listUsers(JSON.parse(wire), token)
-        .then(rows => { if (live) setResult({ key, rows, error: '' }) })
-        .catch((cause: unknown) => { if (live) setResult({ key, rows: [], error: wall(cause) }) })
-    }, 250)
-    return () => { live = false; clearTimeout(timer) }
-  }, [wire, key, token])
-
-  const rows = result?.key === key ? result.rows : undefined
-  const error = result?.key === key ? result.error : ''
+  const params = { q, role, sort, dir, limit: PAGE, offset }
+  const users = useQuery({ queryKey: ['users', params, token],
+                           queryFn: ({ signal }) => pause(250, signal).then(() => listUsers(params, token)) })
+  const rows = users.error ? [] : users.data
+  const error = users.error ? wall(users.error) : ''
 
   /** Every narrowing of the list starts at the first page. Forgetting this is how
    *  a filtered list comes back empty on page four. */
@@ -99,7 +88,7 @@ function Users({ token, me }: { token?: string; me?: string }) {
     setFailed('')
     try {
       await run()
-      setReload(n => n + 1)
+      await users.refetch()
     } catch (cause) {
       setFailed(wall(cause))
     } finally { setBusy('') }
@@ -200,20 +189,9 @@ function Users({ token, me }: { token?: string; me?: string }) {
 const VERDICT = (is_correct: boolean) => is_correct ? 'accepted' : 'rejected'
 
 export function QuizStats({ date, token }: { date: string; token?: string }) {
-  const [result, setResult] = useState<{ key: string; stats: Stats | null; error: string } | null>(null)
-
-  useEffect(() => {
-    let live = true
-    getStats(date, 10, token)
-      .then(stats => { if (live) setResult({ key: date, stats, error: '' }) })
-      .catch((cause: unknown) => { if (live) setResult({ key: date, stats: null, error: wall(cause) }) })
-    return () => { live = false }
-  }, [date, token])
-
-  if (result?.key !== date) return <p role="status">Reading the flight recorder…</p>
-  if (result.error) return <p className="notice" role="alert">{result.error}</p>
-  const stats = result.stats
-  if (!stats) return null
+  const { data: stats, error } = useQuery({ queryKey: ['stats', date, token], queryFn: () => getStats(date, 10, token) })
+  if (error) return <p className="notice" role="alert">{wall(error)}</p>
+  if (!stats) return <p role="status">Reading the flight recorder…</p>
 
   const finished = stats.heights.reduce((sum, height) => sum + height.players, 0)
   const most = Math.max(1, ...stats.heights.map(height => height.players))
@@ -283,23 +261,12 @@ function StatsTab({ token }: { token?: string }) {
   const [typedFrom, setTypedFrom] = useState(formatDate(shiftDay(now, -29)))
   const [typedTo, setTypedTo] = useState(formatDate(now))
   const [day, setDay] = useState('')
-  const [result, setResult] = useState<{ key: string; stats: RangeStats | null; error: string } | null>(null)
   const from = parseDate(typedFrom), to = parseDate(typedTo)
   const key = from && to ? `${from}:${to}` : ''
-
-  useEffect(() => {
-    if (!key) return
-    let live = true
-    const timer = setTimeout(() => {
-      getRangeStats(from, to, 20, token)
-        .then(stats => { if (live) setResult({ key, stats, error: '' }) })
-        .catch((cause: unknown) => { if (live) setResult({ key, stats: null, error: wall(cause) }) })
-    }, 250)
-    return () => { live = false; clearTimeout(timer) }
-  }, [key, from, to, token])
-
-  const stats = result?.key === key ? result.stats : null
-  const error = result?.key === key ? result.error : ''
+  const range = useQuery({ queryKey: ['range', from, to, token], enabled: Boolean(key),
+                           queryFn: ({ signal }) => pause(250, signal).then(() => getRangeStats(from, to, 20, token)) })
+  const stats = range.data
+  const error = range.error ? wall(range.error) : ''
 
   return (<>
     <div className="rule">
@@ -392,24 +359,13 @@ function StatsTab({ token }: { token?: string }) {
 // --- the rarity ladder -------------------------------------------------------
 
 function Tiers({ token }: { token?: string }) {
-  const [tiers, setTiers] = useState<Tier[] | null>(null)
+  const client = useQueryClient()
+  const ladder = useQuery({ queryKey: ['tiers', token], queryFn: () => getTiers(token) })
+  const tiers = ladder.data
+  const error = ladder.error ? wall(ladder.error) : ''
   const [edits, setEdits] = useState<Record<number, TierEdit>>({})
   const [busy, setBusy] = useState(0)
   const [failed, setFailed] = useState<Record<number, string>>({})
-  const [error, setError] = useState('')
-
-  function adopt(rows: Tier[]) {
-    setTiers(rows)
-    setEdits(Object.fromEntries(rows.map(tier => [tier.id, seedEdit(tier)])))
-  }
-
-  useEffect(() => {
-    let live = true
-    getTiers(token)
-      .then(rows => { if (live) adopt(rows) })
-      .catch((cause: unknown) => { if (live) { setTiers([]); setError(wall(cause)) } })
-    return () => { live = false }
-  }, [token])
 
   async function save(tier: Tier, body: Record<string, string | number>) {
     setBusy(tier.id)
@@ -418,7 +374,7 @@ function Tiers({ token }: { token?: string }) {
       const saved = await patchTier(tier.id, body, token)
       // From the response, so the field shows the canonical "0.0020" rather than
       // whatever was typed.
-      setTiers(rows => (rows ?? []).map(one => one.id === saved.id ? saved : one))
+      client.setQueryData<Tier[]>(['tiers', token], rows => rows?.map(one => one.id === saved.id ? saved : one))
       setEdits(rest => ({ ...rest, [saved.id]: seedEdit(saved) }))
     } catch (cause) {
       setFailed(rest => ({ ...rest, [tier.id]: wall(cause) }))
@@ -430,7 +386,7 @@ function Tiers({ token }: { token?: string }) {
       applies to answers landing after it — and a share decides which tier a future answer
       falls into, not which one a past one already got.</p>
     {error && <p className="notice" role="alert">{error}</p>}
-    {tiers === null && <p role="status">Reading the ladder…</p>}
+    {ladder.isPending && <p role="status">Reading the ladder…</p>}
 
     {tiers?.map(tier => {
       const edit = edits[tier.id] ?? seedEdit(tier)
@@ -468,32 +424,15 @@ function Tiers({ token }: { token?: string }) {
 // --- the raw tables ----------------------------------------------------------
 
 function Tables({ token }: { token?: string }) {
-  const [names, setNames] = useState<string[]>([])
-  const [name, setName] = useState('')
+  const [picked, setName] = useState('')
   const [limit, setLimit] = useState(100)
   const [offset, setOffset] = useState(0)
-  const [result, setResult] = useState<{ key: string; rows: Record<string, unknown>[]; error: string } | null>(null)
-
-  useEffect(() => {
-    let live = true
-    listTables(token)
-      .then(rows => { if (live) { setNames(rows); setName(current => current || rows[0] || '') } })
-      .catch(() => { if (live) setNames([]) })
-    return () => { live = false }
-  }, [token])
-
-  const key = `${name}:${limit}:${offset}`
-  useEffect(() => {
-    if (!name) return
-    let live = true
-    readTable(name, limit, offset, token)
-      .then(dump => { if (live) setResult({ key, rows: dump.rows, error: '' }) })
-      .catch((cause: unknown) => { if (live) setResult({ key, rows: [], error: wall(cause) }) })
-    return () => { live = false }
-  }, [key, name, limit, offset, token])
-
-  const rows = result?.key === key ? result.rows : undefined
-  const error = result?.key === key ? result.error : ''
+  const names = useQuery({ queryKey: ['tables', token], queryFn: () => listTables(token) }).data ?? []
+  const name = picked || names[0] || ''
+  const dump = useQuery({ queryKey: ['table', name, limit, offset, token], enabled: Boolean(name),
+                          queryFn: () => readTable(name, limit, offset, token) })
+  const rows = dump.error ? [] : dump.data?.rows
+  const error = dump.error ? wall(dump.error) : ''
   const columns = Object.keys(rows?.[0] ?? {})
 
   return (<>
