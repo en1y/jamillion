@@ -53,6 +53,24 @@ export function trackPx(au: number): number {
   return SUN_RADIUS + from.px + (to.px - from.px) * (at - from.au) / (to.au - from.au)
 }
 
+export interface RulerTick { px: number; label?: string; far?: boolean }
+
+/** Krillion's depth ruler, for height: a tick up the track every so often, a label
+ *  on every fifth. The legs are stretched unevenly -- a third of an AU to Mercury
+ *  takes as many pixels as ten past Uranus -- so the step widens where the scale
+ *  does, at Mars and at Saturn, and the marks land every 45 to 110 px: 0.02 AU in
+ *  the inner system, 0.1 out to Saturn, 0.2 to Pluto. Each new step starts on its
+ *  own round number. Every other label is `far`: the one kept when the camera
+ *  pulls out and the rest fade. Counted in hundredths of an AU, so the labels
+ *  never read 0.30000000000000004. */
+export const RULER: RulerTick[] = []
+for (let h = 0; h <= PLUTO_AU * 100;) {
+  const [step, every] = h < 152 ? [2, 10] : h < 940 ? [10, 50] : [20, 100]
+  RULER.push({ px: trackPx(h / 100), ...(h % every === 0 ? { label: `${h / 100} AU` } : {}),
+               ...(h % (2 * every) === 0 ? { far: true } : {}) })
+  h = (Math.floor(h / step) + 1) * step
+}
+
 export interface Leg { name: string; au: number; points: number }
 
 /** What is behind and what is ahead: the last body passed (the Sun at the start)

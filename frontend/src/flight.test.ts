@@ -5,7 +5,7 @@ import type { OwnAnswer, Tier } from './api.ts'
 import {
   altitudeAu, bandFor, ceilingFor, countdown, EMPTY_LOG, formatDate, LANDMARKS,
   LEG_MIN, LEG_PER_AU, legs, logDepth, monthGrid, monthLabel, nextIsoDate, nextRollover, parseDate, passed, PLUTO_AU, scoreBands, slug, SUN_RADIUS,
-  shareText, shiftDay, shiftMonth, summarize, trackPx, weekday,
+  RULER, shareText, shiftDay, shiftMonth, summarize, trackPx, weekday,
 } from './flight.ts'
 
 const TIERS: Tier[] = [
@@ -28,6 +28,20 @@ test('a perfect day lands on Pluto', () => {
   assert.equal(altitudeAu(700, 700), PLUTO_AU)        // a perfect day lands on Pluto
   assert.equal(altitudeAu(250, 500), PLUTO_AU / 2)   // whatever the day's ceiling
   assert.equal(altitudeAu(10, 0), 0)                 // a quiz with no key yet
+})
+
+test('the height ruler climbs with the track, labelled in round AU, never past Pluto', () => {
+  assert.deepEqual(RULER[0], { px: trackPx(0), label: '0 AU', far: true })
+  const labels = RULER.filter(tick => tick.label).map(tick => tick.label)
+  for (const want of ['0.1 AU', '0.3 AU', '1.5 AU', '2 AU', '2.5 AU', '10 AU', '39 AU']) assert.ok(labels.includes(want), want)
+  assert.ok(!labels.includes('1.52 AU') && !labels.includes('9.5 AU') && !labels.includes('40 AU'))
+  const far = RULER.filter(tick => tick.far).map(tick => tick.label)
+  for (const want of ['0.2 AU', '1.4 AU', '2 AU', '3 AU', '10 AU', '38 AU']) assert.ok(far.includes(want), want)
+  assert.ok(!far.includes('0.1 AU') && !far.includes('2.5 AU') && !far.includes('39 AU') && !far.includes(undefined))
+  for (let i = 1; i < RULER.length; i++) {
+    const gap = RULER[i].px - RULER[i - 1].px
+    assert.ok(gap > 40 && gap < 120, `tick ${i}: ${gap}px`)   // even on screen, whatever the leg
+  }
 })
 
 test('the track starts on the Sun\'s rim, climbs monotonically and is clamped', () => {

@@ -4,7 +4,7 @@ import { ApiError, getFlights, getReveal, isKnown, sendIdea, startAttempt, submi
 import type { Answered, OwnAnswer, Progress, Question, Result, RevealedQuestion, SuggestKind, Today } from './api'
 import {
   altitudeAu, bandFor, countdown, curveGeom, EMPTY_LOG,
-  LANDMARKS, logDepth, nextRollover, passed, PLUTO_AU, scoreBands, shareText,
+  LANDMARKS, logDepth, nextRollover, passed, PLUTO_AU, RULER, scoreBands, shareText,
   slug, summarize, TIER_META, trackPx,
 } from './flight'
 import { useCountUp } from './count'
@@ -264,6 +264,12 @@ function Starfield({ au }: { au: number }) {
   return <canvas className="starfield" ref={canvas} />
 }
 
+// The ruler's unlabelled ticks are one path, not a span each: ~240 spans reading the
+// animated --s were most of a zoom frame's style recalc. Top-down in the ruler's box,
+// one unit wide: CSS sets the tick length.
+const RULER_LEN = RULER.at(-1)!.px - RULER[0].px
+const RULER_TICKS = RULER.filter(tick => !tick.label).map(tick => `M0 ${RULER_LEN - tick.px + RULER[0].px}h1`).join('')
+
 /** The solar system, always behind the page. The track slides down as you climb,
  *  so the rocket stays put and the landmarks drift past: the camera follows you. */
 export type Mood = 'boost' | 'tumble' | null
@@ -307,6 +313,14 @@ export function Scene({ au, mood, zoom = 1 }: { au: number; mood?: Mood; zoom?: 
       <div className="camera" ref={camera}>
       <div className="track" style={{ height: `${trackPx(PLUTO_AU) + 300}px` }}>
         <span className="sun" />
+        {/* Krillion's depth ruler, for height: it rides the track, so the climb runs past it */}
+        <div className="ruler" style={{ '--from': `${RULER[0].px}px`, '--len': `${RULER_LEN}px` } as CSSProperties}>
+          <svg viewBox={`0 0 1 ${RULER_LEN}`} preserveAspectRatio="none"><path d={RULER_TICKS} /></svg>
+          {RULER.filter(tick => tick.label).map(tick => (
+            <span key={tick.px} className={tick.far ? 'major far' : 'major'}
+                  style={{ '--px': `${tick.px - RULER[0].px}px` } as CSSProperties}>{tick.label}</span>
+          ))}
+        </div>
         {LANDMARKS.map((mark, i) => (
           <span key={mark.name}
                 className={`landmark ${i % 2 ? 'left' : 'right'}${mark.size ? ` planet-${slug(mark.name)}` : ' tick'}`}
