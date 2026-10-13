@@ -26,7 +26,7 @@ Until the site has an admin and a catalog, every visitor gets the setup page ins
    | Last.fm API key | required — free at <https://www.last.fm/api/account/create>; it drives the artist chart and the listen counts. Checked against Last.fm before anything is saved. |
    | YouTube Data API key | optional — exact view counts |
    | Spotify client id / secret | optional — cross-reference ids; skipped when empty |
-   | Artists to seed | biggest first, about 45 s each: 50 is ~40 minutes, 500 is ~6 hours |
+   | Artists to seed | biggest first, about 45 s each: 50 is ~40 minutes, 500 is ~6 hours; past the top 1000 the rest take under a second each |
 
 3. **Launch.** The keys are saved and the seeder starts in the background; the page shows how far it has got and can be closed. The site works meanwhile, and the admin writes the first day's questions on the flight deck as soon as there are artists to write them from.
 
@@ -229,11 +229,18 @@ npx supabase migration up --local
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
-scripts/seed.sh --artists Radiohead           # one artist, ~15 s, good smoke test
-scripts/seed.sh --limit 500                    # the real thing, ~6 hours
+scripts/seed.sh --artists Radiohead                    # one artist, ~15 s, good smoke test
+scripts/seed.sh --limit 500                             # the Last.fm chart, all full depth, ~6 hours
+scripts/seed.sh --source wikidata --limit 35000 --full 200    # everyone Wikidata links to Deezer, ~7 hours
 ```
 
 The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST and RLS.
+
+**Two candidate lists.** `--source lastfm` (the default, and what the setup page runs) takes the Last.fm chart, re-sorted by listeners, and finds each name on Deezer, MusicBrainz and Spotify by searching. `--source wikidata` asks Wikidata's SPARQL endpoint for every item with a Deezer artist id (about 35 000 in late 2026) together with its MusicBrainz and Spotify ids, country, kind, gender, years and English aliases, so nothing is searched by name; it then reads each one's Deezer artist page once (35 000 requests at Deezer's 8/s is ~75 minutes; the list and the pages are cached under `data/` so a rerun pays only for new ids) and ranks them by Deezer fans. That rank is `global_rank` for a Wikidata run, written for every candidate up front. The aliases land in `artist_aliases`.
+
+**Two depths.** Ranks up to `--full` (default 1000) get the full pipeline: every album, per-track detail, YouTube Music, Last.fm per track -- 20 to 60 s each, YouTube Music's one request a second being the long pole. Everyone below is *skinny*: Deezer's artist page (already read for the ranking) and its top 50 tracks, with the album stubs those tracks came with, and Last.fm's artist listeners; nothing per track, no YouTube -- about 0.4 s each, so the 35 000 take about four hours after the 75-minute ranking pass. Every full artist adds ~45 s on top: `--full 1000` is a 17-hour run, `--full 200` about 7. `artists.depth` records which an artist got. A later run with a larger `--full` promotes skinny artists and leaves the ones already full alone (a Wikidata run skips them entirely; a chart or `--artists` run still refreshes them). `--artists` runs are always full.
+
+**Sources in parallel.** Deezer, Last.fm, MusicBrainz + Spotify and YouTube Music each run in their own thread, fed from queues, so their rate limits overlap instead of adding up; Deezer stays single-threaded at ~8 requests/s because its limit is per IP. One writer thread stores each artist's rows in one transaction, in rank order, so `--start N` still resumes at rank N. An artist prints when it is written, not when it starts.
 
 `scripts/seed.sh` loads `.env` and starts the seeder in the background inside the venv, then returns straight away. Progress goes to `data/seed.log`, so watch it with:
 
@@ -257,8 +264,11 @@ It commits one artist per transaction, so it is resumable and safe to interrupt:
 
 | Flag | Meaning |
 |------|---------|
+| `--source wikidata` | every artist Wikidata links to Deezer, ranked by fans, instead of the Last.fm chart |
+| `--full 1000` | ranks up to this get the full pipeline, the rest the skinny one |
+| `--cache data`, `--refresh-wikidata` | where a Wikidata run keeps its candidate list and Deezer's artist pages; re-pull the list from Wikidata |
 | `--start 213` | resume at rank 213 |
-| `--artists "Radiohead" "Bjork"` | seed specific names instead of the chart |
+| `--artists "Radiohead" "Bjork"` | seed specific names instead of the chart, always full |
 | `--detail-cap 120` | tracks per artist that get an ISRC/BPM lookup, one request each |
 | `--lastfm-cap 25` | tracks per artist that get listen counts |
 | `--yt-albums 60` | albums + singles per artist read on YouTube Music |
@@ -267,7 +277,7 @@ It commits one artist per transaction, so it is resumable and safe to interrupt:
 
 Caps apply to the most popular tracks first. Every other track still gets title, album, release date, duration, rank and a preview clip.
 
-Each artist prints as soon as it starts, so a quiet 40 seconds is normal, not a hang. Re-running the same command later fills in what is missing: every write is an upsert or a fill-where-null, so a re-run only fetches what is not there yet.
+Each artist prints once it is written, so a quiet half minute while a full artist is on YouTube Music is normal, not a hang. Re-running the same command later fills in what is missing: every write is an upsert or a fill-where-null, so a re-run only fetches what is not there yet.
 
 YouTube gives two different numbers and the seeder stores both. `tracks.ytmusic_plays` is the figure the YouTube Music app shows under a song -- plays summed over every upload of that recording, so 3 B for Smells Like Teen Spirit where its art track alone has 280 M views. Only the app's private API serves it, so `ytmusicapi` reads the artist's albums and singles pages (one search per artist, cached in `artists.ytmusic_id`, then one request per album, paced to about one a second) and the artist's monthly listeners land in `artists.ytmusic_listeners`. The app rounds what it shows ("3B", "282M"), and that is what gets stored: three significant digits at best, exact enough to rank by. `tracks.youtube_views` is then the exact view count of the video YouTube Music picked, from the official Data API at one quota unit per 50 videos, if `YOUTUBE_API_KEY` is set. When YouTube Music keeps refusing requests the seeder says so once, finishes the run without it, and a later run fills in what is NULL; artists that already have play counts are skipped, so a re-run moves forward instead of redoing the same names. `--yt-refresh` re-reads counts that are already stored.
 

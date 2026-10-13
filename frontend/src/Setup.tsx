@@ -128,7 +128,7 @@ export function Setup({ token, player, onDone }: { token?: string; player: Playe
               <input name="spotify_client_id" autoComplete="off" spellCheck={false} /></label>
             <label>Spotify client secret
               <input name="spotify_client_secret" type="password" autoComplete="off" /></label>
-            <label>Artists to seed <small>about 45 s each · 50 is ~40 minutes, 500 is ~6 hours</small>
+            <label>Artists to seed <small>about 45 s each · 50 is ~40 minutes, 500 is ~6 hours · past 1000 the rest are quick</small>
               <input name="artists" type="number" min={0} max={2000} defaultValue={50} required /></label>
             <button className="cta" type="submit">{busy ? 'Checking the key…' : '▲ launch ▲'}</button>
           </fieldset>
