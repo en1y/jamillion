@@ -2,10 +2,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  answerText, cell, columnsFor, defaultOp, fieldGroups, fieldLabel, firstInGroup, groupOf, namesFrom,
+  answerText, cell, columnsFor, defaultOp, everyMatch, fieldGroups, fieldLabel, firstInGroup, groupOf, namesFrom,
   splitField, spreadTiers, toPick, usable,
 } from './catalog.ts'
-import type { CatalogField, Row } from './catalog.ts'
+import type { CatalogField, Page, Query, Row } from './catalog.ts'
 
 const FIELDS: CatalogField[] = [
   { key: 'track.title', type: 'text', entities: ['tracks'] },
@@ -117,4 +117,22 @@ test('a pasted retry list is split, trimmed and de-duplicated', () => {
   assert.deepEqual(namesFrom('Muse\nmuse'), ['muse'])          // one run per artist, the last spelling wins
   assert.deepEqual(namesFrom('  ,\n '), [])
   assert.equal(namesFrom(Array.from({ length: 300 }, (_, n) => `A${n}`).join('\n')).length, 200)
+})
+
+test('everyMatch takes the whole match set past the page on screen', async () => {
+  const catalog: Row[] = Array.from({ length: 12_345 }, (_, id) => ({ id }))
+  const asked: [number?, number?][] = []
+  const run = async (search: Query): Promise<Page> => {
+    asked.push([search.offset, search.limit])
+    const from = search.offset ?? 0
+    return { entity: 'tracks', total: catalog.length, rows: catalog.slice(from, from + (search.limit ?? 50)) }
+  }
+  const search: Query = { entity: 'tracks', filters: [], sorts: [], limit: 25 }
+  const all = await everyMatch(search, catalog.slice(0, 25), catalog.length, run)
+  assert.deepEqual(all.map(row => row.id), catalog.map(row => row.id))     // every row, once, in order
+  assert.deepEqual(asked, [[25, 5000], [5025, 5000], [10025, 5000]])
+  assert.equal((await everyMatch(search, catalog.slice(0, 25), 25, run)).length, 25)   // all on screen: no request
+  assert.equal(asked.length, 3)
+  // A total that outruns the rows (the catalog shrank mid-pull) stops instead of spinning.
+  assert.equal((await everyMatch(search, [], 99, async () => ({ entity: 'tracks', total: 99, rows: [] }))).length, 0)
 })

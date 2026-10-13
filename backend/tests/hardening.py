@@ -34,7 +34,7 @@ def main():
         # -------------------------------------------------- the body cap
         # Well over MAX_BODY_BYTES, and unauthenticated: the parser refuses it
         # before any route or filter sees it.
-        status, _, _ = api('/api/quizzes', {'date': '2030-01-01', 'pad': 'x' * 400_000})
+        status, _, _ = api('/api/quizzes', {'date': '2030-01-01', 'pad': 'x' * 5_000_000})
         assert status in (413, 400), f'an oversized body must be refused, got {status}'
 
         # -------------------------------------------------- input caps

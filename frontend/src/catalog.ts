@@ -174,6 +174,19 @@ export function spreadTiers(count: number, ladder: number[]): (number | null)[] 
     ladder[count === 1 ? 0 : Math.round((i * last) / (count - 1))])
 }
 
+/** Every match, not the page on screen: the rest come 5000 at a time (the
+ *  route's page cap) in the same order, past the rows already shown. */
+export async function everyMatch(search: Query, shown: Row[], total: number,
+                                 run: (search: Query) => Promise<Page>): Promise<Row[]> {
+  const all = [...shown]
+  while (all.length < total) {
+    const next = await run({ ...search, limit: 5000, offset: all.length })
+    if (next.rows.length === 0) break    // the catalog shrank under us
+    all.push(...next.rows)
+  }
+  return all
+}
+
 // --- the catalog dashboard --------------------------------------------------
 
 /** A pasted retry list: one artist per line, or comma-separated, either way.

@@ -1,7 +1,7 @@
 // The flight deck: where a moderator writes the day. Everything it talks to is in
 // moderator.ts; everything it decides without a DOM is in quizdraft.ts.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query'
 import { ApiError } from './api'
 import { QuizStats } from './Admin'
 import { navigate } from './routing'
@@ -12,7 +12,7 @@ import {
 } from './moderator'
 import type { ModAnswer, ModQuestion, QuizDay, Tier } from './moderator'
 import {
-  NO_VALUE, OP_LABELS, answerText, cell, columnsFor, defaultOp, dirLabel, fieldGroups,
+  NO_VALUE, OP_LABELS, answerText, cell, columnsFor, defaultOp, dirLabel, everyMatch, fieldGroups,
   fieldLabel, fieldType, fieldsFor, firstInGroup, groupOf, splitField, spreadTiers, toPick, usable,
 } from './catalog'
 import type {
@@ -358,6 +358,11 @@ function CatalogQuery({ schema, entities, token, onPick, onCollect, blocked }: {
   // once they are all in, which is where the moderator can see the list.
   const collect = (picked: Row[]) => onCollect?.(picked.map(row => answerText(row, entity, shape)))
 
+  const takeAll = useMutation({
+    mutationFn: () => everyMatch(search, rows, page?.total ?? 0, next => runQuery(next, token)),
+    onSuccess: collect,
+  })
+
   return (
     <div className="query">
       {entities.length > 1 && (
@@ -431,6 +436,8 @@ function CatalogQuery({ schema, entities, token, onPick, onCollect, blocked }: {
         <span className="meta" role="status">
           {busy ? 'asking the catalog…'
             : error ? error
+            : takeAll.isPending ? 'taking every match…'
+            : takeAll.error ? takeAll.error.message
             : page ? `${page.total.toLocaleString('en-US')} match${page.total === 1 ? '' : 'es'}` +
                      (page.total > rows.length ? `, top ${rows.length}` : '')
             : ''}
@@ -501,8 +508,9 @@ function CatalogQuery({ schema, entities, token, onPick, onCollect, blocked }: {
                   onClick={() => { collect(rows.filter(row => ticked.includes(row.id))); setTicked([]) }}>
             + {ticked.length} ticked
           </button>
-          <button className="chip" type="button" onClick={() => collect(rows)}>
-            + all {rows.length} shown
+          <button className="chip" type="button" disabled={busy || takeAll.isPending}
+                  onClick={() => takeAll.mutate()}>
+            + all {(page?.total ?? rows.length).toLocaleString('en-US')}{page && page.total > rows.length ? ' matches' : ' shown'}
           </button>
         </div>
       )}

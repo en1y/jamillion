@@ -161,7 +161,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       RATE_LIMIT: ${RATE_LIMIT:-on}
       TRUST_PROXY_IPS: ${TRUST_PROXY_IPS:-127.0.0.1,172.16.0.0/12}
-      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-262144}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-4194304}
       # Seconds a query may wait for a connection or run. 0 leaves Drogon's own
       # default, which is no timeout -- and a database that is down then hangs
       # every route instead of failing it.

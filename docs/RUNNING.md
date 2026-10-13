@@ -386,7 +386,7 @@ forwarded rather than the bridge address.
 | `RATE_CATALOG` | 60/min | `/api/catalog`, per moderator |
 | `RATE_LIMIT=off` | — | disables all of it, for the integration suites |
 | `TRUST_PROXY_IPS` | `127.0.0.1,172.16.0.0/12` | whose `X-Forwarded-For` is believed. **IPv4 only** |
-| `MAX_BODY_BYTES` | 262144 | largest accepted request body |
+| `MAX_BODY_BYTES` | 4194304 | largest accepted request body (~60k answers in one quiz) |
 | `DB_TIMEOUT_SEC` | 5 | how long a query may wait for a connection before failing (`0` = never) |
 
 A throttled request is a 429 carrying the same `{"error": ...}` body as every

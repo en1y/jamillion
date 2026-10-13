@@ -142,9 +142,10 @@ int main()
     });
 
     // The largest legitimate body is POST /api/quizzes: seven questions and
-    // their expanded answer key, a few tens of kB. TLS and the static files are
-    // Caddy's job, so this process only ever sees JSON.
-    const auto maxBody = static_cast<size_t>(std::stoul(env("MAX_BODY_BYTES", "262144")));
+    // their expanded answer key. A key taken whole out of the catalog runs to
+    // thousands of rows at ~60 bytes each, so 4 MiB is ~60k answers. TLS and the
+    // static files are Caddy's job, so this process only ever sees JSON.
+    const auto maxBody = static_cast<size_t>(std::stoul(env("MAX_BODY_BYTES", "4194304")));
     app().registerBeginningAdvice([=] { startupSummary(port, dbTimeout, maxBody); });
     app().setClientMaxBodySize(maxBody)
          .setClientMaxMemoryBodySize(maxBody)

@@ -339,7 +339,9 @@ void search(const HttpRequestPtr &req, std::function<void(const HttpResponsePtr 
         " LIMIT $" + std::to_string(params.size() + 1) + "::int"
         " OFFSET $" + std::to_string(params.size() + 2) + "::int) t";
 
-    params.push_back(std::to_string(clampInt((*body)["limit"], 50, 1, 500)));
+    // The table shows 500 at most; 5000 is the editor taking every match a page
+    // at a time, which at RATE_CATALOG's 60 a minute is 300k rows a minute.
+    params.push_back(std::to_string(clampInt((*body)["limit"], 50, 1, 5000)));
     params.push_back(std::to_string(clampInt((*body)["offset"], 0, 0, 1000000)));
 
     // A runtime number of parameters, so the binder is filled in a loop rather
