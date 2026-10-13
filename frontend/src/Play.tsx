@@ -85,7 +85,12 @@ function Starfield({ au }: { au: number }) {
     const ctx = node.getContext('2d')
     if (!ctx) return
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
-    let width = 0, height = 0, far: Star[] = [], mid: Star[] = [], near: Star[] = []
+    // Three depths of one sky. A layer at depth d sees the camera's scale s as s ** d
+    // (its k): zoomed out, the far stars barely move and the near ones follow the camera.
+    const layers = [{ share: 0.62, speed: 0.18, depth: 0.3 }, { share: 0.28, speed: 0.38, depth: 0.55 },
+                    { share: 0.1, speed: 0.7, depth: 0.85 }].map(layer => ({ ...layer, stars: [] as Star[], k: 1 }))
+    const near = layers[2]
+    let width = 0, height = 0, cx = 0, cy = 0, s = 1
     let comet: Comet | null = null, wait = rand(400, 1800), last = performance.now(), raf = 0
 
     // A phone paints the sky at 1x: a canvas redrawn every frame at 2-3x is what
@@ -99,11 +104,12 @@ function Starfield({ au }: { au: number }) {
       node!.width = Math.max(1, Math.round(width * dpr))
       node!.height = Math.max(1, Math.round(height * dpr))
       ctx!.setTransform(dpr, 0, 0, dpr, 0, 0)
-      // Dense enough that a zoomed-out sky still reads as a sky: ~one star per 1500 px².
-      const per = width * height / 1500
-      far = sprinkle(Math.round(per * 0.62), width, height, 0.18)
-      mid = sprinkle(Math.round(per * 0.28), width, height, 0.38)
-      near = sprinkle(Math.round(per * 0.1), width, height, 0.7)
+      // The camera sits at a fixed point of the scene (CSS: left 50%, bottom --pin),
+      // so the rocket point the zoom closes on is arithmetic, never measured.
+      cx = width / 2
+      cy = height * 0.48
+      const per = width * height / 1500   // ~one star per 1500 px², at any zoom
+      for (const layer of layers) layer.stars = sprinkle(Math.round(per * layer.share), width, height, layer.speed)
       comet = null
       wait = rand(200, 1200)
       if (reduce) { ctx!.clearRect(0, 0, width, height); sky(0, 0) }
@@ -113,77 +119,93 @@ function Starfield({ au }: { au: number }) {
     // Clock-based, not frame-based: a throttled tab still settles on time.
     const surge = (now: number) => { const r = Math.max(0, 1 - (now - warpAt.current) / WARP_MS); return r * r * (3 - 2 * r) }
 
-    function wrap(star: Star, dt: number, boost: number) {
-      star.x += star.vx * dt
-      star.y += star.vy * dt * (1 + boost)
+    function wrap(star: Star, dt: number, boost: number, k: number) {
+      star.x += star.vx * dt * k
+      star.y += star.vy * dt * (1 + boost) * k
       if (star.x < 0) star.x += width; else if (star.x > width) star.x -= width
       if (star.y > height) star.y -= height; else if (star.y < 0) star.y += height
     }
 
-    // One fill per brightness bucket instead of one per star: a few hundred stars
-    // cost four path fills a frame. Twinkle rides on the bucket, phase by bucket.
-    const BUCKETS = 4
-    // The sky zooms with the camera: read its live scale (wheel or trip), paint
-    // the field once at that scale into a tile and repeat the tile across the
-    // screen, anchored at the rocket point, so a zoomed-out sky is still full.
-    const cam = node.parentElement?.querySelector<HTMLElement>('.camera')
-    const tile = document.createElement('canvas')
-    const tctx = tile.getContext('2d')!
-    let s = 1, cx = 0, cy = 0
-    // The camera sits at a fixed point of the scene (CSS: left 50%, bottom --pin),
-    // so its position is arithmetic; measuring it forced a layout every frame. Its
-    // scale is only read while a zoom or the trip is running, plus once after:
-    // getComputedStyle every frame was a style recalc a phone paid 60 times a second.
+    // The zoom is a flow, not a copy. The sky used to be painted small into a tile and
+    // repeated, which drew the tile's edges and a lattice of the same stars. Stars are
+    // at infinity, so zooming a layer by m just pulls each star toward the rocket point
+    // (or pushes it out); 1 - m² of them, the share of the screen a pull-out uncovers,
+    // are dropped into that band along the edges, and what a push-in carries off the
+    // screen comes back anywhere on it. Same density, nothing repeats, no seams, and
+    // the cost is the star count whatever the scale.
+    function respawn(star: Star, m: number) {
+      const dx = Math.random() * width - cx, dy = Math.random() * height - cy
+      if (m > 1) { star.x = cx + dx; star.y = cy + dy; return }
+      // a uniform point, slid out along its ray into the band between m and 1 of the way to the edge
+      const reach = Math.max(dx > 0 ? dx / (width - cx) : -dx / cx, dy > 0 ? dy / (height - cy) : -dy / cy) || 1
+      const to = Math.sqrt(m * m + (1 - m * m) * Math.random()) / reach
+      star.x = cx + dx * to
+      star.y = cy + dy * to
+    }
+    // The camera's live scale (wheel or trip) is read only while one runs, plus once
+    // after. getComputedStyle there costs ~nothing: the frame recalculates that style
+    // anyway, this only does it before the sky instead of after.
     let moving = 0, settle = true
+    const cam = node.parentElement?.querySelector<HTMLElement>('.camera')
     const start = () => { moving++ }
     const stop = () => { moving = Math.max(0, moving - 1); settle = true }
     const events = ['transitionrun', 'animationstart'] as const, ends = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'] as const
     for (const e of events) cam?.addEventListener(e, start)
     for (const e of ends) cam?.addEventListener(e, stop)
     function lens() {
-      if (moving || settle) { s = Math.min(1, (cam && parseFloat(getComputedStyle(cam).scale)) || 1); settle = false }
-      cx = width / 2
-      cy = height * 0.48
+      if (!moving && !settle) return
+      settle = false
+      const to = Math.min(1, (cam && parseFloat(getComputedStyle(cam).scale)) || 1)
+      if (to === s) return
+      for (const layer of layers) {
+        const m = (to / s) ** layer.depth, keep = m * m
+        for (const star of layer.stars) {
+          star.x = cx + (star.x - cx) * m
+          star.y = cy + (star.y - cy) * m
+          if (m < 1 ? Math.random() >= keep : star.x < 0 || star.x > width || star.y < 0 || star.y > height) respawn(star, m)
+        }
+        layer.k = to ** layer.depth
+      }
+      if (comet) {   // the comet flies with the near stars
+        const m = (to / s) ** near.depth
+        comet.x = cx + (comet.x - cx) * m
+        comet.y = cy + (comet.y - cy) * m
+      }
+      s = to
     }
-    function paint(g: CanvasRenderingContext2D, stars: Star[], now: number, boost: number) {
-      const floor = 0.4 / s   // a star never paints under 0.4 screen px
+
+    // One fill per brightness bucket instead of one per star: a few hundred stars
+    // cost four path fills a frame. Twinkle rides on the bucket, phase by bucket.
+    const BUCKETS = 4
+    function paint(stars: Star[], k: number, now: number, boost: number) {
       for (let b = 0; b < BUCKETS; b++) {
         const twinkle = 0.65 + 0.35 * Math.sin(now / 700 + b * 1.7)
-        g.fillStyle = `rgba(232,241,255,${(0.35 + 0.6 * (b + 0.5) / BUCKETS) * twinkle})`
-        g.beginPath()
+        ctx!.fillStyle = `rgba(232,241,255,${(0.35 + 0.6 * (b + 0.5) / BUCKETS) * twinkle})`
+        ctx!.beginPath()
         for (const star of stars) {
           if (Math.floor((star.a - 0.35) / 0.6 * BUCKETS) % BUCKETS !== b) continue
-          const r = Math.max(floor, star.r)
-          g.moveTo(star.x + r, star.y)
-          g.arc(star.x, star.y, r, 0, Math.PI * 2)
+          const r = Math.max(0.4, star.r * k)   // shrinks with its layer, never under 0.4 px
+          ctx!.moveTo(star.x + r, star.y)
+          ctx!.arc(star.x, star.y, r, 0, Math.PI * 2)
         }
-        g.fill()
+        ctx!.fill()
       }
       if (boost <= 1) return
       // streaks behind the stars, as long as the distance each just flew
-      g.strokeStyle = 'rgba(232,241,255,0.4)'
-      g.lineWidth = 1 / s
-      g.beginPath()
+      ctx!.strokeStyle = 'rgba(232,241,255,0.4)'
+      ctx!.lineWidth = 1
+      ctx!.beginPath()
       for (const star of stars) {
-        const tail = star.vy * boost * 2
-        if (tail > 2) { g.moveTo(star.x, star.y - tail); g.lineTo(star.x, star.y) }
+        const tail = star.vy * boost * 2 * k
+        if (tail <= 2) continue
+        ctx!.moveTo(star.x, star.y - tail)
+        ctx!.lineTo(star.x, star.y)
+        // a star that just wrapped to the top still trails up from the bottom edge
+        if (star.y < tail) { ctx!.moveTo(star.x, star.y - tail + height); ctx!.lineTo(star.x, height) }
       }
-      g.stroke()
+      ctx!.stroke()
     }
-    // Every layer, through the lens: straight onto the screen at 1:1, else via the tile.
-    function sky(now: number, boost: number) {
-      lens()
-      if (s > 0.999) { paint(ctx!, far, now, boost); paint(ctx!, mid, now, boost); paint(ctx!, near, now, boost); return }
-      const tw = Math.max(1, Math.round(width * s * dpr)), th = Math.max(1, Math.round(height * s * dpr))
-      if (tile.width !== tw || tile.height !== th) { tile.width = tw; tile.height = th }
-      tctx.setTransform(tw / width, 0, 0, th / height, 0, 0)
-      tctx.clearRect(0, 0, width, height)   // in field units, under the transform, so the whole tile clears
-      paint(tctx, far, now, boost); paint(tctx, mid, now, boost); paint(tctx, near, now, boost)
-      const pattern = ctx!.createPattern(tile, 'repeat')!
-      pattern.setTransform(new DOMMatrix().translate(cx - cx * s, cy - cy * s).scale(1 / dpr))
-      ctx!.fillStyle = pattern
-      ctx!.fillRect(0, 0, width, height)
-    }
+    function sky(now: number, boost: number) { for (const layer of layers) paint(layer.stars, layer.k, now, boost) }
 
     function frame(now: number) {
       raf = requestAnimationFrame(frame)
@@ -194,45 +216,35 @@ function Starfield({ au }: { au: number }) {
       const dt = Math.min(3, (now - last) / 16.67)
       last = now
       const boost = surge(now) * 70   // near stars fly ~50 px a frame at full rush
+      lens()
       ctx!.clearRect(0, 0, width, height)
-      for (const star of far) wrap(star, dt, boost)
-      for (const star of mid) wrap(star, dt, boost)
-      for (const star of near) wrap(star, dt, boost)
+      for (const layer of layers) for (const star of layer.stars) wrap(star, dt, boost, layer.k)
       sky(now, boost)
 
       if (!comet) {
         wait -= dt * 16.67
         if (wait <= 0) comet = throwComet(width, height)
       } else {
-        comet.x += comet.vx * dt
-        comet.y += comet.vy * dt
+        comet.x += comet.vx * dt * near.k
+        comet.y += comet.vy * dt * near.k
         const mag = Math.hypot(comet.vx, comet.vy) || 1
-        const tx = comet.x - (comet.vx / mag) * comet.len
-        const ty = comet.y - (comet.vy / mag) * comet.len
-        // The comet lives in the home field: through the lens it shrinks with the
-        // zoom and flies on across the neighbouring fields until it leaves its own.
-        ctx!.save()
-        ctx!.translate(cx - cx * s, cy - cy * s)
-        ctx!.scale(s, s)
+        const tx = comet.x - (comet.vx / mag) * comet.len * near.k
+        const ty = comet.y - (comet.vy / mag) * comet.len * near.k
         const tail = ctx!.createLinearGradient(tx, ty, comet.x, comet.y)
         tail.addColorStop(0, '#fff0')
         tail.addColorStop(0.7, '#fff6')
         tail.addColorStop(1, '#ffff')
         ctx!.strokeStyle = tail
-        ctx!.lineWidth = Math.max(2, 1 / s)   // never thinner than a screen pixel
+        ctx!.lineWidth = 2
         ctx!.beginPath()
         ctx!.moveTo(tx, ty)
         ctx!.lineTo(comet.x, comet.y)
         ctx!.stroke()
         ctx!.fillStyle = '#fff'
         ctx!.beginPath()
-        ctx!.arc(comet.x, comet.y, Math.max(1.8, 0.6 / s), 0, Math.PI * 2)
+        ctx!.arc(comet.x, comet.y, 1.8, 0, Math.PI * 2)
         ctx!.fill()
-        ctx!.restore()
-        // gone only once it is off the screen, not off its own field: zoomed out
-        // it keeps flying across the neighbouring tiles
-        const left = cx - cx / s, top = cy - cy / s
-        if (comet.x < left - 200 || comet.x > left + width / s + 200 || comet.y < top - 200 || comet.y > top + height / s + 200) {
+        if (comet.x < -200 || comet.x > width + 200 || comet.y < -200 || comet.y > height + 200) {
           comet = null
           wait = rand(5000, 14000)
         }
@@ -240,11 +252,7 @@ function Starfield({ au }: { au: number }) {
     }
 
     resize()
-    if (reduce) {
-      sky(0, 0)
-    } else {
-      raf = requestAnimationFrame(frame)
-    }
+    if (!reduce) raf = requestAnimationFrame(frame)
     const watch = new ResizeObserver(resize)
     watch.observe(node)
     return () => {
