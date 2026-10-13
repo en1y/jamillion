@@ -27,6 +27,8 @@ import type { AnswerField, Draft, DraftPick, DraftQuestion } from './quizdraft'
 import type { Qtype } from './api'
 import { formatDate, monthGrid, monthLabel, parseDate, shiftDay, shiftMonth, weekday } from './flight'
 import { getSeeder } from './setup'
+import type WaveSurfer from 'wavesurfer.js'
+import type { Region } from 'wavesurfer.js/dist/plugins/regions.esm.js'
 
 /** The fields a song question will take more than one name for. Not the artist:
  *  a song has one, and another name for that is a different act. */
@@ -47,9 +49,6 @@ const LIMITS = [0, 10, 15, 20, 30, 45, 60]
 /** The select value for "accepted, and worth nothing". Not a tier id -- those
  *  start at 1 -- and not '' either, which is the by-rarity default. */
 const NO_SCORE = 'zero'
-
-/** What a press on the waveform has hold of. */
-type Part = 'start' | 'end' | 'move' | 'draw'
 
 /** Every tier select in the deck offers the same three kinds of answer: scored by
  *  how rare it turns out to be, pinned to a tier, or worth nothing at all. */
@@ -513,170 +512,108 @@ function CatalogQuery({ schema, entities, token, onPick, onCollect, blocked }: {
 
 // --- the snippet picker ----------------------------------------------------
 
-/** The window over the 30 s clip, drawn as a real waveform. The clip route is
- *  moderator-guarded, so it comes in through fetch with the token rather than an
- *  <audio src>; the bytes are used twice, once decoded and once as a blob URL. */
+/** The window over the 30 s clip, on a wavesurfer waveform with one region. The
+ *  clip route is moderator-guarded, so it comes in through fetch with the token
+ *  rather than an <audio src>, and wavesurfer gets the blob. wavesurfer itself is
+ *  imported here (the top takes only its types), so the player's bundle never carries it. */
 function SnippetPicker({ trackId, start, len, token, onChange }: {
   trackId: number; start: number; len: number; token?: string
   onChange: (start: number, len: number) => void
 }) {
-  const canvas = useRef<HTMLCanvasElement>(null)
-  const audio = useRef<HTMLAudioElement>(null)
-  const [peaks, setPeaks] = useState<number[] | null>(null)
-  const [source, setSource] = useState('')
+  const wave = useRef<HTMLDivElement>(null)
+  const region = useRef<Region | null>(null)
+  const surfer = useRef<WaveSurfer | null>(null)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [playing, setPlaying] = useState(false)
 
+  // The wavesurfer callbacks are set up once per clip, so they read the props here.
+  const props = useRef({ start, len, onChange })
+  useEffect(() => { props.current = { start, len, onChange } })
+  // The sliders move the region; a drag on the region moves the sliders through onChange.
+  useEffect(() => { region.current?.setOptions({ start, end: start + len }) }, [start, len])
+
   useEffect(() => {
     let live = true
-    let url = ''
-    fetch(trackAudio(trackId), {
-      credentials: 'same-origin', headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).then(async response => {
-      if (!response.ok) throw new Error('No clip for that track')
-      const bytes = await response.arrayBuffer()
-      // The blob first: decodeAudioData detaches the buffer it is handed.
-      url = URL.createObjectURL(new Blob([bytes], { type: response.headers.get('Content-Type') ?? 'audio/mpeg' }))
-      if (live) setSource(url)
-      const context = new AudioContext()
-      const decoded = await context.decodeAudioData(bytes)
-      void context.close()
-      const samples = decoded.getChannelData(0)
-      const buckets = 240, width = Math.floor(samples.length / buckets)
-      const next = Array.from({ length: buckets }, (_, bucket) => {
-        let top = 0
-        for (let i = bucket * width; i < (bucket + 1) * width; i++) top = Math.max(top, Math.abs(samples[i]))
-        return top
+    let ws: WaveSurfer | null = null
+    Promise.all([
+      fetch(trackAudio(trackId), {
+        credentials: 'same-origin', headers: token ? { Authorization: `Bearer ${token}` } : {},
+      }).then(response => {
+        if (!response.ok) throw new Error('No clip for that track')
+        return response.blob()
+      }),
+      import('wavesurfer.js'),
+      import('wavesurfer.js/dist/plugins/regions.esm.js'),
+    ]).then(([clip, { default: Surfer }, { default: Regions }]) => {
+      if (!live || !wave.current) return
+      const regions = Regions.create()
+      ws = surfer.current = Surfer.create({
+        container: wave.current, height: 'auto', waveColor: '#2c4a72', progressColor: '#2c4a72',
+        cursorWidth: 0, barWidth: 2, barGap: 1, interact: false, plugins: [regions],
       })
-      if (live) setPeaks(next)
+      // A tenth of a second is as fine as anyone hears, and the column keeps two decimals.
+      const tenth = (second: number) => Math.round(second * 10) / 10
+      const commit = (from: number, to: number) => {
+        const fitted = clampSnippet(tenth(from), tenth(tenth(to) - tenth(from)))
+        region.current?.setOptions({ start: fitted.start, end: fitted.start + fitted.len })
+        props.current.onChange(fitted.start, fitted.len)
+      }
+      ws.on('ready', () => {
+        const { start: from, len: length } = props.current
+        region.current = regions.addRegion({
+          start: from, end: from + length, color: 'transparent', minLength: 1,
+        })
+        // Bare waveform draws a fresh window, which replaces the one there was.
+        regions.enableDragSelection({ color: 'transparent', minLength: 1 })
+        setLoaded(true)
+      })
+      regions.on('region-created', drawn => {
+        if (drawn === region.current) return
+        region.current?.remove()
+        region.current = drawn
+        commit(drawn.start, drawn.end)
+      })
+      // wavesurfer trims a window slid into either end of the clip; a slide keeps its length.
+      regions.on('region-update', (moved, side) => {
+        const { len: length } = props.current
+        if (side || moved.end - moved.start >= length) return
+        moved.setOptions(moved.start === 0 ? { end: length } : { start: moved.end - length })
+      })
+      regions.on('region-updated', moved => commit(moved.start, moved.end))
+      ws.on('play', () => setPlaying(true))
+      ws.on('pause', () => setPlaying(false))
+      return ws.loadBlob(clip)
     }).catch((cause: unknown) => {
       if (live) setError(cause instanceof Error ? cause.message : 'The clip would not load')
     })
-    return () => { live = false; if (url) URL.revokeObjectURL(url) }
+    return () => { live = false; region.current = surfer.current = null; ws?.destroy() }
   }, [trackId, token])
 
-  useEffect(() => {
-    const element = canvas.current
-    if (!element || !peaks) return
-    const ratio = window.devicePixelRatio || 1
-    const width = element.clientWidth, height = element.clientHeight
-    element.width = width * ratio
-    element.height = height * ratio
-    const paint = element.getContext('2d')
-    if (!paint) return
-    paint.scale(ratio, ratio)
-    paint.clearRect(0, 0, width, height)
-    peaks.forEach((peak, i) => {
-      const x = (i / peaks.length) * width
-      const second = (i / peaks.length) * CLIP_SEC
-      const inside = second >= start && second < start + len
-      paint.fillStyle = inside ? '#ffc46b' : '#2c4a72'
-      const bar = Math.max(1, peak * height * 0.9)
-      paint.fillRect(x, (height - bar) / 2, Math.max(1, width / peaks.length - 1), bar)
-    })
-    // The handles: an edge you can trim is an edge you can see.
-    paint.fillStyle = '#ffe7bd'
-    for (const second of [start, start + len]) {
-      const x = (second / CLIP_SEC) * width
-      paint.fillRect(Math.min(Math.max(x - 1.5, 0), width - 3), 0, 3, height)
-    }
-  }, [peaks, start, len])
-
-  // Seeking before the metadata lands is silently dropped, the same trap the
-  // player's Snippet hit: readyState >= 1 means the duration is known.
-  function ready(then: (element: HTMLAudioElement) => void) {
-    const element = audio.current
-    if (!element) return
-    if (element.readyState >= 1) then(element)
-    else element.addEventListener('loadedmetadata', () => then(element), { once: true })
-  }
   function audition() {
-    if (playing) { audio.current?.pause(); return }
-    ready(element => {
-      element.currentTime = start
-      element.play().then(() => setPlaying(true)).catch(() => setPlaying(false))
-    })
+    if (playing) surfer.current?.pause()
+    else region.current?.play(true)
   }
   const move = (nextStart: number, nextLen: number) => {
     const fitted = clampSnippet(nextStart, nextLen)
     onChange(fitted.start, fitted.len)
   }
 
-  // The window is drawn on the clip, so it is edited on the clip: take hold of an
-  // edge to trim that end, the middle to slide the whole thing without resizing
-  // it, or bare waveform to draw a fresh one. The sliders below stay -- they are
-  // the keyboard's way in, and the only way to nudge by exactly a second.
-  const drag = useRef<{ part: Part; from: number } | null>(null)
-  const secondAt = (event: React.PointerEvent<HTMLDivElement>) => {
-    const box = event.currentTarget.getBoundingClientRect()
-    const ratio = (event.clientX - box.left) / box.width
-    return Math.round(Math.min(Math.max(ratio, 0), 1) * CLIP_SEC * 10) / 10
-  }
-
-  /** What a press at this second would take hold of. The grab zone is in seconds
-   *  rather than pixels, so it does not change with the width of the deck. */
-  function partAt(at: number): Part {
-    const edge = CLIP_SEC / 40                                  // 0.75 s either side
-    if (Math.abs(at - start) <= edge) return 'start'
-    if (Math.abs(at - (start + len)) <= edge) return 'end'
-    return at > start && at < start + len ? 'move' : 'draw'
-  }
-
-  function grab(event: React.PointerEvent<HTMLDivElement>) {
-    if (!peaks) return
-    // Capture only keeps a drag alive past the edge of the clip; a pointer id the
-    // browser will not capture must not take the whole interaction down with it.
-    try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* no capture, still draggable */ }
-    const at = secondAt(event)
-    const part = partAt(at)
-    drag.current = { part, from: part === 'move' ? at - start : at }
-    if (part === 'draw') move(at, len)
-  }
-
-  function sweep(event: React.PointerEvent<HTMLDivElement>) {
-    const at = secondAt(event)
-    if (!drag.current) {
-      // The cursor is the only thing that says the edges are grabbable, so it is
-      // written straight to the node rather than through a render.
-      const part = peaks ? partAt(at) : 'draw'
-      event.currentTarget.style.cursor =
-        part === 'start' || part === 'end' ? 'col-resize' : part === 'move' ? 'grab' : 'crosshair'
-      return
-    }
-    const { part, from } = drag.current
-    const end = start + len
-    if (part === 'start') {
-      const from_ = Math.min(at, end - 1)                       // never past its own end
-      move(from_, end - from_)
-    } else if (part === 'end') {
-      move(start, Math.max(at - start, 1))
-    } else if (part === 'move') {
-      // Slid to the far end it stops there; clampSnippet would otherwise trim it.
-      move(Math.min(at - from, CLIP_SEC - len), len)
-    } else if (Math.abs(at - from) >= 0.5) {
-      // Under half a second is a press that wobbled, not a selection.
-      move(Math.min(from, at), Math.abs(at - from))
-    }
-  }
-
+  // The sliders stay -- they are the keyboard's way in, and the only way to nudge
+  // by exactly a second.
   return (
     <div className="snip">
       {error && <p className="notice" role="alert">{error}</p>}
-      <div className="snip-wave" onPointerDown={grab} onPointerMove={sweep}
-           onPointerUp={() => { drag.current = null }}
-           onPointerCancel={() => { drag.current = null }}>
-        <canvas ref={canvas} aria-label="Waveform of the 30 second clip" />
-        {!peaks && !error && <span className="meta">decoding the clip…</span>}
+      <div className="snip-wave" ref={wave} role="img" aria-label="Waveform of the 30 second clip">
+        {!loaded && !error && <span className="meta">decoding the clip…</span>}
       </div>
       <p className="meta snip-hint">
         drag either edge to trim, the middle to slide it, or bare waveform to draw a
         new one — the whole clip is 30 s, which is all the preview a track has
       </p>
-      <audio ref={audio} src={source || undefined} preload="auto"
-             onPause={() => setPlaying(false)}
-             onTimeUpdate={e => { if (e.currentTarget.currentTime >= start + len) e.currentTarget.pause() }} />
       <div className="snip-row">
-        <button className="play" type="button" onClick={audition} aria-label={playing ? 'Pause' : 'Play the window'}>
+        <button className="play" type="button" onClick={audition} disabled={!loaded}
+                aria-label={playing ? 'Pause' : 'Play the window'}>
           {playing ? '❚❚' : '▶'}
         </button>
         <label>start <b>{start.toFixed(0)}s</b>
