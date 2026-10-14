@@ -681,6 +681,28 @@ Decisions worth carrying forward:
       window; the sliders stay. wavesurfer loads inside the picker, so the
       player's bundle never carries it.
 
+## v1.0.9 — A catalog as wide as Wikidata
+
+- [x] "+ all" in the editor's catalog browser takes every match, not the 500 on
+      screen: the rest come 5000 at a time in the same order. The catalog route
+      allows 5000 rows a request, and `MAX_BODY_BYTES` defaults to 4 MiB, ~60k
+      answers in one quiz, so a key taken whole out of the catalog still saves.
+- [x] `--source wikidata`: every artist Wikidata links to Deezer (~35 000) with
+      its MusicBrainz and Spotify ids, country, kind, gender, years and English
+      aliases, ranked by Deezer fans, nothing searched by name. The aliases land
+      in `artist_aliases`.
+- [x] Two depths: the top `--full` get the full pipeline (~45 s each), the rest
+      a skinny pass, Deezer's top 50 tracks (~0.4 s). `artists.depth` says which.
+      The sources run in parallel threads, so their rate limits overlap.
+- [x] The setup page and the catalog dashboard pick the list, the count (up to
+      50 000), the full-depth top and YouTube, with an estimate before launch;
+      the dashboard follows the run's phase, shows the log's tail and can stop it.
+- [x] Skinny becomes full by itself: every idle hour the backend promotes the
+      `PROMOTE_BATCH` (default 20) biggest skinny artists to full depth.
+- [x] Names Deezer spells plainly ("JAY Z", "Ludwig Goransson") are found up to
+      accents; an artist with no albums falls back to its top tracks; a Spotify id
+      two Deezer artists share stays with the first.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).

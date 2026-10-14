@@ -166,7 +166,7 @@ docker compose -f compose.yaml -f compose.build.yaml up --build -d
 
 # publish a release: the version from backend/CMakeLists.txt, and latest
 docker login
-for tag in 1.0.8 latest; do
+for tag in 1.0.9 latest; do
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
 done
