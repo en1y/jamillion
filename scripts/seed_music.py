@@ -151,7 +151,7 @@ def wikidata_row(b):
                 begin_year=int(v("start")) if v("start") else None,
                 end_year=int(v("end")) if v("end") else None, aliases=sorted(aliases))
 
-def wikidata_candidates(cache, refresh=False, page=5000):
+def wikidata_candidates(cache, refresh=False, page=5000, report=lambda n: None):
     """Every candidate, kept in `cache` (seven 40 s pages otherwise, every run)."""
     if not refresh:
         try: return json.load(open(cache))
@@ -170,28 +170,32 @@ def wikidata_candidates(cache, refresh=False, page=5000):
             c = wikidata_row(b)
             if c and c["deezer_id"] not in out: out[c["deezer_id"]] = c
         print(f"  wikidata: {len(out)} artists so far", flush=True)
+        report(len(out))
         if len(rows) < page: break
         offset += page
     os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
     json.dump(list(out.values()), open(cache, "w"))
     return list(out.values())
 
-def rank_by_fans(cands, cache):
+def rank_by_fans(cands, cache, refresh=False, report=lambda i, n: None):
     """Deezer's artist page for every candidate -- the fans to rank by, and the name
     and picture the catalog stores. One request each, kept in `cache` so a rerun
     pays only for new ids; ids Deezer no longer knows are dropped."""
     try: known = json.load(open(cache))
     except (OSError, ValueError): known = {}
+    if refresh: known = {k: v for k, v in known.items() if v}      # give the ids Deezer refused another go
     todo = [c for c in cands if str(c["deezer_id"]) not in known]
     if todo: print(f"  deezer: {len(todo)} artist pages to rank by fans, ~{len(todo) / 8 / 60:.0f} min", flush=True)
     for i, c in enumerate(todo, 1):
         d = deezer(f"artist/{c['deezer_id']}")
-        if d.get("id"): known[str(d["id"])] = {k: d.get(k) for k in ("name", "nb_fan", "picture_xl")}
+        # an id Deezer no longer knows is cached as None, so it is not asked for again
+        known[str(c["deezer_id"])] = {k: d.get(k) for k in ("name", "nb_fan", "picture_xl")} if d.get("id") else None
+        if i % 100 == 0 or i == len(todo): report(i, len(todo))
         if i % 1000 == 0 or i == len(todo):
             print(f"  deezer: {i}/{len(todo)}", flush=True)
             os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
             json.dump(known, open(cache, "w"))
-    out = [{**c, "deezer": known[str(c["deezer_id"])]} for c in cands if str(c["deezer_id"]) in known]
+    out = [{**c, "deezer": known[str(c["deezer_id"])]} for c in cands if known.get(str(c["deezer_id"]))]
     out.sort(key=lambda c: -(c["deezer"]["nb_fan"] or 0))
     return out
 
@@ -788,6 +792,7 @@ def main():
     ap.add_argument("--full", type=int, default=1000, help="ranks up to this get the full pipeline, the rest skinny")
     ap.add_argument("--start", type=int, default=1, help="resume from this rank")
     ap.add_argument("--artists", nargs="*", help="seed these names instead of a chart (always full)")
+    ap.add_argument("--promote", type=int, help="seed this many skinny artists at full depth, biggest first; what the backend runs hourly")
     ap.add_argument("--no-youtube", action="store_true")
     ap.add_argument("--no-spotify", action="store_true")
     ap.add_argument("--detail-cap", type=int, default=120, help="tracks per artist to fetch ISRC/BPM for")
@@ -795,22 +800,25 @@ def main():
     ap.add_argument("--yt-refresh", action="store_true", help="re-read play counts already stored")
     ap.add_argument("--lastfm-cap", type=int, default=30, help="tracks per artist to fetch Last.fm listens for")
     ap.add_argument("--cache", default="data", help="where --source wikidata keeps the candidate list and Deezer's artist pages")
-    ap.add_argument("--refresh-wikidata", action="store_true", help="re-run the SPARQL query instead of using the cached list")
+    ap.add_argument("--refresh-wikidata", action="store_true", help="re-run the SPARQL query and retry the ids Deezer refused, instead of the cached list")
     ap.add_argument("--selftest", action="store_true", help="run the pure-logic checks and exit")
     ap.add_argument("--progress-file", help="write a small status file for the moderator UI")
     args = ap.parse_args()
     if args.selftest: return selftest()
 
+    # what the catalog dashboard reads: `base` is the run, the fields are the moment
+    base = dict(source="named" if args.artists else "promote" if args.promote else args.source, started=int(time.time()),
+                limit=args.limit, full_cap=args.full, phase="preparing", full=0, skinny=0)
     def progress(**fields):
         if not args.progress_file: return
         path = args.progress_file + ".next"
         with open(path, "w") as out:
-            json.dump(fields, out)
+            json.dump({**base, **fields}, out)
         os.replace(path, args.progress_file)
 
     progress(state="preparing", done=0, total=0, failed=0, artist="")
 
-    wikidata = args.source == "wikidata" and not args.artists
+    wikidata = args.source == "wikidata" and not args.artists and not args.promote
     # ponytail: Wikidata already carries the ids, and a name search per artist on
     # MusicBrainz (1/s) or Spotify would be the slowest thing in a 30 000-artist run;
     # an artist Wikidata knows no mbid for simply has none.
@@ -827,9 +835,23 @@ def main():
         # a rerun of hand-picked names is easy to paste twice
         names = list({n.lower(): n for n in reversed(args.artists)}.values())[::-1]
         cands, ranked = [dict(name=n) for n in names], False
+    elif args.promote:
+        # the ids a Wikidata run stored come along, so nothing is searched by name
+        with psycopg.connect(DB) as conn:
+            rows = conn.execute("SELECT deezer_id, name, mbid, spotify_id FROM artists WHERE depth = 'skinny' "
+                                "ORDER BY global_rank NULLS LAST, deezer_fans DESC NULLS LAST LIMIT %s", (args.promote,)).fetchall()
+        cands, ranked = [dict(deezer_id=d, name=n, mbid=m, spotify_id=sp_id) for d, n, m, sp_id in rows], False
+        if not cands:
+            print("nothing to promote: every artist is already at full depth", flush=True)
+            return progress(state="finished", done=0, total=0, failed=0, artist="")
     elif wikidata:
-        cands = wikidata_candidates(os.path.join(args.cache, "wikidata.json"), args.refresh_wikidata)
-        cands, ranked = rank_by_fans(cands, os.path.join(args.cache, "deezer-fans.json"))[:args.limit], True
+        base["phase"] = "wikidata"
+        cands = wikidata_candidates(os.path.join(args.cache, "wikidata.json"), args.refresh_wikidata,
+                                    report=lambda n: progress(state="preparing", done=n, total=0, failed=0, artist=""))
+        base["phase"] = "ranking"
+        cands = rank_by_fans(cands, os.path.join(args.cache, "deezer-fans.json"), args.refresh_wikidata,
+                             report=lambda i, n: progress(state="preparing", done=i, total=n, failed=0, artist=""))[:args.limit]
+        ranked = True
     else:
         # The Last.fm chart repeats a name now and then (The Cranberries sits at 69 and 70)
         names = list({n.lower(): n for n in reversed(top_artists(args.limit))}.values())[::-1]
@@ -847,8 +869,10 @@ def main():
     jobs = []
     for rank, c in enumerate(cands, 1):
         if rank < args.start or c.get("deezer_id") in already_full: continue
-        jobs.append(Job(c, len(jobs), rank if ranked else None, depth_for(rank if ranked else None, args.full)))
+        jobs.append(Job(c, len(jobs), rank if ranked else None,
+                        "full" if args.promote else depth_for(rank if ranked else None, args.full)))
     full = sum(j.depth == "full" for j in jobs)
+    base.update(phase="seeding", full=full, skinny=len(jobs) - full)
     print(f"seeding {len(jobs)} of {len(cands)} artists: {full} full, {len(jobs) - full} skinny"
           + (f", from rank {args.start}" if ranked else " (rank left unchanged)")
           + (f", {sum(c.get('deezer_id') in already_full for c in cands)} already full and left alone" if wikidata else ""), flush=True)

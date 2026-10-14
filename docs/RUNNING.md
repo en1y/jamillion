@@ -26,7 +26,9 @@ Until the site has an admin and a catalog, every visitor gets the setup page ins
    | Last.fm API key | required — free at <https://www.last.fm/api/account/create>; it drives the artist chart and the listen counts. Checked against Last.fm before anything is saved. |
    | YouTube Data API key | optional — exact view counts |
    | Spotify client id / secret | optional — cross-reference ids; skipped when empty |
-   | Artists to seed | biggest first, about 45 s each: 50 is ~40 minutes, 500 is ~6 hours; past the top 1000 the rest take under a second each |
+   | Artist list | Last.fm's chart (the biggest by listeners, found on Deezer by name) or Wikidata → Deezer (every artist Wikidata links to Deezer, ~35 000, ranked by Deezer fans, with their MusicBrainz/Spotify ids and aliases) |
+   | Artists to seed | up to 50 000; the button shows the estimate |
+   | Full depth for the top | ranks up to this get every album, YouTube Music and Last.fm counts, ~45 s each; the rest are skinny, Deezer's top 50, under a second each |
 
 3. **Launch.** The keys are saved and the seeder starts in the background; the page shows how far it has got and can be closed. The site works meanwhile, and the admin writes the first day's questions on the flight deck as soon as there are artists to write them from.
 
@@ -77,7 +79,7 @@ curl http://localhost:8000/api/setup -H "Authorization: Bearer $TOKEN" \
      -H 'Content-Type: application/json' -d '{"artists": 200}'
 ```
 
-It seeds the top 200 on the chart; artists already in the catalog are refreshed rather than duplicated, and only missing data is fetched. One seeder runs at a time (a second call answers 409), and it commits an artist at a time, so a restart of the backend container — which stops it — keeps everything it had done. Section 2 covers what it fetches.
+It seeds the top 200 on the chart (`source`, `full` and `youtube` are accepted beside `artists`, as on `/api/seeder`); artists already in the catalog are refreshed rather than duplicated, and only missing data is fetched. One seeder runs at a time (a second call answers 409), and it commits an artist at a time, so a restart of the backend container — which stops it — keeps everything it had done. Section 2 covers what it fetches.
 
 ### On a server
 
@@ -240,6 +242,8 @@ The seeder writes straight to Postgres using `DATABASE_URL`, bypassing PostgREST
 
 **Two depths.** Ranks up to `--full` (default 1000) get the full pipeline: every album, per-track detail, YouTube Music, Last.fm per track -- 20 to 60 s each, YouTube Music's one request a second being the long pole. Everyone below is *skinny*: Deezer's artist page (already read for the ranking) and its top 50 tracks, with the album stubs those tracks came with, and Last.fm's artist listeners; nothing per track, no YouTube -- about 0.4 s each, so the 35 000 take about four hours after the 75-minute ranking pass. Every full artist adds ~45 s on top: `--full 1000` is a 17-hour run, `--full 200` about 7. `artists.depth` records which an artist got. A later run with a larger `--full` promotes skinny artists and leaves the ones already full alone (a Wikidata run skips them entirely; a chart or `--artists` run still refreshes them). `--artists` runs are always full.
 
+**Skinny becomes full by itself.** Every hour the backend, when no run is active, starts `--promote N`: the N biggest skinny artists (by `global_rank`, then Deezer fans) get the full pipeline. N is `PROMOTE_BATCH` in the backend's environment, default 20, about 15 minutes of work an hour; `0` turns it off. The dashboard shows it as a run like any other ("hourly promotion"), and a manual run pressed while one is moving gets the usual 409 until it finishes. So a `--full 200` Wikidata run leaves ~35 000 skinny artists that reach full depth over about ten weeks on their own.
+
 **Sources in parallel.** Deezer, Last.fm, MusicBrainz + Spotify and YouTube Music each run in their own thread, fed from queues, so their rate limits overlap instead of adding up; Deezer stays single-threaded at ~8 requests/s because its limit is per IP. One writer thread stores each artist's rows in one transaction, in rank order, so `--start N` still resumes at rank N. An artist prints when it is written, not when it starts.
 
 `scripts/seed.sh` loads `.env` and starts the seeder in the background inside the venv, then returns straight away. Progress goes to `data/seed.log`, so watch it with:
@@ -250,7 +254,7 @@ tail -f data/seed.log
 
 Signed-in moderators and admins get a **catalog dashboard** at `/catalog` (the `catalog` chip in the dock, and a one-line link from the flight deck): catalog size, the state of the current or last run, and the gaps -- artists that failed, with the reason and how many attempts they have had, and artists whose row exists with no tracks under it. It refreshes every twenty seconds, every five while a run is moving. `GET /api/seeder` is the staff-only endpoint behind it and returns counts, run state, failures and empty artists, never catalog keys or raw logs.
 
-From the dashboard, staff tick any of those gaps and retry them **in one run**, paste a list of names to run, or rerun the top-N chart. `POST /api/seeder` accepts either `{"artists":["Radiohead","Bjork"]}` (1-200 names) or `{"limit":500}`. A second run is refused while one is active. Artist runs leave chart rank unchanged. `DELETE /api/seeder/failures` with the same `artists` list drops failures nobody intends to chase; seeding one again puts it back if it fails again.
+From the dashboard, staff tick any of those gaps and retry them **in one run**, paste a list of names to run, or start a ranked run: the artist list (Last.fm's chart or Wikidata → Deezer), how many, how many of the top at full depth, and whether to read YouTube Music; the button carries the time estimate (`estimateSeconds` in `setup.ts`, from the numbers measured below). While a run moves the page shows its phase (fetching the Wikidata list, ranking by Deezer fans, seeding), the artist in hand, how many of each depth, how long it has run and the time left measured from its own pace, and the seeder's log tail, live; a **Stop** button ends it, and what landed stays. `POST /api/seeder` accepts `{"artists":["Radiohead","Bjork"]}` (1-200 names, always full depth) or `{"source":"wikidata","limit":35000,"full":1000,"youtube":true}` (`limit` up to 50 000; `source` defaults to lastfm, `full` to 1000). `DELETE /api/seeder` stops the run; `GET /api/seeder/log?lines=80` is the log tail. A second run is refused while one is active. Artist runs leave rank unchanged. `DELETE /api/seeder/failures` with the same `artists` list drops failures nobody intends to chase; seeding one again puts it back if it fails again.
 
 Failures live in `catalog_failures` (name, reason, attempts, last try), written by the seeder and deleted the moment that artist lands, so the list survives restarts and reruns instead of vanishing with the run that produced it.
 
@@ -269,6 +273,7 @@ It commits one artist per transaction, so it is resumable and safe to interrupt:
 | `--cache data`, `--refresh-wikidata` | where a Wikidata run keeps its candidate list and Deezer's artist pages; re-pull the list from Wikidata |
 | `--start 213` | resume at rank 213 |
 | `--artists "Radiohead" "Bjork"` | seed specific names instead of the chart, always full |
+| `--promote 20` | the 20 biggest skinny artists to full depth; what the backend runs hourly |
 | `--detail-cap 120` | tracks per artist that get an ISRC/BPM lookup, one request each |
 | `--lastfm-cap 25` | tracks per artist that get listen counts |
 | `--yt-albums 60` | albums + singles per artist read on YouTube Music |
@@ -302,7 +307,7 @@ cmake --build build -j
 ./build/jamillion
 ```
 
-The backend reads the nearest `.env` above its working directory at startup, like the Python scripts do, so a CLion run configuration needs no environment setup. Variables already exported in the shell win over the file.
+The backend reads the nearest `.env` above its working directory at startup, like the Python scripts do, so a CLion run configuration needs no environment setup. Variables already exported in the shell win over the file. `PORT=8090 ./build/jamillion` moves it when something else holds 8080, and `API_URL=http://localhost:8090 npm run dev` points Vite's `/api` proxy there.
 
 ```bash
 curl localhost:8080/api/health

@@ -768,3 +768,23 @@ select:focus { outline: 2px solid var(--ion); border-color: var(--ion); }
   .rule select.group { flex-basis: 34%; }
   .rule select.named { flex-basis: 62%; }
 }
+
+/* --- the seeder's dashboard, extended ---------------------------------------- */
+.catalog-counts div small { display: block; margin-top: 2px; color: var(--mute); font-size: 13px; }
+.seeder-head .chip-stop { flex: none; border-color: var(--pink); color: var(--pink); }
+.seeder-count em { font-style: normal; color: var(--pink); }
+.seeder-facts { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 10px 0 0; padding: 0; }
+.seeder-facts dt { color: var(--mute); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+.seeder-facts dd { margin: 0; color: var(--flare); font-variant-numeric: tabular-nums; }
+.seeder-actions h3 { margin: 0 0 10px; font-size: 19px; font-weight: 400; }
+.seeder-actions select { width: 100%; margin-top: 5px; }
+.seeder-actions label small { display: block; margin-top: 3px; color: var(--mute); font-size: 13px; }
+.seeder-actions .pick { width: auto; margin: 0 0 10px; font-size: 15px; }
+.seeder-actions .pick small { display: inline; margin: 0 0 0 4px; }
+.seeder-actions .seeder-note { margin: 0 0 10px; font-size: 14px; }
+.seeder-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.seeder-log { margin-top: 14px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); }
+.seeder-log summary { cursor: pointer; color: var(--mute); }
+.seeder-log summary small { color: var(--ion); }
+.seeder-log pre { max-height: 320px; overflow: auto; margin: 10px 0 0; padding: 10px 12px; background: #0b1526;
+  font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }

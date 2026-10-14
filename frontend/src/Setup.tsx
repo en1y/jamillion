@@ -4,8 +4,8 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { call } from './api'
-import { getSetup, lastfmKeyWorks } from './setup'
-import type { SetupStatus } from './setup'
+import { describeDuration, estimateSeconds, getSetup, lastfmKeyWorks, WIKIDATA_ARTISTS } from './setup'
+import type { SetupStatus, Source } from './setup'
 import { supabase } from './supabase'
 import type { Player } from './supabase'
 
@@ -14,6 +14,11 @@ export function Setup({ token, player, onDone }: { token?: string; player: Playe
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [launched, setLaunched] = useState(false)
+  // the launch form, for the estimate under the button
+  const [source, setSource] = useState<Source>('lastfm')
+  const [limit, setLimit] = useState(50)
+  const [full, setFull] = useState(1000)
+  const estimate = describeDuration(estimateSeconds({ source, limit, full, youtube: true }, false))
 
   const refresh = () => getSetup().then(setStatus).catch(cause => setError(cause.message))
   useEffect(() => { refresh() }, [token])
@@ -73,7 +78,7 @@ export function Setup({ token, player, onDone }: { token?: string; player: Playe
           youtube_api_key: text('youtube_api_key'),
           spotify_client_id: text('spotify_client_id'),
           spotify_client_secret: text('spotify_client_secret'),
-          artists: Number(values.get('artists')),
+          source, limit, full,
         }),
       })
       setStatus(next)
@@ -90,7 +95,7 @@ export function Setup({ token, player, onDone }: { token?: string; player: Playe
       ) : launched ? (<>
         <h2 id="setup-heading">Cleared for launch</h2>
         <p>{status.seeding
-          ? `Seeding the catalog in the background: ${status.artists} of ${status.seed_target} artists so far, about 45 seconds each. You can close this page.`
+          ? `Seeding the catalog in the background: ${status.artists.toLocaleString('en-GB')} artists in the catalog so far, ${status.seed_target.toLocaleString('en-GB')} asked for. The catalog page follows the run; you can close this one.`
           : `The seeder has finished: ${status.artists} artists in the catalog.`}</p>
         <p>Next, write the first day's questions on the flight deck.</p>
         <button className="cta" type="button" onClick={onDone}>▲ to the launchpad ▲</button>
@@ -117,7 +122,7 @@ export function Setup({ token, player, onDone }: { token?: string; player: Playe
         </form>
       </>) : (<>
         <h2 id="setup-heading">Fill the catalog</h2>
-        <p>Every question is written out of a music catalog, built from Last.fm's chart, biggest artists first. The keys are stored on the server and never shown again.</p>
+        <p>Every question is written out of a music catalog, biggest artists first. The keys are stored on the server and never shown again.</p>
         <form onSubmit={saveKeys}>
           <fieldset disabled={busy}>
             <label>Last.fm API key <small>required · free at <a href="https://www.last.fm/api/account/create" target="_blank" rel="noreferrer">last.fm/api</a></small>
@@ -128,9 +133,16 @@ export function Setup({ token, player, onDone }: { token?: string; player: Playe
               <input name="spotify_client_id" autoComplete="off" spellCheck={false} /></label>
             <label>Spotify client secret
               <input name="spotify_client_secret" type="password" autoComplete="off" /></label>
-            <label>Artists to seed <small>about 45 s each · 50 is ~40 minutes, 500 is ~6 hours · past 1000 the rest are quick</small>
-              <input name="artists" type="number" min={0} max={2000} defaultValue={50} required /></label>
-            <button className="cta" type="submit">{busy ? 'Checking the key…' : '▲ launch ▲'}</button>
+            <label>Artist list
+              <select value={source} onChange={event => setSource(event.target.value as Source)}>
+                <option value="lastfm">Last.fm's chart — the biggest artists by listeners</option>
+                <option value="wikidata">Wikidata → Deezer — every artist Wikidata links to Deezer, ~{WIKIDATA_ARTISTS.toLocaleString('en-GB')}</option>
+              </select></label>
+            <label>Artists to seed <small>the top {full.toLocaleString('en-GB')} at full depth (~45 s each: every album, YouTube and Last.fm counts), the rest skinny (Deezer's top 50, under a second)</small>
+              <input type="number" min={0} max={50000} value={limit} required onChange={event => setLimit(Number(event.target.value))} /></label>
+            <label>Full depth for the top
+              <input type="number" min={0} max={50000} value={full} required onChange={event => setFull(Number(event.target.value))} /></label>
+            <button className="cta" type="submit">{busy ? 'Checking the key…' : limit > 0 ? `▲ launch · ${estimate}${source === 'wikidata' ? ' after an 80-minute ranking pass' : ''} ▲` : '▲ save the keys ▲'}</button>
           </fieldset>
         </form>
       </>)}
