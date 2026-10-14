@@ -41,7 +41,7 @@ cuts are skipped, and remaster/deluxe duplicates collapse into one row per song.
 Everything upserts on platform ids, so re-running refreshes instead of duplicating.
 A failed artist is rolled back and the run continues.
 """
-import argparse, heapq, html, json, os, queue, re, sys, threading, time
+import argparse, heapq, html, json, os, queue, re, sys, threading, time, unicodedata
 from collections import defaultdict
 import psycopg
 import requests
@@ -96,7 +96,7 @@ def lastfm(method, **params):
             method=method, api_key=key, format="json", **params))
         return r.json() if r.ok else {}
     except Exception as e:
-        print(f"  ! lastfm {method}: {e}", flush=True); return {}
+        print(f"  ! lastfm {method}: {type(e).__name__}", flush=True); return {}   # the URL in e carries the key
 
 def spotify():
     import spotipy
@@ -245,8 +245,9 @@ def norm_title(t):
     return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
 
 def same_name(a, b):
-    """'Tyler, The Creator' == 'tyler the creator'. Punctuation and case only."""
-    strip = lambda n: re.sub(r"[^a-z0-9]+", "", (n or "").lower())
+    """'Tyler, The Creator' == 'tyler the creator', 'JAŸ-Z' == 'JAY Z'. Punctuation, case and accents only."""
+    fold = lambda n: unicodedata.normalize("NFKD", n or "").encode("ascii", "ignore").decode().lower()
+    strip = lambda n: re.sub(r"[^a-z0-9]+", "", fold(n))
     return bool(strip(a)) and strip(a) == strip(b)
 
 def depth_for(rank, full):
@@ -350,8 +351,10 @@ def find_artist(name):
     """search/artist, only for names without a Deezer id (--artists, the Last.fm chart)."""
     hits = deezer("search/artist", q=name, limit=10).get("data") or []
     # tribute and cover acts share the exact name, so among exact matches take the
-    # one with the most fans; that is the real artist by a wide margin
-    exact = [h for h in hits if h["name"].lower() == name.lower()]
+    # one with the most fans; that is the real artist by a wide margin. Accents and
+    # punctuation do not count: Deezer's real entry is "Ludwig Goransson" and "JAY Z",
+    # and the accented spelling is a zero-fan stub with no albums
+    exact = [h for h in hits if same_name(h["name"], name)]
     return max(exact or hits, key=lambda h: h.get("nb_fan") or 0, default=None)
 
 WD_FIELDS = ("mbid", "spotify_id", "country", "artist_type", "gender", "begin_year", "end_year")
@@ -375,6 +378,9 @@ def seed_deezer(job, detail_cap):
     if job.rank is not None: job.artist["global_rank"] = job.rank
     if job.depth == "full": full_albums(job, dzid, detail_cap)
     else: top_tracks(job, dzid)
+    # Tally Hall, Peter, Paul and Mary: Deezer lists no albums under the artist (nb_album 0)
+    # yet serves a top list, whose entries carry their album stubs
+    if not job.tracks and job.depth == "full": top_tracks(job, dzid)
     if not job.tracks: raise RuntimeError("Deezer has the artist but no original tracks")
 
 def artist_albums(deezer_artist_id):
@@ -667,6 +673,12 @@ def stage_thread(in_q, fn, writer_q):
 def write(cur, job):
     """Every row of one artist, one transaction. Albums and tracks are matched by
     Deezer id, so the stages never needed a database id."""
+    # spotify_id is UNIQUE and Spotify has one entry where Deezer has two ("Bob Marley"
+    # and "Bob Marley & The Wailers"): the id is a cross-reference, the first owner keeps it
+    if job.artist.get("spotify_id"):
+        cur.execute("SELECT 1 FROM artists WHERE spotify_id=%s AND deezer_id<>%s",
+                    (job.artist["spotify_id"], job.artist["deezer_id"]))
+        if cur.fetchone(): job.artist.pop("spotify_id")
     aid = upsert(cur, "artists", "deezer_id", job.artist)
     for al in job.albums.values(): al["artist_id"] = aid
     upsert_many(cur, "albums", "deezer_id", list(job.albums.values()))
@@ -748,6 +760,7 @@ def selftest():
     # the guard that keeps one artist's Spotify id off another's row
     assert same_name("Tyler, The Creator", "tyler the creator") and same_name("blink-182", "Blink 182")
     assert not same_name("Che", "My Chemical Romance") and not same_name("", "")
+    assert same_name("JAŸ-Z", "JAY Z") and same_name("Ludwig Göransson", "Ludwig Goransson")
     # a Wikidata binding, as the SPARQL endpoint serialises it
     lit = lambda v: {"type": "literal", "value": v}
     ent = lambda q: {"type": "uri", "value": f"http://www.wikidata.org/entity/{q}"}
