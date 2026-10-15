@@ -10,6 +10,7 @@ import { useCountUp } from './count'
 import { Flights } from './Flights'
 import { Editor } from './Editor'
 import { Admin } from './Admin'
+import { getUpdate } from './admin'
 import { Catalog } from './Catalog'
 import { altitudeAu, ceilingFor, legs, passed } from './flight'
 import { setPrefs, sfx, usePrefs } from './prefs'
@@ -95,6 +96,9 @@ function App() {
                               queryFn: ({ signal }) => getPlayer(token, signal) })
   const loading = identity.isPending
   const player = identity.data
+  // A new release marks ground control's chip; the notice itself is in Admin.tsx.
+  const update = useQuery({ queryKey: ['update', token], queryFn: () => getUpdate(token),
+                            enabled: player?.role === 'admin', refetchInterval: 300_000 }).data
   const playerError = identity.error?.message ?? ''
   // The day's quiz, keyed like the player above: undefined while it loads for the
   // current identity, null when nothing is scheduled today.
@@ -263,7 +267,8 @@ function App() {
                   <><a className="chip" href="/editor">flight deck</a>
                    <a className="chip" href="/catalog">catalog</a></>}
                 {player?.role === 'admin' &&
-                  <a className="chip" href="/admin">ground control</a>}
+                  <a className="chip" href="/admin" title={update?.available ? `Jamillion ${update.latest} is out` : undefined}>
+                    ground control{update?.available ? ' · update' : ''}</a>}
                 <button className="chip" type="button" disabled>archive</button>
               </span>
             </nav>

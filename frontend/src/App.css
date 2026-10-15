@@ -205,6 +205,11 @@ input { display: block; width: 100%; margin-top: 6px; padding: 10px 12px 8px; bo
 input:focus { outline: 2px solid var(--ion); outline-offset: 0; border-color: var(--ion); }
 .panel .cta { display: block; width: calc(100% - 14px); font-size: 22px; margin: 22px 7px 8px; }
 .notice { padding: 10px 12px; border-left: 3px solid var(--flare); background: #0b1526; overflow-wrap: anywhere; font-size: 17px; }
+.update-notice { margin: 14px 0 0; }
+.update-notice p { margin: 0 0 8px; }
+.update-notice pre { max-height: 260px; overflow: auto; margin: 8px 0; padding: 10px 12px; background: var(--void);
+  font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.update-notice code { font: inherit; color: var(--ion); }
 
 /* --- question: the prompt card up top, the HUD along the bottom ---------- */
 .prompt { width: 100%; max-width: 640px; margin: 5vh auto 0; padding: 20px 26px 24px; text-align: center;

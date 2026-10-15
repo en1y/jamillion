@@ -79,6 +79,22 @@ docker compose up -d
 
 Any step that fails stops the script, so a failed backup is never followed by an update. The site is down for the few seconds the changed containers take to restart.
 
+**From ground control.** The backend asks Docker Hub for the newest release when it starts and once an hour after that. When one is out, the dock's chip reads *ground control · update*, and ground control (`/admin`) names the release, links to what changed and shows the two lines above. For an Update button there instead, switch the updater on once:
+
+```bash
+echo COMPOSE_PROFILES=updater >> .env
+docker compose up -d
+```
+
+The button runs the steps of `update.sh` above: a backup, the new `compose.yaml`, `up -d`. Ground control follows them, and shows the log if one fails.
+
+- **The updater holds the Docker socket, which is root on this host.** That is the price of the button. The `updater` service opens no port and takes no input: the backend, the part facing the internet, can only drop an empty flag file in the `update` volume. It never reaches the socket, and a press can only ever install the latest published release.
+- **It always updates to `:latest`,** so a pinned deployment keeps it off and updates by hand.
+- **The update runs in a one-off container** (`jamillion-update`) outside the project, so the `up -d` that also recreates the updater does not cut it off. It finds `compose.yaml` and `.env` from the folder Compose recorded when the stack started.
+- **Backups pile up** beside `compose.yaml`, one `jamillion-<date>-<time>.dump` per update.
+- **It needs `/var/run/docker.sock`.** Rootless Docker keeps its socket elsewhere, and there the button is not available.
+- **Off again:** take the line out of `.env` and run `docker compose --profile updater rm -sf updater`.
+
 The backend's startup summary is the first thing to read when something looks wrong:
 
 ```
@@ -141,6 +157,7 @@ It starts in this order, each step waiting for the previous one to be healthy or
 | `rest` | `supabase/postgrest` | for the one RPC the browser makes (`quiz_ceilings()`) |
 | `backend` | `en1y/jamillion-backend` | the Drogon server; it also runs the seeder the setup page starts |
 | `web` | `en1y/jamillion-web` | Caddy: the site, `/api`, `/auth/v1` and `/rest/v1` on one origin, published on `HTTP_PORT` (8000) and `HTTPS_PORT` (8443) |
+| `updater` | `docker:cli` | opt-in (`COMPOSE_PROFILES=updater`): the Update button in ground control, holding the Docker socket (*Updating*, above) |
 
 | volume | holds |
 |---|---|
@@ -148,6 +165,7 @@ It starts in this order, each step waiting for the previous one to be healthy or
 | `secrets` | the generated JWT secret, database password and anon key |
 | `config` | the keys from the setup page, and the seeder's log |
 | `audio` | preview clips, a cache — a missing one is downloaded again |
+| `update` | the Update button's flag, and the updater's status and log |
 | `caddy_data`, `caddy_config` | certificates |
 
 - **Only the Supabase pieces the app calls.** The browser uses auth and one RPC, so

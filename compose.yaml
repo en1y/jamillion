@@ -25,6 +25,7 @@
 #   rest     PostgREST, for the one RPC the browser calls
 #   backend  the Drogon server; also runs the catalog seeder the setup page starts
 #   web      Caddy: the site, /api, /auth/v1 and /rest/v1 on one HTTPS origin
+#   updater  opt-in: the Update button in ground control, with the Docker socket
 #
 # Only Caddy publishes ports. `secrets` and `db` belong together -- the passwords
 # are written into the database at initdb -- so `docker compose down -v` drops both.
@@ -171,9 +172,12 @@ services:
       # default, which is no timeout -- and a database that is down then hangs
       # every route instead of failing it.
       DB_TIMEOUT_SEC: ${DB_TIMEOUT_SEC:-5}
+      # Where the Update button drops its flag for the updater, below.
+      UPDATE_DIR: /app/data/update
     volumes:
       - audio:/app/data/audio
       - config:/app/data/config
+      - update:/app/data/update
       - secrets:/secrets:ro
     # python3 is in the image and the route is plain HTTP inside the network.
     # A non-200 is exactly what the health handler reports when the database is
@@ -233,10 +237,63 @@ services:
           subpath: public
     restart: unless-stopped
 
+  # Opt-in, with COMPOSE_PROFILES=updater in .env: the Update button in ground
+  # control. This service holds the Docker socket, which is root on this host, so
+  # it opens no port and takes no input -- the backend can only drop a flag in the
+  # `update` volume, and the update is always the same steps as update.sh in
+  # docs/RUNNING.md. They run in a one-off container outside the project, so the
+  # `up -d` that recreates this service does not cut the update off half way.
+  # Compose labels every container with the folder it was started from; that is
+  # how the one-off finds compose.yaml and .env without this service mounting them.
+  updater:
+    image: docker:cli
+    profiles: [updater]
+    depends_on:
+      # The backend mounts `update` first, so the volume takes the backend image's
+      # owner and the backend can write the flag into it.
+      - backend
+    environment:
+      JAMILLION_RELEASE: oci://docker.io/en1y/jamillion:latest
+      UPDATE_STEPS: |
+        say() { printf '{"state":"%s","step":"%s","at":"%s"}\n' "$$1" "$$2" "$$(date -u +%FT%TZ)" > /update/status.next && mv /update/status.next /update/status.json; }
+        # &&, not set -e: called as an `if` condition, set -e is switched off, and a
+        # failed download would go on to move an empty compose.yaml into place.
+        steps() {
+          say running backup &&
+          docker compose exec -T db pg_dump -U supabase_admin -h 127.0.0.1 -d postgres -n public -n auth -Fc > "jamillion-$$(date -u +%Y%m%d-%H%M%S).dump" &&
+          say running download &&
+          docker compose -f "$$JAMILLION_RELEASE" config --no-interpolate > compose.yaml.new &&
+          mv compose.yaml.new compose.yaml &&
+          say running restart &&
+          docker compose up -d
+        }
+        if steps > /update/update.log 2>&1; then say done ""; else sed -i 's/"running"/"failed"/' /update/status.json; fi
+        rm -f /update/requested
+    entrypoint:
+      - sh
+      - -c
+      - |
+        label() { docker inspect -f "{{index .Config.Labels \"com.docker.compose.$$1\"}}" "$$HOSTNAME"; }
+        project=$$(label project) dir=$$(label project.working_dir)
+        image=$$(docker inspect -f '{{.Config.Image}}' "$$HOSTNAME")
+        while :; do
+          touch /update/alive
+          if [ -f /update/requested ] && ! docker container inspect "$$project-update" > /dev/null 2>&1; then
+            docker run -d --rm --name "$$project-update" --volumes-from "$$HOSTNAME" -v "$$dir:$$dir" -w "$$dir" \
+              -e JAMILLION_RELEASE -e UPDATE_STEPS --entrypoint sh "$$image" -c 'eval "$$UPDATE_STEPS"'
+          fi
+          sleep 5
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - update:/update
+    restart: unless-stopped
+
 volumes:
   secrets:
   db:
   audio:
   config:
+  update:
   caddy_data:
   caddy_config:

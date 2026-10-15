@@ -100,6 +100,29 @@ export const readTable = (name: string, limit: number, offset: number, token?: s
 export const patchTier = (id: number, body: Record<string, string | number>, token?: string) =>
   call<Tier>(`/api/tiers/${id}`, token, { method: 'PATCH', body: JSON.stringify(body) })
 
+/** GET /api/update. `latest` is null until Docker Hub has answered the backend's
+ *  hourly check; `updater` is the opt-in service's heartbeat; `status` is what it
+ *  last wrote, which outlives the update it describes. */
+export interface UpdateStatus {
+  current: string; latest: string | null; available: boolean
+  updater: boolean; requested: boolean
+  status: { state: 'running' | 'done' | 'failed'; step: string; at: string } | null
+  log: string[]
+}
+
+export const getUpdate = (token?: string) => call<UpdateStatus>('/api/update', token)
+
+/** Only drops a flag: the updater, not the backend, does the work. */
+export const requestUpdate = (token?: string) => call<UpdateStatus>('/api/update', token, { method: 'POST' })
+
+/** What an update without the updater takes: docs/RUNNING.md, "Updating". */
+export const UPDATE_COMMANDS =
+  'docker compose -f oci://docker.io/en1y/jamillion:latest config --no-interpolate > compose.yaml.new && mv compose.yaml.new compose.yaml\n' +
+  'docker compose up -d'
+
+export const changesUrl = (from: string, to: string) =>
+  `https://github.com/en1y/jamillion/compare/v${from}...v${to}`
+
 // --- the pure half -----------------------------------------------------------
 
 /** Neither list route counts its rows, and counting on every keystroke is a
@@ -109,6 +132,27 @@ export const patchTier = (id: number, body: Record<string, string | number>, tok
 export function rowRange(offset: number, count: number): string {
   if (count === 0) return offset === 0 ? 'nothing here' : 'past the end'
   return `rows ${offset + 1}–${offset + count}`
+}
+
+const STEPS: Record<string, string> = {
+  backup: 'Backing up the database…',
+  download: 'Fetching the new compose.yaml…',
+  restart: 'Restarting on the new version. The site blinks for a few seconds…',
+}
+
+/** Where an update is, in a sentence, or '' when there is nothing to say. The flag
+ *  is up from the press until the update ends; the status file says which step it
+ *  is on. A `done` from an update days ago is old news, so it only counts while
+ *  the version it was meant to bring has not answered yet. */
+export function updateLine(u: UpdateStatus): string {
+  const state = u.status?.state
+  if (state === 'running') return STEPS[u.status!.step] ?? 'Updating…'
+  if (u.requested) return 'Waiting for the updater to pick it up…'
+  if (state === 'failed')
+    return `The update stopped while ${u.status!.step === 'backup' ? 'backing up'
+      : u.status!.step === 'download' ? 'fetching the new compose.yaml' : 'restarting'}. Nothing after that ran; the log below says why.`
+  if (state === 'done' && u.available) return 'Restarted. Waiting for the new version to answer…'
+  return ''
 }
 
 export interface TierEdit { name: string; points: string; max_share: string }

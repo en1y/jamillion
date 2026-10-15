@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { rowRange, seedEdit, tierPatch } from './admin.ts'
-import type { TierEdit } from './admin.ts'
+import { rowRange, seedEdit, tierPatch, updateLine } from './admin.ts'
+import type { TierEdit, UpdateStatus } from './admin.ts'
 import type { Tier } from './moderator.ts'
 
 const NEBULA: Tier = { id: 1, name: 'Nebula', points: 10, sort_order: 1, max_share: '1.0000' }
@@ -53,4 +53,25 @@ test('an emptied name is a problem, not a patch', () => {
   const { body, problems } = tierPatch(NEBULA, edit({ name: '   ' }))
   assert.deepEqual(body, {})
   assert.deepEqual(problems, ['name cannot be empty'])
+})
+
+const status = (over: Partial<UpdateStatus> = {}): UpdateStatus => ({
+  current: '1.0.9', latest: '1.0.10', available: true, updater: true, requested: false, status: null, log: [], ...over,
+})
+const at = (state: 'running' | 'done' | 'failed', step = '') => ({ state, step, at: '2026-10-15T17:00:00Z' })
+
+test('updateLine follows the update from the press to the new version answering', () => {
+  assert.equal(updateLine(status()), '')                                            // only the notice
+  assert.equal(updateLine(status({ requested: true })), 'Waiting for the updater to pick it up…')
+  assert.match(updateLine(status({ requested: true, status: at('running', 'backup') })), /^Backing up/)
+  assert.match(updateLine(status({ requested: true, status: at('running', 'restart') })), /^Restarting/)
+  assert.match(updateLine(status({ status: at('done') })), /^Restarted\. Waiting/)  // old version still answering
+  assert.equal(updateLine(status({ available: false, status: at('done') })), '')     // landed: old news
+})
+
+test('a failed update names the step it stopped on, even after the flag is gone', () => {
+  assert.match(updateLine(status({ status: at('failed', 'download') })), /stopped while fetching the new compose\.yaml/)
+  assert.match(updateLine(status({ status: at('failed', 'backup') })), /stopped while backing up/)
+  // a new press over an old failure is a new update, not the old failure
+  assert.equal(updateLine(status({ requested: true, status: at('failed', 'backup') })), 'Waiting for the updater to pick it up…')
 })

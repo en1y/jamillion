@@ -11,8 +11,8 @@ import { pause } from './query'
 import { getTiers } from './moderator'
 import type { Tier } from './moderator'
 import {
-  getRangeStats, getStats, listTables, listUsers, patchTier, readTable, removeUser, rowRange, seedEdit,
-  setRole, tierPatch,
+  changesUrl, getRangeStats, getStats, getUpdate, listTables, listUsers, patchTier, readTable, removeUser,
+  requestUpdate, rowRange, seedEdit, setRole, tierPatch, UPDATE_COMMANDS, updateLine,
 } from './admin'
 import type { AdminUser, Role, TierEdit, UserSort } from './admin'
 
@@ -477,6 +477,56 @@ function Tables({ token }: { token?: string }) {
   </>)
 }
 
+// --- updates -----------------------------------------------------------------
+
+/** The new-version notice over the tabs, with the Update button when the opt-in
+ *  updater is running and the two commands when it is not. The update restarts the
+ *  backend too, so once this tab has seen one start, a poll that fails reads as
+ *  the restart rather than as an error. */
+function UpdateNotice({ token }: { token?: string }) {
+  const client = useQueryClient()
+  const [watching, setWatching] = useState(false)
+  const [failed, setFailed] = useState('')
+  const update = useQuery({ queryKey: ['update', token], queryFn: () => getUpdate(token),
+                            refetchInterval: watching ? 3_000 : 300_000 })
+  const u = update.data
+  const line = u ? updateLine(u) : ''
+  const busy = Boolean(u && (u.requested || u.status?.state === 'running'))
+  if (busy && !watching) setWatching(true)     // another admin pressed it: follow along
+  if (!u || (!u.available && !line && !watching)) return null
+
+  async function start() {
+    if (!u || !confirm(`Update to ${u.latest}?\n\nThe database is backed up beside compose.yaml first, then the ` +
+                       'stack restarts on the new version. The site is down for a few seconds.')) return
+    setFailed('')
+    try {
+      client.setQueryData(['update', token], await requestUpdate(token))
+      setWatching(true)
+    } catch (cause) { setFailed(wall(cause)) }
+  }
+
+  return (
+    <div className="notice update-notice" role="status">
+      {u.available && u.latest
+        ? <p><b>Jamillion {u.latest} is out</b>, this is {u.current}. <a href={changesUrl(u.current, u.latest)}
+             target="_blank" rel="noreferrer">What changed</a></p>
+        : !busy && <p><b>Updated to {u.current}.</b> <button className="chip" type="button"
+                        onClick={() => location.reload()}>Reload</button> for the new site.</p>}
+      {(line || (watching && update.isError)) &&
+        <p>{watching && update.isError ? 'Restarting on the new version…' : line}</p>}
+      {u.available && !busy && (u.updater
+        ? <button className="chip" type="button" onClick={() => void start()}>
+            ▲ {u.status?.state === 'failed' ? 'Try again' : `Update to ${u.latest}`}</button>
+        : <><p>By hand, beside <code>compose.yaml</code> on the server:</p>
+            <pre>{UPDATE_COMMANDS}</pre>
+            <p>Or add <code>COMPOSE_PROFILES=updater</code> to <code>.env</code> and run <code>docker compose up -d</code> once,
+              for an Update button here.</p></>)}
+      {u.status?.state === 'failed' && u.log.length > 0 && <pre>{u.log.join('\n')}</pre>}
+      {failed && <p role="alert">{failed}</p>}
+    </div>
+  )
+}
+
 // --- the screen --------------------------------------------------------------
 
 /** No role gate here or in App: a 403 renders as its own sentence, which beats a
@@ -490,6 +540,7 @@ export function Admin({ tab, token, me }: { tab: string; token?: string; me?: st
         : on === 'stats' ? 'How a day went'
         : on === 'tiers' ? 'What an answer is worth'
         : 'The tables, as they are'}</h2>
+      <UpdateNotice token={token} />
 
       <div className="switch" aria-label="Admin section">
         {TABS.map(one => (

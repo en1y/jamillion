@@ -8,9 +8,13 @@
 #include <signal.h>
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <deque>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <sstream>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -186,12 +190,12 @@ bool startSeeder(const Json::Value &settings, const Run &run) {
     return true;
 }
 
-// The last `want` lines of the seeder's log: what the dashboard shows under the
-// progress bar. The seeder never prints a key (its error lines name the exception
-// type, not the URL), so the tail is safe for staff.
-Json::Value logTail(size_t want) {
+// The last `want` lines of a log: the seeder's, under the dashboard's progress bar,
+// or the updater's. The seeder never prints a key (its error lines name the
+// exception type, not the URL), so the tail is safe for staff.
+Json::Value logTail(size_t want, const std::filesystem::path &file = configDir / "seed.log") {
     std::deque<std::string> lines;
-    std::ifstream in(configDir / "seed.log");
+    std::ifstream in(file);
     for (std::string line; std::getline(in, line);) {
         lines.push_back(line);
         if (lines.size() > want) lines.pop_front();
@@ -430,6 +434,108 @@ void promoteSkinny() {
         [](const orm::DrogonDbException &e) { LOG_ERROR << "promotion skipped: " << e.base().what(); });
 }
 
+// --- updates: the notice and the Update button in ground control ---------------
+//
+// The backend never touches Docker. It learns the newest release from Docker Hub
+// once an hour and, when an admin presses Update, drops a flag in UPDATE_DIR. The
+// opt-in `updater` service in compose.yaml watches that folder, runs the update and
+// writes status.json and update.log back; `alive` is its heartbeat.
+
+std::filesystem::path updateDir;
+std::mutex releaseLock;
+std::string latestRelease;              // "" until Docker Hub has answered once
+
+// "1.0.10" -> {1, 0, 10}; "latest", "1.1.0-rc1" and the like -> {} and never newest.
+std::vector<int> semver(const std::string &tag) {
+    int major, minor, patch;
+    char rest;
+    if (std::sscanf(tag.c_str(), "%d.%d.%d%c", &major, &minor, &patch, &rest) != 3) return {};
+    return {major, minor, patch};
+}
+
+// RELEASES_URL answers either Docker Hub's tag list ({results: [{name}]}) or a
+// plain registry's (/v2/<name>/tags/list, {tags: [...]}); the second is what a
+// local registry speaks, for trying an update without Docker Hub. Empty turns the
+// check off. ponytail: the first page is enough, Docker Hub lists newest first.
+void checkRelease() {
+    const char *given = std::getenv("RELEASES_URL");
+    const std::string url = given ? given
+        : "https://hub.docker.com/v2/namespaces/en1y/repositories/jamillion/tags?page_size=100";
+    const auto slash = url.find('/', url.find("://") == std::string::npos ? 0 : url.find("://") + 3);
+    if (url.empty() || slash == std::string::npos) return;
+    auto client = HttpClient::newHttpClient(url.substr(0, slash));
+    auto req = HttpRequest::newHttpRequest();
+    const auto target = url.substr(slash);
+    const auto question = target.find('?');
+    req->setPath(target.substr(0, question));
+    if (question != std::string::npos) {
+        std::istringstream pairs(target.substr(question + 1));
+        for (std::string pair; std::getline(pairs, pair, '&');)
+            if (const auto eq = pair.find('='); eq != std::string::npos) req->setParameter(pair.substr(0, eq), pair.substr(eq + 1));
+    }
+    // The client is captured so it outlives the request it is sending.
+    client->sendRequest(req, [client, url](ReqResult result, const HttpResponsePtr &response) {
+        const auto body = result == ReqResult::Ok && response->statusCode() == k200OK ? response->getJsonObject() : nullptr;
+        if (!body || !body->isObject()) {     // a 404 too, until the first release is published
+            LOG_WARN << "release check: no tag list from " << url << " ("
+                     << (result == ReqResult::Ok ? std::to_string(response->statusCode()) : to_string(result)) << ")";
+            return;
+        }
+        std::vector<std::string> tags;
+        for (const auto &one : (*body)["results"]) tags.push_back(one["name"].asString());
+        for (const auto &one : (*body)["tags"]) tags.push_back(one.asString());
+        std::string newest;
+        for (const auto &tag : tags)
+            if (!semver(tag).empty() && (newest.empty() || semver(newest) < semver(tag))) newest = tag;
+        std::lock_guard guard(releaseLock);
+        if (!newest.empty()) latestRelease = newest;
+    }, 10.0);
+}
+
+bool updaterAlive() {
+    std::error_code missing;
+    const auto beat = std::filesystem::last_write_time(updateDir / "alive", missing);
+    return !missing && std::filesystem::file_time_type::clock::now() - beat < std::chrono::seconds(30);
+}
+
+// GET /api/update, admin only: this version, the newest release, and the updater.
+Task<HttpResponsePtr> updateStatus(HttpRequestPtr) {
+    Json::Value out;
+    out["current"] = JAM_VERSION;
+    {
+        std::lock_guard guard(releaseLock);
+        out["latest"] = latestRelease.empty() ? Json::Value() : Json::Value(latestRelease);
+        out["available"] = !latestRelease.empty() && semver(JAM_VERSION) < semver(latestRelease);
+    }
+    out["updater"] = updaterAlive();
+    out["requested"] = std::filesystem::exists(updateDir / "requested");
+    std::ifstream file(updateDir / "status.json");
+    Json::Value state;
+    Json::CharReaderBuilder reader;
+    std::string ignored;
+    out["status"] = file && Json::parseFromStream(reader, file, &state, &ignored) ? state : Json::Value();
+    out["log"] = logTail(40, updateDir / "update.log");
+    auto response = HttpResponse::newHttpJsonResponse(out);
+    response->addHeader("Cache-Control", "no-store");
+    co_return response;
+}
+
+// POST /api/update, admin only: ask the updater to update. The flag is an empty
+// file -- nothing in the request reaches the side that holds the Docker socket.
+Task<HttpResponsePtr> requestUpdate(HttpRequestPtr req) {
+    if (!updaterAlive())
+        co_return auth::error(k409Conflict, "The updater is not running. Add COMPOSE_PROFILES=updater to .env and run "
+                                            "docker compose up -d, or update by hand.");
+    const auto flag = updateDir / "requested";
+    const int fd = open(flag.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0)
+        co_return errno == EEXIST ? auth::error(k409Conflict, "An update is already under way")
+                                  : auth::error(k500InternalServerError, "Could not ask the updater");
+    close(fd);
+    LOG_INFO << "update requested from ground control";
+    co_return co_await updateStatus(req);
+}
+
 }  // namespace
 
 void configure(const std::filesystem::path &root) {
@@ -437,11 +543,20 @@ void configure(const std::filesystem::path &root) {
     const char *value = std::getenv("CONFIG_DIR");
     const std::filesystem::path dir(value && *value ? value : "./data/config");
     configDir = dir.is_absolute() ? dir : root / dir;
+    const char *update = std::getenv("UPDATE_DIR");
+    const std::filesystem::path flags(update && *update ? update : "./data/update");
+    updateDir = flags.is_absolute() ? flags : root / flags;
 }
 
 void registerRoutes() {
     // The loop exists only once the framework runs, hence the beginning advice.
-    app().registerBeginningAdvice([] { app().getLoop()->runEvery(3600.0, promoteSkinny); });
+    app().registerBeginningAdvice([] {
+        app().getLoop()->runEvery(3600.0, promoteSkinny);
+        app().getLoop()->runAfter(5.0, checkRelease);
+        app().getLoop()->runEvery(3600.0, checkRelease);
+    });
+    app().registerHandler("/api/update", &updateStatus, {Get, "auth::Optional", "auth::Admin"});
+    app().registerHandler("/api/update", &requestUpdate, {Post, "auth::Optional", "auth::Admin"});
     app().registerHandler("/api/setup", &status, {Get});
     app().registerHandler("/api/setup", &apply, {Post, "auth::Optional", "auth::Admin"});
     // Setup remains readable before there is an account. Once the site is live,

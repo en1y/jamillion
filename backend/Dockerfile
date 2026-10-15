@@ -35,7 +35,7 @@ COPY scripts/fetch_audio.py scripts/seed_music.py ./scripts/
 COPY docker/setup.py ./docker/setup.py
 # main.cc's loadDotenv() finds no .env here and falls back to the working
 # directory, which is what AUDIO_DIR, CONFIG_DIR and scripts/ resolve against.
-RUN mkdir -p /app/data/audio /app/data/config && chown -R jamillion:jamillion /app
+RUN mkdir -p /app/data/audio /app/data/config /app/data/update && chown -R jamillion:jamillion /app
 USER jamillion
 EXPOSE 8080
 CMD ["jamillion"]

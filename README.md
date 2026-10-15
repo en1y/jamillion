@@ -60,7 +60,7 @@ HTTPS_PORT=443
 COOKIE_SECURE=true
 ```
 
-No secrets go into any file. The JWT secret and database password are generated on first boot into a volume, and the catalog keys you enter are written by the backend into a volume only it can read. Updating is the same two lines again: save the new `compose.yaml`, `docker compose up -d`, and the migrations apply themselves. [docs/RUNNING.md](docs/RUNNING.md) has the day-to-day commands, unattended updates, backups, the startup summary and what every container is for.
+No secrets go into any file. The JWT secret and database password are generated on first boot into a volume, and the catalog keys you enter are written by the backend into a volume only it can read. Updating is the same two lines again: save the new `compose.yaml`, `docker compose up -d`, and the migrations apply themselves. Ground control tells the admins when a release is out, and with the opt-in updater the update is a button there. [docs/RUNNING.md](docs/RUNNING.md) has the day-to-day commands, unattended updates, backups, the startup summary and what every container is for.
 
 ## How it plays
 
