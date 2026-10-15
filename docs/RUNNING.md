@@ -216,11 +216,11 @@ docker compose -f compose.yaml -f compose.build.yaml up --build -d
 
 # publish a release: the version from backend/CMakeLists.txt, and latest
 docker login
-for tag in 1.0.9 latest; do
+for tag in 1.0.10 latest; do
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
   # the compose file deployments save, pinned to this release's image digests
-  JAMILLION_VERSION=1.0.9 docker compose -f compose.yaml publish -y --resolve-image-digests en1y/jamillion:$tag
+  JAMILLION_VERSION=1.0.10 docker compose -f compose.yaml publish -y --resolve-image-digests en1y/jamillion:$tag
 done
 ```
 

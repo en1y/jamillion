@@ -703,6 +703,24 @@ Decisions worth carrying forward:
       accents; an artist with no albums falls back to its top tracks; a Spotify id
       two Deezer artists share stays with the first.
 
+## v1.0.10 — Updates from ground control
+
+- [x] Each release publishes its `compose.yaml` to Docker Hub as `en1y/jamillion`
+      (`:<version>` and `:latest`), every image pinned to its digest. Installing
+      and updating save it with `config --no-interpolate`, so a release that
+      changes the file reaches deployments with its images; `pull && up -d`
+      only ever moved the images.
+- [x] The saved file keeps `.env` in charge: every `${VAR:-default}` and `$$`
+      survives, and with the images pinned `up -d` downloads only what changed.
+      `update.sh` and a cron line do backup, save and `up` unattended.
+- [x] Ground control says when a release is out: the backend asks Docker Hub
+      hourly, the dock's chip reads "ground control · update", and the notice
+      links what changed and shows the two update lines.
+- [x] An Update button with the opt-in `updater` (`COMPOSE_PROFILES=updater`).
+      It holds the Docker socket, so it opens no port and takes no input: the
+      backend only drops an empty flag, and the steps are always `update.sh`'s,
+      run in a one-off container so recreating the updater does not cut them off.
+
 ## Later
 
 - Supabase migration (schema is plain Postgres; swap connection string + auth).
