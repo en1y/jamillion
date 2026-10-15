@@ -43,11 +43,11 @@ It is self-hosted, self-contained and ready for strangers: one compose file brin
 
 ```bash
 mkdir jamillion && cd jamillion
-curl -fsSLO https://raw.githubusercontent.com/en1y/jamillion/main/compose.yaml
+docker compose -f oci://docker.io/en1y/jamillion:latest config --no-interpolate > compose.yaml
 docker compose up -d
 ```
 
-`docker compose up -d` pulls three public images straight from Docker Hub — [`en1y/jamillion-backend`](https://hub.docker.com/r/en1y/jamillion-backend), [`en1y/jamillion-db`](https://hub.docker.com/r/en1y/jamillion-db), [`en1y/jamillion-web`](https://hub.docker.com/r/en1y/jamillion-web) — plus Supabase's own `gotrue` and `postgrest` images. No `docker login`, no build.
+The second line saves the latest release's `compose.yaml` from Docker Hub, where each release publishes it next to the images with every image pinned to its digest. `docker compose up -d` then pulls three public images — [`en1y/jamillion-backend`](https://hub.docker.com/r/en1y/jamillion-backend), [`en1y/jamillion-db`](https://hub.docker.com/r/en1y/jamillion-db), [`en1y/jamillion-web`](https://hub.docker.com/r/en1y/jamillion-web) — plus Supabase's own `gotrue` and `postgrest` images. No `docker login`, no build. It needs Docker Compose 2.34 or newer.
 
 Open **http://localhost:8000**. The first visit is the setup page: create the admin account, paste a free [Last.fm API key](https://www.last.fm/api/account/create), choose how many artists to seed, launch. The catalog fills in the background while you write the first day's questions.
 
@@ -60,7 +60,7 @@ HTTPS_PORT=443
 COOKIE_SECURE=true
 ```
 
-No secrets go into any file. The JWT secret and database password are generated on first boot into a volume, and the catalog keys you enter are written by the backend into a volume only it can read. Updating is `docker compose pull && docker compose up -d`; migrations apply themselves. [docs/RUNNING.md](docs/RUNNING.md) has the day-to-day commands, backups, the startup summary and what every container is for.
+No secrets go into any file. The JWT secret and database password are generated on first boot into a volume, and the catalog keys you enter are written by the backend into a volume only it can read. Updating is the same two lines again: save the new `compose.yaml`, `docker compose up -d`, and the migrations apply themselves. [docs/RUNNING.md](docs/RUNNING.md) has the day-to-day commands, unattended updates, backups, the startup summary and what every container is for.
 
 ## How it plays
 

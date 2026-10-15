@@ -1,6 +1,6 @@
 # Running Jamillion
 
-**With Docker** (below) is how to run it: the images are on Docker Hub, one `compose.yaml` brings up Postgres, Auth, the backend and the site on one origin, and the first visit to the site sets it up. Prerequisite: Docker with the compose plugin. Nothing else — no checkout, no `.env`.
+**With Docker** (below) is how to run it: the images are on Docker Hub, one `compose.yaml` brings up Postgres, Auth, the backend and the site on one origin, and the first visit to the site sets it up. Prerequisite: Docker with the compose plugin, 2.34 or newer. Nothing else — no checkout, no `.env`.
 
 **Development** (sections 0–4) runs the same pieces loosely instead — the Supabase CLI stack, the backend from CMake, Vite with hot reload — for working on the code. Prerequisites there: Docker, Node, CMake and a C++20 compiler, Python 3.
 
@@ -8,11 +8,11 @@
 
 ```bash
 mkdir jamillion && cd jamillion
-curl -fsSLO https://raw.githubusercontent.com/en1y/jamillion/main/compose.yaml
+docker compose -f oci://docker.io/en1y/jamillion:latest config --no-interpolate > compose.yaml
 docker compose up -d
 ```
 
-Then open **http://localhost:8000**. Plain HTTP, no certificate warning and no privileged port: a certificate for `localhost` would be Caddy's own CA, which every browser distrusts. `HTTP_PORT=9000 docker compose up -d` serves it somewhere else; *On a server*, below, is the HTTPS case.
+The second line saves the latest release's `compose.yaml`, which each release publishes to Docker Hub as `en1y/jamillion` with every image pinned to its digest, so the file and the images always come from the same release. Then open **http://localhost:8000**. Plain HTTP, no certificate warning and no privileged port: a certificate for `localhost` would be Caddy's own CA, which every browser distrusts. `HTTP_PORT=9000 docker compose up -d` serves it somewhere else; *On a server*, below, is the HTTPS case.
 
 ### First visit: the setup page
 
@@ -39,13 +39,45 @@ Until the site has an admin and a catalog, every visitor gets the setup page ins
 ```bash
 docker compose logs backend         # the startup summary, below
 docker compose exec backend tail -f data/config/seed.log   # the seeder
-docker compose pull && docker compose up -d                # update to the latest images
 docker compose stop                 # stop everything, keep it all
 docker compose down                 # remove the containers, keep the data
 docker compose down -v              # wipe: database, secrets, keys, audio, certificates
 ```
 
-An update pulls new images and restarts; the `migrate` one-shot applies whatever migrations the new database image carries, and the data, secrets and keys stay where they are. Pin a release with `JAMILLION_VERSION=1.0.2 docker compose up -d` instead of following `latest`.
+### Updating
+
+Save the new release's `compose.yaml` over the old one and bring the stack up on it:
+
+```bash
+docker compose -f oci://docker.io/en1y/jamillion:latest config --no-interpolate > compose.yaml.new && mv compose.yaml.new compose.yaml
+docker compose up -d
+```
+
+`up` recreates only the containers whose image or settings changed, and the images download only when the release changed them. The `migrate` one-shot applies whatever migrations the new database image carries; the data, secrets and keys stay where they are. A deployment started from a downloaded `compose.yaml` switches over by running the same two lines.
+
+- **Through `compose.yaml.new`**, so that when Docker Hub cannot be reached the old file stays as it was instead of empty.
+- **The saved file is Compose's output** -- no comments, keys sorted -- and every update replaces it, so settings belong in `.env`, never in `compose.yaml`.
+- **Migrations only go forward.** Going back to an older release means its `compose.yaml` and the backup taken before the update (*Backups*, below).
+- **Pin a release** by saving `oci://docker.io/en1y/jamillion:<version>` instead of `:latest`. `JAMILLION_VERSION` in `.env` no longer pins anything: the saved file names every image by digest.
+
+Unattended, a script beside `compose.yaml` and a cron line:
+
+```sh
+#!/bin/sh -e
+# update.sh: back up, save the latest release's compose.yaml, bring the stack up on it
+cd "$(dirname "$0")"
+docker compose exec -T db pg_dump -U supabase_admin -h 127.0.0.1 -d postgres \
+    -n public -n auth -Fc > "jamillion-$(date -u +%Y%m%d).dump"
+docker compose -f oci://docker.io/en1y/jamillion:latest config --no-interpolate > compose.yaml.new
+mv compose.yaml.new compose.yaml
+docker compose up -d
+```
+
+```
+0 4 * * * /srv/jamillion/update.sh >> /srv/jamillion/update.log 2>&1
+```
+
+Any step that fails stops the script, so a failed backup is never followed by an update. The site is down for the few seconds the changed containers take to restart.
 
 The backend's startup summary is the first thing to read when something looks wrong:
 
@@ -169,6 +201,8 @@ docker login
 for tag in 1.0.9 latest; do
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml build
   JAMILLION_VERSION=$tag docker compose -f compose.yaml -f compose.build.yaml push backend db web
+  # the compose file deployments save, pinned to this release's image digests
+  JAMILLION_VERSION=1.0.9 docker compose -f compose.yaml publish -y --resolve-image-digests en1y/jamillion:$tag
 done
 ```
 

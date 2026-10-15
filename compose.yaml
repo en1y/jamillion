@@ -1,5 +1,8 @@
-# Jamillion, the whole stack. This file is all a deployment needs:
+# Jamillion, the whole stack. This file is all a deployment needs. Each release
+# publishes it to Docker Hub as en1y/jamillion, every image pinned to its digest,
+# and a deployment saves that copy, so the file and the images match:
 #
+#   docker compose -f oci://docker.io/en1y/jamillion:latest config --no-interpolate > compose.yaml
 #   docker compose up -d                            # then open http://localhost:8000
 #
 # A server with a hostname of its own puts four lines in a .env beside this file
@@ -203,9 +206,12 @@ services:
     ports:
       # Caddy always listens on 80 and 443 inside; what they are published as is
       # the deployment's business. A hostname needs the standard pair, because
-      # that is where Let's Encrypt comes looking.
-      - "${HTTP_PORT:-8000}:80"
-      - "${HTTPS_PORT:-8443}:443"
+      # that is where Let's Encrypt comes looking. The long form because
+      # `docker compose publish` cannot parse "${HTTP_PORT:-8000}:80".
+      - target: 80
+        published: "${HTTP_PORT:-8000}"
+      - target: 443
+        published: "${HTTPS_PORT:-8443}"
     depends_on:
       # The site is useless without the API, and Caddy answers 502 until it is
       # up, so wait for the health check rather than for the container.

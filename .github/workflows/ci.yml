@@ -1,6 +1,6 @@
 # Every push and pull request: the frontend's tests, lint and build, and the
 # backend built with its tests. A v* tag additionally builds the three images
-# and publishes them to Docker Hub -- when DOCKERHUB_USERNAME and
+# and publishes them, and compose.yaml, to Docker Hub -- when DOCKERHUB_USERNAME and
 # DOCKERHUB_TOKEN are set as repository secrets; without them that job is a
 # no-op rather than a failure.
 name: CI
@@ -71,4 +71,15 @@ jobs:
             docker tag "en1y/jamillion-$img:$VERSION" "en1y/jamillion-$img:latest"
             docker push "en1y/jamillion-$img:$VERSION"
             docker push "en1y/jamillion-$img:latest"
+          done
+          # compose.yaml too, as en1y/jamillion, with every image pinned to this
+          # release's digest: deployments save it, so file and images match.
+          # public.ecr.aws throttles the digest lookup for gotrue and postgrest.
+          for tag in "$VERSION" latest; do
+            for try in 1 2 3 4 5; do
+              JAMILLION_VERSION="$VERSION" docker compose -f compose.yaml publish -y \
+                --resolve-image-digests "en1y/jamillion:$tag" && break
+              [ "$try" = 5 ] && exit 1
+              sleep $((try * 15))
+            done
           done
